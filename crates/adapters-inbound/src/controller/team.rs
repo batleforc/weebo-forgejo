@@ -137,10 +137,12 @@ async fn resolve_inputs(
             RefState::NotFound => Member::Pending {
                 name: member.name.clone(),
                 why: "no such ForgejoUser".into(),
+                login: None,
             },
             RefState::NotReady(why) => Member::Pending {
                 name: member.name.clone(),
                 why,
+                login: users.get_opt(&member.name).await?.map(|u| u.spec.username),
             },
             other @ RefState::OtherInstance(_) => {
                 return Ok(Err(require("ForgejoUser", &member.name, other).unwrap_err()));

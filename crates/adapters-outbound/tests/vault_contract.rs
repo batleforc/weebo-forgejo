@@ -192,3 +192,125 @@ async fn an_expired_token_relogs_in_once() {
         .count();
     assert_eq!(logins, 2);
 }
+
+#[tokio::test]
+async fn a_refused_login_names_the_mount_and_role() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/auth/kubernetes/login"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(json!({"errors": ["permission denied"]})),
+        )
+        .mount(&server)
+        .await;
+    let err = VaultSecretStore::new(&spec(&server), "sa-jwt", None)
+        .await
+        .err()
+        .expect("login must fail");
+    assert!(err.0.contains("\"kubernetes\""), "{}", err.0);
+    assert!(err.0.contains("\"weebo-forgejo\""), "{}", err.0);
+}
+
+#[tokio::test]
+async fn a_configured_ca_bundle_is_loaded() {
+    let server = MockServer::start().await;
+    login(&server).await;
+    let ca = rcgen::generate_simple_self_signed(vec!["vault.local".into()])
+        .unwrap()
+        .cert
+        .pem();
+    // Plain HTTP to wiremock: the CA is loaded, just never needed.
+    assert!(
+        VaultSecretStore::new(&spec(&server), "sa-jwt", Some(ca.as_bytes()))
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn writes_and_deletes_relogin_once_on_an_expired_token() {
+    let server = MockServer::start().await;
+    login(&server).await;
+    let denied =
+        || ResponseTemplate::new(403).set_body_json(json!({"errors": ["permission denied"]}));
+    // Nothing stored yet (read), then one 403 per write and delete.
+    Mock::given(method("GET"))
+        .and(path("/v1/secret/data/p"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"errors": []})))
+        .mount(&server)
+        .await;
+    for (verb, p) in [
+        ("POST", "/v1/secret/data/p"),
+        ("DELETE", "/v1/secret/metadata/p"),
+    ] {
+        Mock::given(method(verb))
+            .and(path(p))
+            .respond_with(denied())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/v1/secret/data/p"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(envelope(
+            json!({"created_time": "2026-10-06T00:00:00Z", "custom_metadata": null,
+                   "deletion_time": "", "destroyed": false, "version": 1}),
+            serde_json::Value::Null,
+        )))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/secret/metadata/p"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    let store = VaultSecretStore::new(&spec(&server), "sa-jwt", None)
+        .await
+        .unwrap();
+    store
+        .write_path("p", &BTreeMap::from([("k".to_string(), "v".to_string())]))
+        .await
+        .unwrap();
+    store.delete_path("p").await.unwrap();
+    let logins = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/v1/auth/kubernetes/login")
+        .count();
+    assert_eq!(logins, 3, "the initial login plus one per refused call");
+}
+
+#[tokio::test]
+async fn server_errors_are_errors_not_missing_secrets() {
+    let server = MockServer::start().await;
+    login(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/v1/secret/data/p"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"errors": ["boom"]})))
+        .mount(&server)
+        .await;
+    for (verb, p) in [
+        ("POST", "/v1/secret/data/p"),
+        ("DELETE", "/v1/secret/metadata/p"),
+    ] {
+        Mock::given(method(verb))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({"errors": ["boom"]})))
+            .mount(&server)
+            .await;
+    }
+    let store = VaultSecretStore::new(&spec(&server), "sa-jwt", None)
+        .await
+        .unwrap();
+    assert!(store.read_path("p").await.is_err());
+    assert!(
+        store
+            .write_path("p", &BTreeMap::from([("k".to_string(), "v".to_string())]))
+            .await
+            .is_err()
+    );
+    assert!(store.delete_path("p").await.is_err());
+}

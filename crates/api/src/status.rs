@@ -40,9 +40,10 @@ pub struct ForgejoStatus {
     /// the old name to rename *from*.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forgejo_name: Option<String>,
-    /// Value of the `forgejo.weebo.io/rotate-secret` annotation (or the
-    /// RFC 3339 time, for `rotationPeriod`) the last secret was issued
-    /// for. Only used by kinds that emit a secret.
+    /// Value of the `forgejo.weebo.io/rotate-secret` annotation the last
+    /// secret was issued for, so the same nonce never rotates twice. Only
+    /// used by kinds that emit a secret (a `rotationPeriod` renewal shows
+    /// as a new `forgejoId` instead).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_rotation: Option<String>,
     /// SHA-256 of the write-only inputs last sent to Forgejo (webhook

@@ -13,3 +13,4 @@ serde = { workspace = true }
 async-trait = { workspace = true }
 envtest = { workspace = true }
 rustls = { workspace = true }
+serde_norway = { workspace = true }

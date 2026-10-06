@@ -36,6 +36,16 @@ backend = "aqua:kubernetes/kubernetes/kube-apiserver"
 checksum = "sha256:6770be17296ef36b656ad84e52b043007fb9a47ba0445c224097323291b1b33b"
 url = "https://dl.k8s.io/v1.36.2/bin/linux/amd64/kube-apiserver"
 
+[[tools."aqua:taiki-e/cargo-llvm-cov"]]
+version = "0.9.1"
+backend = "aqua:taiki-e/cargo-llvm-cov"
+
+[tools."aqua:taiki-e/cargo-llvm-cov"."platforms.linux-x64"]
+checksum = "sha256:b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a"
+url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-llvm-cov/releases/assets/547403171"
+provenance = "github-attestations"
+
 [[tools.claude]]
 version = "2.1.289"
 backend = "aqua:anthropics/claude-code"

@@ -36,3 +36,24 @@ tasks:
       - mise exec -- cargo test -p adapters-outbound --test live_forgejo -- --ignored
       - mise exec -- cargo test -p adapters-inbound --test live_forgejo -- --ignored
       - mise exec -- cargo test -p importer --test live_forgejo -- --ignored
+      - mise exec -- cargo test -p adapters-inbound --test live_identities --test live_repositories --test live_credentials -- --ignored
+
+  coverage:
+    desc: >
+      Line coverage of every test layer (unit, contract, envtest, binaries,
+      and the live suites against a real Forgejo), failing under 85%.
+      Needs FORGEJO_URL/FORGEJO_TOKEN/FORGEJO_SOURCE_ID — exported, or read
+      from .forgejo-test.env (`task forgejo:container:start`). Excluded:
+      the generated forgejo-client and the test harnesses themselves.
+      Writes target/lcov.info.
+    vars:
+      IGNORE: '(forgejo-client|testkit|test_support|/tests/)'
+    cmds:
+      - |
+        set -a; [ -f .forgejo-test.env ] && . ./.forgejo-test.env; set +a
+        : "${FORGEJO_URL:?run task forgejo:container:start or export FORGEJO_URL}"
+        mise exec -- cargo llvm-cov clean --workspace
+        # --include-ignored: the live suites are #[ignore] for `task test`.
+        mise exec -- cargo llvm-cov --no-report --workspace --all-targets --no-fail-fast -- --include-ignored
+        mise exec -- cargo llvm-cov report --ignore-filename-regex '{{.IGNORE}}' --lcov --output-path target/lcov.info
+        mise exec -- cargo llvm-cov report --ignore-filename-regex '{{.IGNORE}}' --summary-only --fail-under-lines 85

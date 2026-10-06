@@ -32,3 +32,10 @@ application = { workspace = true, features = ["test-support"] }
 k8s-openapi = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
+# Fresh SSH public keys per live test run (keys are unique in Forgejo).
+ssh-key = { workspace = true }
+# envtest CA → PEM for the real-Vault test (live_credentials.rs).
+base64 = "0.22"
+# A TLS stand-in for Forgejo (instance_tls.rs).
+axum-server = { workspace = true }
+rcgen = "0.14.10"

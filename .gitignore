@@ -15,3 +15,6 @@ dist/
 
 # graphify knowledge graph (local, regenerated with `graphify update .`)
 graphify-out/
+
+# Live-test credentials written by `task forgejo:container:start`
+.forgejo-test.env

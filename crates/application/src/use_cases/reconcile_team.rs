@@ -17,8 +17,14 @@ pub enum Member {
     /// Login of a `ForgejoUser` that exists in Forgejo.
     Ready(String),
     /// A `ForgejoUser` CR that is missing, not ready yet, or observes an
-    /// OIDC account that hasn't logged in once. `name` is the CR name.
-    Pending { name: String, why: String },
+    /// OIDC account that hasn't logged in once. `name` is the CR name;
+    /// `login` its `spec.username` when the CR exists — that account may
+    /// well be in the team already (a CR only briefly not `Ready`).
+    Pending {
+        name: String,
+        why: String,
+        login: Option<String>,
+    },
 }
 
 pub struct TeamInput<'a> {
@@ -98,7 +104,7 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
         .members
         .iter()
         .filter_map(|m| match m {
-            Member::Pending { name, why } => Some(format!("{name} ({why})")),
+            Member::Pending { name, why, .. } => Some(format!("{name} ({why})")),
             Member::Ready(_) => None,
         })
         .collect();
@@ -129,8 +135,9 @@ pub async fn cleanup_team(
 }
 
 /// Adds every ready member, removes everyone not listed. A pending member
-/// can't be in the team (it doesn't exist in Forgejo), so removing
-/// "everyone else" never drops someone the spec wants.
+/// is neither added (not confirmed yet) nor removed: its CR may only be
+/// briefly not `Ready` (an instance hiccup, a first reconcile after an
+/// import) while the account is already in the team.
 async fn sync_members(
     team: i64,
     members: &[Member],
@@ -143,6 +150,13 @@ async fn sync_members(
             Member::Pending { .. } => None,
         })
         .collect();
+    let kept: BTreeSet<&str> = members
+        .iter()
+        .filter_map(|m| match m {
+            Member::Pending { login, .. } => login.as_deref(),
+            Member::Ready(_) => None,
+        })
+        .collect();
     let actual = gateway.list_team_members(team).await?;
     let actual: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
 
@@ -150,7 +164,9 @@ async fn sync_members(
         gateway.add_team_member(team, login).await?;
     }
     for login in actual.difference(&wanted) {
-        gateway.remove_team_member(team, login).await?;
+        if !kept.contains(login) {
+            gateway.remove_team_member(team, login).await?;
+        }
     }
     Ok(())
 }
@@ -307,6 +323,7 @@ mod tests {
             Member::Pending {
                 name: "carol".into(),
                 why: "UserNotFound".into(),
+                login: Some("carol".into()),
             },
         ];
         let outcome = run(&spec("devs"), None, "weebo", members, false, &fj).await;
@@ -315,6 +332,29 @@ mod tests {
         assert_eq!(outcome.advisories[0].reason, ReasonCode::MemberPending);
         let id = outcome.forgejo.unwrap().id;
         assert_eq!(fj.team(id).unwrap().members, vec!["alice"]);
+    }
+
+    /// A member whose `ForgejoUser` is only briefly not `Ready` (instance
+    /// hiccup, first reconcile after an import) stays in the team.
+    #[tokio::test]
+    async fn a_pending_member_already_in_the_team_is_kept() {
+        let fj = forgejo_with_orgs(&["weebo"]).await;
+        fj.insert_user("alice");
+        let ready = vec![Member::Ready("alice".into())];
+        let created = run(&spec("devs"), None, "weebo", ready, false, &fj).await;
+        let current = created.forgejo.clone();
+        fj.clear_calls();
+
+        let pending = vec![Member::Pending {
+            name: "alice".into(),
+            why: "ReferenceNotReady".into(),
+            login: Some("alice".into()),
+        }];
+        let outcome = run(&spec("devs"), current, "weebo", pending, false, &fj).await;
+        assert!(outcome.ready.is_ok());
+        let id = outcome.forgejo.unwrap().id;
+        assert_eq!(fj.team(id).unwrap().members, vec!["alice"]);
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
     }
 
     #[tokio::test]

@@ -53,7 +53,10 @@ To publish an existing tag again (e.g. after a registry hiccup), run
 | --- | --- |
 | Lint, unit, contract and envtest tests, generated files up to date, chart lint, audit, both images build and run | `ci.yml`, every push |
 | kind end to end with both images: golden path, admission denials, leader failover, deletion policies | `e2e.yml`, weekly and on demand — run it before a release |
+| Every layer under coverage, live suites included (≥ 85% of lines) | `ci.yml` job `coverage`, every push |
 | Against a real Forgejo: gateway, controllers, importer | `task test:live-forgejo` |
 
 The kind e2e runs locally too with a working container engine:
-`task e2e` (`ENGINE=podman` to build with podman).
+`task e2e` (`ENGINE=podman` to build with podman). For the live suites and
+coverage: `task forgejo:container:start ENGINE=podman` (writes
+`.forgejo-test.env`), then `task coverage` or `task test:live-forgejo`.

@@ -474,6 +474,18 @@ Quatre couches, comme authentik :
    controllers sur envtest, contre un Forgejo réel (sidecar du devfile, ou
    conteneur local) — c'est cette couche qui a révélé les constats du M1.
 
+**Couverture (M5)** : `task coverage` exécute toutes les couches sous
+`cargo llvm-cov` — y compris les suites live (`--include-ignored`) contre un
+Forgejo jetable (`task forgejo:container:start`, docker/podman, avec
+source d'authentification OAuth2 pour les users externes) et les binaires
+eux-mêmes (`operator` sur envtest : webhook TLS, lease, perte → exit 1 ;
+`weebo-forgejo-importer` ; `crdgen`) — et échoue sous **85 % des
+lignes**. Exclus : le client généré et les harnais de test. Job `coverage`
+de la CI. Chaque fonctionnalité a son test bout en bout (controllers réels
++ envtest + Forgejo réel) : `live_forgejo.rs`, `live_identities.rs`,
+`live_repositories.rs`, `live_credentials.rs` (dont Vault réel en
+Kubernetes auth contre envtest), `instance_tls.rs` (CA / insecure).
+
 Les tests de controllers (couche 3) utilisent le `FakeForgejo` en mémoire
 (`application::test_support`, feature `test-support`) plutôt que wiremock :
 le contrat HTTP est déjà couvert par la couche 2, et un faux à état permet

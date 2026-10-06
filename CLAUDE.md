@@ -46,6 +46,8 @@ task test                # unit + contract tests
 task test:all            # + envtest controller tests (real apiserver)
 task test:live-forgejo   # gateway + controllers + importer against a real Forgejo (FORGEJO_URL/TOKEN)
 task e2e                 # kind e2e: chart + cert-manager + Forgejo, golden path (needs docker)
+task forgejo:container:start  # disposable Forgejo (docker/podman) + .forgejo-test.env for live tests
+task coverage            # every layer incl. live suites under llvm-cov; fails under 85% lines
 task recu                # regenerate forgejo-client + CRDs (CI diffs both)
 task audit               # cargo-deny + trivy + npm audit (docs)
 task lint:helm           # helm lint + template smoke renders

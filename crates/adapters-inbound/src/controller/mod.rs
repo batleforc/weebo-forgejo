@@ -86,11 +86,9 @@ pub fn error_policy<K>(_obj: Arc<K>, err: &Error, _ctx: Arc<Ctx>) -> Action {
 /// 300 s steady-state drift check after a success; 30 s after a failure,
 /// which is often a dependency that isn't ready yet.
 pub fn requeue_after(outcome: &Outcome) -> Action {
-    if outcome.ready.is_ok() {
-        Action::requeue(Duration::from_secs(300))
-    } else {
-        Action::requeue(Duration::from_secs(30))
-    }
+    let base = if outcome.ready.is_ok() { 300 } else { 30 };
+    let secs = outcome.due_in.map_or(base, |due| due.min(base));
+    Action::requeue(Duration::from_secs(secs))
 }
 
 /// Value of the `forgejo.weebo.io/rotate-secret` annotation.

@@ -4,6 +4,8 @@
 //! `K8sSecretStore` writing into the test apiserver.
 #![allow(dead_code)]
 
+pub mod live;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,7 +53,8 @@ pub async fn harness() -> Harness {
     }
 }
 
-const TIMEOUT: Duration = Duration::from_secs(20);
+// Generous: live tests wait on a real Forgejo (clones, migrations).
+const TIMEOUT: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 pub async fn wait_for<K, T, F>(api: &kube::Api<K>, name: &str, extract: F) -> T

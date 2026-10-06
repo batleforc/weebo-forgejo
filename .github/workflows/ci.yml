@@ -70,6 +70,44 @@ jobs:
       - run: mise install
       - run: mise exec -- task test:all
 
+  # Every layer — unit, contract, envtest, the binaries, and the live
+  # suites against a real Forgejo (disposable container) — under coverage,
+  # failing below 85% of lines (`task coverage`).
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-mise
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+          LIBCLANG_SO="$(find /usr/lib -iname 'libclang.so*' 2>/dev/null | head -n1)"
+          if [ -z "$LIBCLANG_SO" ]; then
+            echo "::error::libclang.so not found after installing libclang-dev" >&2
+            exit 1
+          fi
+          {
+            echo "LIBCLANG_PATH=$(dirname "$LIBCLANG_SO")"
+            echo "BINDGEN_EXTRA_CLANG_ARGS="
+          } >> "$GITHUB_ENV"
+      - run: mise install
+      - run: mise exec -- task forgejo:container:start ENGINE=docker
+      - run: mise exec -- task coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lcov
+          path: target/lcov.info
+          if-no-files-found: ignore
+
   regen-and-diff:
     runs-on: ubuntu-latest
     steps:

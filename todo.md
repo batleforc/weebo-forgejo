@@ -59,7 +59,7 @@ Legend: `[x]` done · `[ ]` to do · `[~]` partially done / blocked (reason give
 
 - [ ] **Commit M0–M4** (user): `git add -A && git commit -s -S -F <scratchpad>/COMMIT_MSG_M0_M4.txt`
 - [ ] Start the devfile Forgejo sidecar once in Che (`task forgejo:start && task forgejo:bootstrap`) — the rootless/arbitrary-UID workarounds are untested
-- [ ] Try Vault for real (Kubernetes-auth login needs a cluster validating SA tokens) — only covered by wiremock so far
+- [x] Try Vault for real — `live_credentials.rs` runs `vault server -dev` with Kubernetes auth validating envtest-issued SA tokens (reviewer JWT must keep the apiserver's default audience)
 - [ ] `cargo clean` when disk gets tight (`target/` ≈ 18 GB)
 
 ## M5 — Importer, e2e, release
@@ -76,6 +76,9 @@ Legend: `[x]` done · `[ ]` to do · `[~]` partially done / blocked (reason give
 - [x] Leader-election test (envtest, `crates/operator/tests/leader_election.rs`) + failover step in the e2e
 - [~] Release pipeline: fixed (release → publish via `workflow_call`, bump hook works on a clean runner, images smoke-run in CI and after push); **first `cog bump` is yours** (signed commits) — see docs "Releasing"
 - [x] Docs: migration guide (importer), release guide
+- [x] Coverage gate: `task coverage` (all layers incl. live suites and the binaries) fails under 85% lines; CI job `coverage` with a disposable Forgejo (`task forgejo:container:start`)
+- [x] Every feature end to end on real controllers + envtest + Forgejo: `live_identities.rs`, `live_repositories.rs`, `live_credentials.rs`, `instance_tls.rs`, operator/importer/crdgen binary tests
+- [x] Fixed: `rotationPeriod` renewals could lag up to the 300 s requeue (`Outcome::due_in`)
 
 ## Later (post-v1)
 

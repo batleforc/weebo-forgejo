@@ -180,4 +180,16 @@ async fn imported_objects_are_adopted_without_writes() {
     let again = apply_all(&client, &imported).await;
     assert_eq!(again.skipped, 6);
     assert_eq!(again.failed, 0);
+
+    // A CR owning another Forgejo object is reported, never overwritten.
+    let mut other = imported.repositories[0].clone();
+    other.status.as_mut().unwrap().forgejo_id = Some("999".into());
+    let conflicting = application::use_cases::import::Import {
+        repositories: vec![other],
+        ..Default::default()
+    };
+    let conflict = apply_all(&client, &conflicting).await;
+    assert_eq!(conflict.failed, 1);
+    let kept = repos.get("weebo-app").await.unwrap();
+    assert_ne!(kept.status.unwrap().forgejo_id.as_deref(), Some("999"));
 }

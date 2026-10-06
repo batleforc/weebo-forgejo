@@ -80,3 +80,51 @@ tasks:
       - >-
         kubectl exec -c {{.CONTAINER}} "{{.POD}}" --
         sh -c 'rm -rf /var/lib/gitea/data /var/lib/gitea/git'
+
+  # ── Throwaway Forgejo in a container (outside Che: local dev and CI) ──
+  container:start:
+    desc: "Run a disposable Forgejo 16 (docker/podman, localhost:3000) with an admin, a token and an OAuth2 auth source; writes .forgejo-test.env for the live tests"
+    vars:
+      ENGINE: '{{.ENGINE | default "docker"}}'
+      NAME: weebo-forgejo-test
+    cmds:
+      - "{{.ENGINE}} rm -f {{.NAME}} >/dev/null 2>&1 || true"
+      - >-
+        {{.ENGINE}} run -d --name {{.NAME}} -p 127.0.0.1:3000:3000
+        -e FORGEJO__security__INSTALL_LOCK=true
+        -e FORGEJO__database__DB_TYPE=sqlite3
+        -e FORGEJO__webhook__ALLOWED_HOST_LIST='*'
+        -e FORGEJO__migrations__ALLOW_LOCALNETWORKS=true
+        codeberg.org/forgejo/forgejo:16-rootless
+      - |
+        for i in $(seq 1 60); do
+          curl -fsS http://localhost:3000/api/v1/version >/dev/null 2>&1 && break
+          sleep 1
+        done
+        curl -fsS http://localhost:3000/api/v1/version
+      - >-
+        {{.ENGINE}} exec {{.NAME}} forgejo admin user create --admin
+        --username {{.ADMIN_USER}} --password '{{.ADMIN_PASSWORD}}'
+        --email {{.ADMIN_USER}}@weebo.local --must-change-password=false
+      # External users need an authentication source; nothing is ever
+      # fetched from these URLs.
+      - >-
+        {{.ENGINE}} exec {{.NAME}} forgejo admin auth add-oauth --name e2e-oidc
+        --provider gitea --key e2e --secret e2e --use-custom-urls true
+        --custom-auth-url https://idp.invalid/login/oauth/authorize
+        --custom-token-url https://idp.invalid/login/oauth/access_token
+        --custom-profile-url https://idp.invalid/api/v1/user
+      - |
+        token=$({{.ENGINE}} exec {{.NAME}} forgejo admin user generate-access-token \
+          --username {{.ADMIN_USER}} --token-name live-tests --scopes all --raw)
+        source_id=$({{.ENGINE}} exec {{.NAME}} forgejo admin auth list | awk '$2 == "e2e-oidc" {print $1}')
+        printf 'FORGEJO_URL=http://localhost:3000\nFORGEJO_TOKEN=%s\nFORGEJO_SOURCE_ID=%s\n' \
+          "$token" "$source_id" > .forgejo-test.env
+        echo "wrote .forgejo-test.env"
+
+  container:stop:
+    desc: "Remove the disposable Forgejo container"
+    vars:
+      ENGINE: '{{.ENGINE | default "docker"}}'
+    cmds:
+      - "{{.ENGINE}} rm -f weebo-forgejo-test"

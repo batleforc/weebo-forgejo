@@ -100,38 +100,40 @@ pub async fn reconcile_token(
         _ => None,
     };
 
-    let renew = match &remote {
-        None => true,
-        Some(r) => {
-            if token_differs(&desired, r) && !input.allow_disruptive_update {
-                return Outcome::failed(
-                    input.current.clone(),
-                    Failure::new(
-                        ReasonCode::DisruptiveUpdateRefused,
-                        "changing scopes or repositories issues a new token (the current one is \
-                         revoked); annotate the CR with \
-                         forgejo.weebo.io/allow-disruptive-update=\"true\"",
-                    ),
-                );
-            }
-            let expired = spec
-                .rotation_period
-                .as_deref()
-                .and_then(go_duration_secs)
-                .zip(r.created_at)
-                .is_some_and(|(period, created)| created + period as i64 <= input.now);
-            let lost = match emit::any_missing(&targets, ns, secrets).await {
-                Ok(lost) => lost,
-                Err(f) => return Outcome::failed(input.current.clone(), f),
-            };
-            token_differs(&desired, r)
-                || expired
-                || lost
-                || rotation_requested(&input.rotate_nonce, &input.last_rotation)
+    // Without a remote token there's nothing to keep: issue one.
+    if let Some(r) = &remote {
+        if token_differs(&desired, r) && !input.allow_disruptive_update {
+            return Outcome::failed(
+                input.current.clone(),
+                Failure::new(
+                    ReasonCode::DisruptiveUpdateRefused,
+                    "changing scopes or repositories issues a new token (the current one is \
+                     revoked); annotate the CR with \
+                     forgejo.weebo.io/allow-disruptive-update=\"true\"",
+                ),
+            );
         }
-    };
-    if !renew {
-        return Outcome::synced(input.current, "token valid");
+        let expires_at = spec
+            .rotation_period
+            .as_deref()
+            .and_then(go_duration_secs)
+            .zip(r.created_at)
+            .map(|(period, created)| created + period as i64);
+        let expired = expires_at.is_some_and(|at| at <= input.now);
+        let lost = match emit::any_missing(&targets, ns, secrets).await {
+            Ok(lost) => lost,
+            Err(f) => return Outcome::failed(input.current.clone(), f),
+        };
+        let renew = token_differs(&desired, r)
+            || expired
+            || lost
+            || rotation_requested(&input.rotate_nonce, &input.last_rotation);
+        if !renew {
+            let mut outcome = Outcome::synced(input.current, "token valid");
+            // Come back when it expires, not at the next 300 s requeue.
+            outcome.due_in = expires_at.map(|at| (at - input.now).max(1) as u64);
+            return outcome;
+        }
     }
 
     // Names are unique per user: revoke before issuing. Also drops the
@@ -159,6 +161,11 @@ pub async fn reconcile_token(
     }
     let mut outcome = Outcome::synced(current, "token issued");
     outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
+    outcome.due_in = spec
+        .rotation_period
+        .as_deref()
+        .and_then(go_duration_secs)
+        .map(|p| p.max(1));
     outcome
 }
 
@@ -263,14 +270,14 @@ mod tests {
         let (fj, secrets) = (forgejo(), FakeSecretStore::default());
         let mut s = spec();
         s.rotation_period = Some("720h".into());
-        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
-            .await
-            .forgejo
-            .unwrap();
+        let issued = reconcile_token(input(&s, None, 0), &fj, &secrets).await;
+        assert_eq!(issued.due_in, Some(30 * DAY as u64), "back when it expires");
+        let first = issued.forgejo.unwrap();
         let old = value(&secrets);
 
         let still = reconcile_token(input(&s, Some(first.clone()), 29 * DAY), &fj, &secrets).await;
         assert_eq!(still.forgejo, Some(first.clone()));
+        assert_eq!(still.due_in, Some(DAY as u64), "the day left, not 300 s");
 
         let renewed = reconcile_token(input(&s, Some(first.clone()), 31 * DAY), &fj, &secrets)
             .await

@@ -16,6 +16,8 @@ java = "temurin-25"
 "aqua:OpenAPITools/openapi-generator" = "7.25.0"
 # `task audit`
 "aqua:EmbarkStudios/cargo-deny" = "latest"
+# `task coverage` (needs rust's llvm-tools component, already listed)
+"aqua:taiki-e/cargo-llvm-cov" = "latest"
 trivy = "latest"
 # envtest (crates/testkit): Go for its build-time bindings, and the real
 # control-plane binaries it starts

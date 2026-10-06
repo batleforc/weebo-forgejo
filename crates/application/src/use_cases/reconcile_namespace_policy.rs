@@ -22,3 +22,44 @@ pub fn reconcile_namespace_policy(spec: &ForgejoNamespacePolicySpec) -> Outcome 
     }
     Outcome::synced(None, format!("{} rule(s) in force", spec.rules.len()))
 }
+
+#[cfg(test)]
+mod tests {
+    use api::namespace_policy::{Effect, NamespaceRule, NamespacedKind};
+
+    use super::*;
+
+    fn rule(namespaces: &[&str], kinds: &[NamespacedKind]) -> NamespaceRule {
+        NamespaceRule {
+            namespaces: namespaces.iter().map(|n| n.to_string()).collect(),
+            allowed_kinds: kinds.to_vec(),
+            allowed_organizations: None,
+            allowed_users: None,
+            effect: Effect::Allow,
+        }
+    }
+
+    #[test]
+    fn usable_rules_are_ready() {
+        let spec = ForgejoNamespacePolicySpec {
+            rules: vec![rule(&["team-*"], &[NamespacedKind::ForgejoRepository])],
+        };
+        let outcome = reconcile_namespace_policy(&spec);
+        assert_eq!(outcome.ready, Ok("1 rule(s) in force".to_string()));
+    }
+
+    #[test]
+    fn a_rule_that_can_never_match_is_invalid() {
+        for bad in [
+            rule(&[], &[NamespacedKind::ForgejoRepository]),
+            rule(&["team-a"], &[]),
+        ] {
+            let spec = ForgejoNamespacePolicySpec {
+                rules: vec![rule(&["x"], &[NamespacedKind::ForgejoWebhook]), bad],
+            };
+            let outcome = reconcile_namespace_policy(&spec);
+            assert_eq!(outcome.reason(), ReasonCode::InvalidSpec);
+            assert!(outcome.ready.unwrap_err().message.contains("rules[1]"));
+        }
+    }
+}

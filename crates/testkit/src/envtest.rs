@@ -51,4 +51,16 @@ impl EnvTestCluster {
     pub fn client(&self) -> Client {
         self.client.clone()
     }
+
+    /// Admin kubeconfig of the control plane: to run a real binary against
+    /// it (`KUBECONFIG`), or to read its URL and CA (Vault's Kubernetes auth).
+    pub fn kubeconfig(&self) -> kube::config::Kubeconfig {
+        self._server.kubeconfig().expect("envtest kubeconfig")
+    }
+
+    /// Writes [`Self::kubeconfig`] as YAML to `path`.
+    pub fn write_kubeconfig(&self, path: &Path) {
+        let yaml = serde_norway::to_string(&self.kubeconfig()).expect("kubeconfig serializes");
+        std::fs::write(path, yaml).expect("kubeconfig written");
+    }
 }

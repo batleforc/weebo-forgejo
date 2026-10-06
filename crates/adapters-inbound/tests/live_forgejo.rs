@@ -7,24 +7,16 @@
 
 mod support;
 
-use std::sync::Arc;
-
-use adapters_inbound::controller::{self, Ctx};
-use adapters_outbound::{ForgejoGatewayFactory, ForgejoHttpGateway, ForgejoSecretStoreFactory};
-use api::common::{
-    DeletionPolicy, ManagementPolicy, ObjectRef, SecretKeyRef, SecretTarget, Visibility,
-};
-use api::instance::ForgejoInstanceSpec;
+use api::common::{DeletionPolicy, ManagementPolicy, ObjectRef, SecretTarget, Visibility};
 use api::organization::ForgejoOrganizationSpec;
 use api::team::{ForgejoTeamSpec, TeamPermission};
 use api::user::ForgejoUserSpec;
-use api::{ForgejoInstance, ForgejoOrganization, ForgejoTeam, ForgejoUser};
+use api::{ForgejoOrganization, ForgejoTeam, ForgejoUser};
 use application::ports::ForgejoGateway;
 use k8s_openapi::api::core::v1::Secret;
 use kube::api::{Api, ObjectMeta, PostParams};
-use kube::runtime::events::{Recorder, Reporter};
+use support::live::{Live, cr, live};
 use support::{condition, wait_for, wait_for_absence};
-use testkit::envtest::EnvTestCluster;
 
 fn meta(name: &str) -> ObjectMeta {
     ObjectMeta {
@@ -33,112 +25,21 @@ fn meta(name: &str) -> ObjectMeta {
     }
 }
 
-/// A real apiserver with every controller running against the live
-/// Forgejo through a real `ForgejoInstance` (token Secret included), and a
-/// per-run suffix for Forgejo-side names.
-struct Live {
-    _cluster: EnvTestCluster,
-    client: kube::Client,
-    url: String,
-    token: String,
-    run: String,
-}
-
-async fn live() -> Live {
-    let url = std::env::var("FORGEJO_URL").expect("FORGEJO_URL");
-    let token = std::env::var("FORGEJO_TOKEN").expect("FORGEJO_TOKEN");
-    let run = format!(
-        "{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-            % 1_000_000
-    );
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let cluster = EnvTestCluster::start().await;
-    let client = cluster.client();
-    let ctx = Arc::new(Ctx {
-        client: client.clone(),
-        gateways: Arc::new(ForgejoGatewayFactory::new(client.clone(), None)),
-        secrets: Arc::new(ForgejoSecretStoreFactory::new(client.clone(), None)),
-        recorder: Recorder::new(
-            client.clone(),
-            Reporter {
-                controller: "weebo-forgejo-live-test".into(),
-                instance: None,
-            },
-        ),
-    });
-    tokio::spawn(controller::instance::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::user::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::organization::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::team::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::repository::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::webhook::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::deploy_key::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::user_key::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::oauth2::run(client.clone(), ctx.clone()));
-    tokio::spawn(controller::token::run(client.clone(), ctx.clone()));
-
-    let secrets: Api<Secret> = Api::namespaced(client.clone(), "default");
-    secrets
-        .create(
-            &PostParams::default(),
-            &serde_json::from_value(serde_json::json!({
-                "metadata": {"name": "forgejo-admin"},
-                "stringData": {"token": token},
-            }))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let instances: Api<ForgejoInstance> = Api::all(client.clone());
-    instances
-        .create(
-            &PostParams::default(),
-            &ForgejoInstance {
-                metadata: meta("main"),
-                spec: ForgejoInstanceSpec {
-                    url: url.clone(),
-                    token_secret_ref: SecretKeyRef {
-                        name: "forgejo-admin".into(),
-                        namespace: "default".into(),
-                        key: "token".into(),
-                    },
-                    tls: Default::default(),
-                    secret_store: Default::default(),
-                },
-                status: None,
-            },
-        )
-        .await
-        .unwrap();
-    let ready = wait_for(&instances, "main", |i| {
-        condition(i.status.as_ref(), "Ready")
-    })
-    .await;
-    assert_eq!(ready.0, "True", "{ready:?}");
-    Live {
-        _cluster: cluster,
-        client,
-        url,
-        token,
-        run,
-    }
+/// The harness fields the tests below use, owned.
+fn parts(l: &Live) -> (kube::Client, String, String, String) {
+    (
+        l.client.clone(),
+        l.url.clone(),
+        l.token.clone(),
+        l.run.clone(),
+    )
 }
 
 #[tokio::test]
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
-    let Live {
-        _cluster,
-        client,
-        url,
-        token,
-        run,
-    } = live().await;
+    let l = live().await;
+    let (client, url, token, run) = parts(&l);
     let username = format!("e2e-alice-{run}");
     let org_name = format!("e2e-org-{run}");
     let secrets: Api<Secret> = Api::namespaced(client.clone(), "default");
@@ -243,7 +144,8 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
 
     // What the operator did, read back through an independent gateway.
     let (api_base, web) = api::instance::split_urls(&url);
-    let fj = ForgejoHttpGateway::new(api_base, web, token, reqwest::Client::new());
+    let fj =
+        adapters_outbound::ForgejoHttpGateway::new(api_base, web, token, reqwest::Client::new());
     assert_eq!(
         fj.get_user(&username).await.unwrap().unwrap().full_name,
         "Alice"
@@ -275,24 +177,14 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
     assert!(secrets.get_opt("alice-forgejo").await.unwrap().is_none());
 }
 
-/// Deserializes a manifest-shaped JSON value into a CR.
-fn cr<K: serde::de::DeserializeOwned>(value: serde_json::Value) -> K {
-    serde_json::from_value(value).expect("manifest must match the CRD")
-}
-
 #[tokio::test]
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn operator_manages_repositories_hooks_and_keys_end_to_end() {
     use api::{ForgejoDeployKey, ForgejoRepository, ForgejoUserKey, ForgejoWebhook};
     use serde_json::json;
 
-    let Live {
-        _cluster,
-        client,
-        url,
-        token,
-        run,
-    } = live().await;
+    let l = live().await;
+    let (client, url, token, run) = parts(&l);
     let org_name = format!("e2e-rorg-{run}");
     let bot = format!("e2e-bot-{run}");
     let pp = PostParams::default();
@@ -365,7 +257,12 @@ async fn operator_manages_repositories_hooks_and_keys_end_to_end() {
 
     let fj = {
         let (api_base, web) = api::instance::split_urls(&url);
-        ForgejoHttpGateway::new(api_base, web, token.clone(), reqwest::Client::new())
+        adapters_outbound::ForgejoHttpGateway::new(
+            api_base,
+            web,
+            token.clone(),
+            reqwest::Client::new(),
+        )
     };
     let full = format!("{org_name}/app");
     let repo = fj.get_repository(repo_id).await.unwrap().unwrap();
@@ -479,13 +376,8 @@ async fn operator_issues_oauth2_credentials_and_tokens_end_to_end() {
     use api::{ForgejoAccessToken, ForgejoOAuth2Application};
     use serde_json::json;
 
-    let Live {
-        _cluster,
-        client,
-        url,
-        token: _,
-        run,
-    } = live().await;
+    let l = live().await;
+    let (client, url, _token, run) = parts(&l);
     let bot = format!("e2e-sso-{run}");
     let pp = PostParams::default();
     let users: Api<ForgejoUser> = Api::all(client.clone());

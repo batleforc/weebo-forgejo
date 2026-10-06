@@ -63,6 +63,9 @@ pub struct Outcome {
     pub secret_hash: Option<String>,
     /// New `status.lastRotation`, when a secret was (re)issued.
     pub last_rotation: Option<String>,
+    /// Reconcile again no later than this (seconds), when something is due
+    /// sooner than the steady-state requeue (a token's `rotationPeriod`).
+    pub due_in: Option<u64>,
 }
 
 impl Outcome {
@@ -73,6 +76,7 @@ impl Outcome {
             advisories: Vec::new(),
             secret_hash: None,
             last_rotation: None,
+            due_in: None,
         }
     }
 
@@ -83,6 +87,7 @@ impl Outcome {
             advisories: Vec::new(),
             secret_hash: None,
             last_rotation: None,
+            due_in: None,
         }
     }
 
