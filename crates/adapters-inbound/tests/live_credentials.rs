@@ -510,19 +510,13 @@ fn vault_log() -> std::path::PathBuf {
 }
 
 async fn vault_dev() -> VaultDev {
-    let dir = std::process::Command::new("mise")
-        .args(["where", "vault@latest"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8(o.stdout).unwrap().trim().to_string())
-        .expect("the vault binary comes from mise: `mise install vault@latest`");
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
-    let child = std::process::Command::new(format!("{dir}/vault"))
+    // From mise.toml: `mise install`, then run under `mise exec` (tasks do).
+    let child = std::process::Command::new("vault")
         .args([
             "server",
             "-dev",
@@ -535,7 +529,7 @@ async fn vault_dev() -> VaultDev {
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(vault_log()).unwrap())
         .spawn()
-        .expect("spawning vault server -dev");
+        .expect("spawning `vault server -dev`: is vault on PATH (mise install)?");
     let vault = VaultDev {
         child,
         addr: format!("http://127.0.0.1:{port}"),

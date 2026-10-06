@@ -24,6 +24,8 @@ trivy = "latest"
 go = "latest"
 etcd = "3.5.32"
 "aqua:kubernetes/kubernetes/kube-apiserver" = "1.36.2"
+# The real-Vault live test (crates/adapters-inbound/tests/live_credentials.rs)
+vault = "2.1.1"
 # CI / container / chart linting and the kind e2e
 actionlint = "latest"
 # actionlint shells out to shellcheck for every `run:` script
