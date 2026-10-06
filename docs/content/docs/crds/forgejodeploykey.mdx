@@ -1,0 +1,28 @@
+---
+title: ForgejoDeployKey
+description: An SSH deploy key on a `ForgejoRepository` (same namespace).
+---
+
+An SSH deploy key on a `ForgejoRepository` (same namespace). Without
+`publicKey`, the operator generates an ed25519 pair and writes the
+private half to `secretTargets` (`ssh-privatekey`, `ssh-publickey` — the
+`kubernetes.io/ssh-auth` key names). Keys are immutable in Forgejo: any
+change recreates the key.
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
+| `instanceRef` | `string` | no |  |  |
+| `publicKey` | `string` | no |  | An OpenSSH public key (`ssh-ed25519 AAAA... comment`). Unset: the operator generates an ed25519 pair. |
+| `readOnly` | `boolean` | no | `true` |  |
+| `repositoryRef` | `object` | yes |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw Forgejo name (see `.prompt/plan.md`, "Références"): a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
+| `secretTargets` | `object[]` | no |  | Destinations of a generated private key. Required when `publicKey` is unset; a target that disappears (or a new `forgejo.weebo.io/rotate-secret` nonce) generates a fresh pair. |
+| `title` | `string` | no |  | Defaults to the CR name. |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoDeployKey` YAML manifest.
+
+<CrdForm kind="ForgejoDeployKey" />

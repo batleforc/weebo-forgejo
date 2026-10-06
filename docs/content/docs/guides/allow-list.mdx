@@ -1,0 +1,55 @@
+---
+title: The allow-list
+description: ForgejoNamespacePolicy — which namespace may create what, where, for whom.
+---
+
+Cluster-scoped kinds (instances, users, organizations, teams, user keys)
+are governed by Kubernetes RBAC. The **namespaced** kinds — repositories,
+webhooks, deploy keys, OAuth2 applications, access tokens — are governed
+by `ForgejoNamespacePolicy`:
+
+- While **no** policy exists, everything is allowed.
+- As soon as **one** exists, it's default-deny: a CR is accepted only if
+  an `Allow` rule matches its namespace and kind, **and** covers every
+  organization and user it references; and no `Deny` rule matches.
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoNamespacePolicy
+metadata:
+  name: teams
+spec:
+  rules:
+    - namespaces: ["team-*"]            # exact, "*", or prefix glob
+      allowedKinds: [ForgejoRepository, ForgejoWebhook, ForgejoDeployKey]
+      allowedOrganizations: [weebo]     # unset = any
+    - namespaces: [team-a]
+      allowedKinds: [ForgejoAccessToken]
+      allowedUsers: [team-a-bot]        # unset = any — set it!
+    - namespaces: ["*"]
+      allowedKinds: [ForgejoAccessToken, ForgejoOAuth2Application]
+      allowedUsers: [admin-bot]
+      effect: Deny                      # deny always wins
+```
+
+What each kind references: a repository its owning organization or user;
+an organization webhook its organization; an OAuth2 application its owner;
+a token its user. Deploy keys and repository webhooks only reference a
+repository of their own namespace, itself checked.
+
+## Where it's enforced
+
+- **Admission webhook** on CREATE/UPDATE — never DELETE, so revoking a
+  namespace's access never strands the cleanup of what it already made.
+  `failurePolicy: Fail`: if the webhook is down, these kinds can't be
+  written.
+- **Every reconciler** re-checks before touching Forgejo, so tightening a
+  policy also stops existing CRs (`Ready: False`,
+  `NamespaceNotAllowed`), and a policy change re-reconciles them at once.
+
+A denied request reads:
+
+```text
+admission webhook "validate.forgejo.weebo.io" denied the request:
+no ForgejoNamespacePolicy rule allows AccessToken in namespace "team-b" with users ["admin-bot"]
+```

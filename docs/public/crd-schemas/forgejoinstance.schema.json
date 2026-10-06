@@ -1,0 +1,143 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoInstance",
+  "scope": "Cluster",
+  "description": "Connection to a real Forgejo server (v16 or later). Cluster-scoped — an\norg-wide, shared piece of infrastructure, not owned by a single\nnamespace. CRs without an `instanceRef` use the cluster's only\n`ForgejoInstance` (see `.prompt/plan.md`, \"Instance par défaut\").",
+  "properties": {
+    "secretStore": {
+      "default": {
+        "backend": "kubernetes"
+      },
+      "description": "Default destination of the secrets this instance's CRs emit (OAuth2\ncredentials, access tokens, generated passwords and deploy keys) when\na CR sets no `secretTargets`. Defaults to a Kubernetes `Secret`.",
+      "properties": {
+        "backend": {
+          "default": "kubernetes",
+          "enum": [
+            "kubernetes",
+            "vault"
+          ],
+          "type": "string"
+        },
+        "vault": {
+          "nullable": true,
+          "properties": {
+            "address": {
+              "description": "Vault server address, e.g. `https://vault.example.com:8200`.",
+              "type": "string"
+            },
+            "caSecretRef": {
+              "description": "Optional custom CA certificate to verify Vault's TLS with, read from\na Kubernetes `Secret` (the referenced `key` must hold a PEM bundle).\nUse this to trust a private CA without mounting\nit into the operator pod — the operator reads the Secret via the\nAPI and hands the PEM to its Vault client. When unset, the system\ntrust store is used. Only consulted for `https://` Vault addresses.",
+              "nullable": true,
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "namespace": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "name",
+                "namespace"
+              ],
+              "type": "object"
+            },
+            "kubernetesAuthMount": {
+              "default": "kubernetes",
+              "description": "Mount path of Vault's Kubernetes auth backend. Defaults to\n`kubernetes`, Vault's own default mount name.",
+              "type": "string"
+            },
+            "kubernetesAuthRole": {
+              "description": "Vault Kubernetes-auth role this operator authenticates as — its own\nServiceAccount JWT is exchanged for a Vault token via\n`auth/<kubernetesAuthMount>/login`.",
+              "type": "string"
+            },
+            "mount": {
+              "description": "KV v2 secrets engine mount (e.g. `secret`) credentials are written\nunder.",
+              "type": "string"
+            },
+            "pathPrefix": {
+              "default": "weebo-forgejo",
+              "description": "Path prefix under `mount` — the final KV path is\n`<pathPrefix>/<namespace>/<name>`, one secret per emitting CR\n(same convention as the Kubernetes backend's Secret naming).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "address",
+            "kubernetesAuthRole",
+            "mount"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "tls": {
+      "default": {
+        "insecureSkipVerify": false
+      },
+      "description": "TLS verification for the API connection above — a private CA to trust\n(`tls.caSecretRef`), or the `tls.insecureSkipVerify` escape hatch.\nDefaults to plain platform-trust-store verification.",
+      "properties": {
+        "caSecretRef": {
+          "description": "Optional custom CA certificate to verify Forgejo's TLS with, read\nfrom a Kubernetes `Secret` (the referenced `key` must hold a PEM\nbundle). Use this to trust a private CA without mounting it into the\noperator pod — the operator reads the Secret via the API and hands the\nPEM to its HTTP client. It is added *on top of* the platform trust\nstore, so publicly-signed endpoints keep working. When unset, only the\nplatform trust store (plus the usual `SSL_CERT_FILE`/`SSL_CERT_DIR`\nenv vars) is used.",
+          "nullable": true,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "name",
+            "namespace"
+          ],
+          "type": "object"
+        },
+        "insecureSkipVerify": {
+          "default": false,
+          "description": "Skip certificate verification entirely — insecure, intended only for\nthrowaway/self-signed instances. Prefer `caSecretRef` below, which\ntrusts a private CA without turning verification off.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "tokenSecretRef": {
+      "description": "`Secret` key holding an API token of a Forgejo **site admin**. The\noperator acts as that admin, and through the `Sudo` header as other\nusers for per-user objects (OAuth2 applications). The token needs the\nscopes covering every kind it manages — `write:admin`,\n`write:organization`, `write:repository`, `write:user` at least.\nRe-read on every gateway call, so rotating it needs no restart.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "namespace"
+      ],
+      "type": "object"
+    },
+    "url": {
+      "description": "Base web URL of the Forgejo instance, e.g. `https://git.example.com`\n— not the `/api/v1` REST endpoint, which is derived from it (see\n[`split_urls`]). Written as `FORGEJO_URL` into emitted secrets.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tokenSecretRef",
+    "url"
+  ],
+  "type": "object"
+}

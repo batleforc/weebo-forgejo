@@ -1,0 +1,105 @@
+---
+title: Repositories
+description: Repositories, mirrors, branch protection, team access, webhooks and deploy keys.
+---
+
+Repositories and what hangs off them are **namespaced**: they belong to
+the team owning the application, and the [allow-list](/docs/guides/allow-list)
+decides which organizations a namespace may use.
+
+## Creating a repository
+
+One of three ways, set at creation only:
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: app
+  namespace: team-a
+spec:
+  organizationRef: { name: weebo }   # or userRef
+  name: app
+  private: true
+  init: { readme: Default, license: MIT }
+  # fromTemplate: { repositoryRef: { name: service-template } }
+  # migrate: { cloneAddr: https://github.com/x/y.git, mirror: true, mirrorInterval: 8h,
+  #            authSecretRef: { name: github, tokenKey: token } }
+```
+
+- A template must be a `ForgejoRepository` of the same namespace with
+  `isTemplate: true`.
+- Migrations run synchronously inside Forgejo; the operator allows them
+  15 minutes.
+- `mirrorInterval` stays in sync after creation.
+
+## Settings and lifecycle
+
+Description, website, visibility, default branch and `units` (issues,
+wiki, pull requests, projects, releases, packages, actions — unset means
+Forgejo's default) are kept in sync.
+
+- **Rename**: change `spec.name` (Forgejo keeps a redirect).
+- **Transfer**: change the owner ref — needs the
+  `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
+- **Archive**: `archived: true`. An archived repository is left untouched
+  until unarchived.
+- **Delete**: the default `deletionPolicy: Orphan` keeps the repository
+  when the CR goes away.
+
+## Branch protection and team access
+
+```yaml
+spec:
+  teamRefs:
+    - name: weebo-devs
+  branchProtections:
+    - ruleName: main
+      enablePush: true
+      pushWhitelistTeams: [devs]
+      requiredApprovals: 1
+      statusCheckContexts: [ci/build]
+```
+
+Both lists are authoritative. `teamRefs` must belong to the owning
+organization; the `Owners` team and `includesAllRepositories` teams are
+always granted by Forgejo and left alone. Allow-lists name Forgejo users
+and teams directly — a team needs access to the repository to be kept in
+a push allow-list, which the operator ensures by syncing teams first.
+
+## Webhooks
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoWebhook
+metadata:
+  name: app-ci
+  namespace: team-a
+spec:
+  repositoryRef: { name: app }       # or organizationRef
+  url: https://ci.example.com/hooks/forgejo
+  events: [push, pull_request]
+  secretRef: { name: app-ci-webhook, key: hmac }
+```
+
+The HMAC secret is write-only in Forgejo; changing the Secret's value is
+detected (through `status.appliedSecretHash`) and pushed.
+
+## Deploy keys
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoDeployKey
+metadata:
+  name: app-ci
+  namespace: team-a
+spec:
+  repositoryRef: { name: app }
+  readOnly: true
+  secretTargets: [{ name: app-deploy-key }]
+```
+
+Without `publicKey`, an ed25519 pair is generated and the Secret gets
+`ssh-privatekey` / `ssh-publickey` (the `kubernetes.io/ssh-auth` names). A
+lost Secret or a new `forgejo.weebo.io/rotate-secret` value generates a
+fresh pair. `ForgejoUserKey` does the same for a user (e.g. a bot).

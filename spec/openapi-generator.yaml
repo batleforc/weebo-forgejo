@@ -1,0 +1,9 @@
+# openapi-generator `rust` options — see
+# https://openapi-generator.tech/docs/generators/rust
+packageName: forgejo-client
+library: reqwest
+supportAsync: true
+# One builder-free params struct per operation keeps call sites readable
+# despite Forgejo's long positional parameter lists (repo search has 20+).
+useSingleRequestParameter: true
+preferUnsignedInt: false

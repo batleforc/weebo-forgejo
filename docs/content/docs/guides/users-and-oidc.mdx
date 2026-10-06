@@ -1,0 +1,78 @@
+---
+title: Users, OIDC and teams
+description: The three ForgejoUser modes, OIDC accounts, organizations and teams.
+---
+
+## Three kinds of users
+
+| Mode | Spec | Password |
+| --- | --- | --- |
+| **External** (OIDC, LDAP...) | `loginSourceId` (+ `loginName`) | none — Forgejo links the account at first login |
+| **Local** | no `loginSourceId` | generated, written to `secretTargets` (reset if the Secret disappears) |
+| **Bot** | `bot: true` | generated and discarded: the account only works through its tokens and SSH keys |
+| **Observed** | `managementPolicy: Observe` | the operator never creates, edits or deletes it |
+
+`loginSourceId` is the numeric id shown in *Site administration →
+Authentication sources*: Forgejo has no API to look sources up by name.
+Authentication sources themselves are configured on Forgejo (its Helm
+chart's `gitea.oauth`, or `forgejo admin auth add-oauth`), not by the
+operator.
+
+<Callout type="warn">
+A bot never gets `prohibit_login` or `must_change_password`: Forgejo then
+refuses the account's API tokens too. Use `prohibitLogin: true` only to
+disable an account entirely.
+</Callout>
+
+## People who log in with OIDC
+
+Two ways to put them in teams:
+
+- **Pre-provision** them (external mode) when you know them in advance.
+- **Observe** them: Forgejo creates the account at first login; the CR
+  shows `UserNotFound` until then. A team listing them reports
+  `MemberPending` while syncing its other members — and adds them as soon
+  as they appear.
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: carol
+spec:
+  username: carol
+  managementPolicy: Observe
+```
+
+## Organizations and teams
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoOrganization
+metadata:
+  name: weebo
+spec:
+  name: weebo
+  visibility: private
+  ownerRef: { name: alice }      # first owner, creation time only
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoTeam
+metadata:
+  name: weebo-devs
+spec:
+  organizationRef: { name: weebo }
+  name: devs
+  permission: write              # unitsMap empty = every unit at this level
+  memberRefs:
+    - name: alice
+    - name: carol
+```
+
+`memberRefs` is authoritative: anyone else is removed. Renaming
+`spec.name` renames in place; moving a team to another organization
+recreates it and needs the `forgejo.weebo.io/allow-disruptive-update:
+"true"` annotation.
+
+Users and organizations default to `deletionPolicy: Orphan` (deleting the
+CR never deletes an account or its history); teams to `Delete`.

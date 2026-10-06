@@ -1,0 +1,33 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "weebo-forgejo.fullname" . }}
+  labels:
+    {{- include "weebo-forgejo.labels" . | nindent 4 }}
+  annotations:
+    # cert-manager's CA injector fills caBundle from the Certificate.
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "weebo-forgejo.fullname" . }}-webhook
+webhooks:
+  - name: validate.forgejo.weebo.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    matchPolicy: Equivalent
+    clientConfig:
+      service:
+        name: {{ include "weebo-forgejo.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate
+        port: {{ .Values.webhook.servicePort }}
+    rules:
+      # CREATE/UPDATE only, never DELETE: revoking a namespace's access must
+      # never block the finalizer cleanup of what it already created.
+      - apiGroups: ["forgejo.weebo.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources:
+          - forgejorepositories
+          - forgejowebhooks
+          - forgejodeploykeys
+          - forgejooauth2applications
+          - forgejoaccesstokens

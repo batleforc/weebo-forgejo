@@ -1,0 +1,144 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoUser",
+  "scope": "Cluster",
+  "description": "A Forgejo user, in one of three modes (see `.prompt/plan.md`,\n\"ForgejoUser : trois modes\"):\n\n- **external** — `loginSourceId` set: the account is pre-provisioned\n  against an authentication source (e.g. Authentik over OIDC) and linked\n  on the person's first login. No password.\n- **local** — no `loginSourceId`: a random password is generated and\n  written to `secretTargets`. With `bot: true` the password is generated\n  and never stored anywhere: nobody can use it, and the account works\n  only through its tokens and SSH keys.\n- **observed** — `managementPolicy: Observe`: the user is never created,\n  modified or deleted, only resolved by `username` so other CRs can\n  reference an account Forgejo auto-created at OIDC login.",
+  "properties": {
+    "active": {
+      "default": true,
+      "type": "boolean"
+    },
+    "admin": {
+      "default": false,
+      "description": "Site administrator.",
+      "type": "boolean"
+    },
+    "allowCreateOrganization": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "bot": {
+      "default": false,
+      "description": "Service account: its password is random and never emitted, so it is\nonly usable through `ForgejoAccessToken`s and `ForgejoUserKey`s.\n(Not `prohibitLogin`: Forgejo refuses a prohibited account's API\ntokens too.)",
+      "type": "boolean"
+    },
+    "deletionPolicy": {
+      "default": "Orphan",
+      "description": "Defaults to `Orphan`: deleting the CR keeps the account and the\nattribution of everything it authored. Users are never purged.",
+      "enum": [
+        "Delete",
+        "Orphan"
+      ],
+      "type": "string"
+    },
+    "email": {
+      "description": "Required unless `managementPolicy: Observe`.",
+      "nullable": true,
+      "type": "string"
+    },
+    "fullName": {
+      "nullable": true,
+      "type": "string"
+    },
+    "instanceRef": {
+      "description": "`ForgejoInstance` to manage this user in. Defaults to the cluster's\nonly instance.",
+      "nullable": true,
+      "type": "string"
+    },
+    "loginName": {
+      "description": "Identity of the account at the authentication source (for OIDC, the\n`sub` claim or the configured username claim). Defaults to\n`username`. Only used with `loginSourceId`.",
+      "nullable": true,
+      "type": "string"
+    },
+    "loginSourceId": {
+      "description": "ID of the Forgejo authentication source (Site administration →\nAuthentication sources) the account logs in through. Forgejo has no\nAPI to list sources, so this is the numeric id, not its name.",
+      "format": "int64",
+      "nullable": true,
+      "type": "integer"
+    },
+    "managementPolicy": {
+      "default": "Manage",
+      "description": "Whether the operator owns the Forgejo object or only looks it up.",
+      "enum": [
+        "Manage",
+        "Observe"
+      ],
+      "type": "string"
+    },
+    "maxRepoCreation": {
+      "description": "`-1` uses the instance default.",
+      "format": "int64",
+      "nullable": true,
+      "type": "integer"
+    },
+    "mustChangePassword": {
+      "description": "Force a password change at first login. Local, non-bot users only;\ndefaults to `true`. Until it's changed, Forgejo also refuses the\naccount's API tokens.",
+      "nullable": true,
+      "type": "boolean"
+    },
+    "prohibitLogin": {
+      "default": false,
+      "description": "Disable the account entirely — web, git and API tokens alike.",
+      "type": "boolean"
+    },
+    "restricted": {
+      "default": false,
+      "description": "Restricted users only see what they are explicitly granted.",
+      "type": "boolean"
+    },
+    "secretTargets": {
+      "description": "Where the generated password of a local, non-bot user is written\n(`FORGEJO_USERNAME`, `FORGEJO_PASSWORD`, `FORGEJO_URL`). Required for\nthose users; ignored otherwise. A target deleted later triggers a\npassword reset, since the old value can't be read back.",
+      "items": {
+        "description": "Where an emitted secret (generated password or key, OAuth2 credentials,\naccess token) is written. A CR may list several targets — the same\nvalue is fanned out to each.",
+        "properties": {
+          "backend": {
+            "default": "kubernetes",
+            "description": "`kubernetes` (default) or `vault`. A Vault target reuses the\nconnection (address, mount, auth) of the `ForgejoInstance`'s\n`secretStore.vault`, which must then be set.",
+            "enum": [
+              "kubernetes",
+              "vault"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Kubernetes: the `Secret` name. Vault: names the default path\n`<pathPrefix>/<namespace>/<name>` when `path` is unset.",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Kubernetes `Secret` namespace (Vault: the namespace segment of the\ndefault path). Defaults to the CR's own namespace; required on\ncluster-scoped CRs.",
+            "nullable": true,
+            "type": "string"
+          },
+          "path": {
+            "description": "Vault only: explicit KV v2 path under the instance's mount.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "username": {
+      "description": "Forgejo login. Changing it renames the account in place.",
+      "type": "string"
+    },
+    "visibility": {
+      "default": "public",
+      "description": "Visibility of a Forgejo user or organization.",
+      "enum": [
+        "public",
+        "private",
+        "limited"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "username"
+  ],
+  "type": "object"
+}

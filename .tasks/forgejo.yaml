@@ -1,0 +1,82 @@
+version: "3"
+
+# Dev-env helpers for the `forgejo` sidecar defined in devfile.yaml, kept
+# idle (sleep infinity) so its SQLite data can be wiped without Forgejo
+# running on top of it. Requires kubectl and exec permission on this
+# workspace's own pod.
+#
+# POD is a per-task var, never a taskfile-global one: go-task evaluates a
+# global `sh:` var whenever the Taskfile tree loads — including for `task
+# lint` in CI, where there is no workspace pod and kubectl would fail the
+# whole run.
+
+vars:
+  CONTAINER: forgejo
+  ADMIN_USER: fjadmin
+  # Dev-only credentials for a throwaway SQLite instance.
+  ADMIN_PASSWORD: dev-only-insecure-password-change-me
+  CONFIG: /var/lib/gitea/custom/conf/app.ini
+
+tasks:
+  start:
+    desc: "Start Forgejo in the background inside the forgejo sidecar (http://localhost:3000)"
+    vars:
+      POD:
+        sh: kubectl get pod -l controller.devfile.io/devworkspace_name=$WORKSPACE_NAME -o jsonpath='{.items[0].metadata.name}'
+    cmds:
+      - >-
+        kubectl exec -c {{.CONTAINER}} "{{.POD}}" --
+        sh -c 'test -f /tmp/forgejo.pid && kill -0 "$(cat /tmp/forgejo.pid)" 2>/dev/null && { echo "already running"; exit 0; };
+        nohup /usr/bin/dumb-init -- /usr/local/bin/docker-entrypoint.sh >/tmp/forgejo.log 2>&1 & echo $! >/tmp/forgejo.pid'
+      - |
+        for i in $(seq 1 60); do
+          curl -fsS http://localhost:3000/api/v1/version && echo && exit 0
+          sleep 1
+        done
+        echo "Forgejo did not answer within 60s, see: task forgejo:logs" >&2
+        exit 1
+
+  bootstrap:
+    desc: "Create the dev site admin and print an all-scope API token for a ForgejoInstance tokenSecretRef"
+    vars:
+      POD:
+        sh: kubectl get pod -l controller.devfile.io/devworkspace_name=$WORKSPACE_NAME -o jsonpath='{.items[0].metadata.name}'
+    cmds:
+      - >-
+        kubectl exec -c {{.CONTAINER}} "{{.POD}}" --
+        forgejo --config {{.CONFIG}} admin user create --admin
+        --username {{.ADMIN_USER}} --password '{{.ADMIN_PASSWORD}}'
+        --email {{.ADMIN_USER}}@weebo.local --must-change-password=false
+        || echo "admin already exists, generating a new token only"
+      - >-
+        kubectl exec -c {{.CONTAINER}} "{{.POD}}" --
+        forgejo --config {{.CONFIG}} admin user generate-access-token
+        --username {{.ADMIN_USER}} --token-name "operator-$(date +%s)" --scopes all --raw
+
+  logs:
+    desc: "Tail the sidecar Forgejo's log"
+    vars:
+      POD:
+        sh: kubectl get pod -l controller.devfile.io/devworkspace_name=$WORKSPACE_NAME -o jsonpath='{.items[0].metadata.name}'
+    cmds:
+      - kubectl exec -c {{.CONTAINER}} "{{.POD}}" -- tail -n 100 -f /tmp/forgejo.log
+
+  stop:
+    desc: "Stop the background Forgejo started by forgejo:start"
+    vars:
+      POD:
+        sh: kubectl get pod -l controller.devfile.io/devworkspace_name=$WORKSPACE_NAME -o jsonpath='{.items[0].metadata.name}'
+    cmds:
+      - >-
+        kubectl exec -c {{.CONTAINER}} "{{.POD}}" --
+        sh -c 'test -f /tmp/forgejo.pid && kill "$(cat /tmp/forgejo.pid)" && rm -f /tmp/forgejo.pid || echo "not running"'
+
+  wipe:
+    desc: "Delete the sidecar's SQLite database and repositories (stop Forgejo first)"
+    vars:
+      POD:
+        sh: kubectl get pod -l controller.devfile.io/devworkspace_name=$WORKSPACE_NAME -o jsonpath='{.items[0].metadata.name}'
+    cmds:
+      - >-
+        kubectl exec -c {{.CONTAINER}} "{{.POD}}" --
+        sh -c 'rm -rf /var/lib/gitea/data /var/lib/gitea/git'

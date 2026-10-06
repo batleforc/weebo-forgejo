@@ -1,0 +1,28 @@
+---
+title: ForgejoOrganization
+description: A Forgejo organization.
+---
+
+A Forgejo organization.
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR never deletes the organization (Forgejo also refuses while it still owns repos). |
+| `description` | `string` | no |  |  |
+| `email` | `string` | no |  |  |
+| `fullName` | `string` | no |  |  |
+| `instanceRef` | `string` | no |  |  |
+| `location` | `string` | no |  |  |
+| `name` | `string` | yes |  | Organization name (its URL slug). Changing it renames in place. |
+| `ownerRef` | `object` | no |  | `ForgejoUser` that becomes the organization's first owner. Only read at creation; without it the operator's admin account owns it. |
+| `repoAdminChangeTeamAccess` | `boolean` | no | `false` | Let repository admins change which teams can access their repo. |
+| `visibility` | `string` | no | `"public"` | Visibility of a Forgejo user or organization. |
+| `website` | `string` | no |  |  |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoOrganization` YAML manifest.
+
+<CrdForm kind="ForgejoOrganization" />

@@ -1,0 +1,50 @@
+---
+title: ForgejoUser
+description: >-
+  A Forgejo user, in one of three modes (see `.prompt/plan.md`, "ForgejoUser :
+  trois modes"): - **external** — `loginSourceId` set: the account is
+  pre-provisioned against an authentication source (e.g.
+---
+
+A Forgejo user, in one of three modes (see `.prompt/plan.md`,
+"ForgejoUser : trois modes"):
+
+- **external** — `loginSourceId` set: the account is pre-provisioned
+  against an authentication source (e.g. Authentik over OIDC) and linked
+  on the person's first login. No password.
+- **local** — no `loginSourceId`: a random password is generated and
+  written to `secretTargets`. With `bot: true` the password is generated
+  and never stored anywhere: nobody can use it, and the account works
+  only through its tokens and SSH keys.
+- **observed** — `managementPolicy: Observe`: the user is never created,
+  modified or deleted, only resolved by `username` so other CRs can
+  reference an account Forgejo auto-created at OIDC login.
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `active` | `boolean` | no | `true` |  |
+| `admin` | `boolean` | no | `false` | Site administrator. |
+| `allowCreateOrganization` | `boolean` | no |  |  |
+| `bot` | `boolean` | no | `false` | Service account: its password is random and never emitted, so it is only usable through `ForgejoAccessToken`s and `ForgejoUserKey`s. (Not `prohibitLogin`: Forgejo refuses a prohibited account's API tokens too.) |
+| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR keeps the account and the attribution of everything it authored. Users are never purged. |
+| `email` | `string` | no |  | Required unless `managementPolicy: Observe`. |
+| `fullName` | `string` | no |  |  |
+| `instanceRef` | `string` | no |  | `ForgejoInstance` to manage this user in. Defaults to the cluster's only instance. |
+| `loginName` | `string` | no |  | Identity of the account at the authentication source (for OIDC, the `sub` claim or the configured username claim). Defaults to `username`. Only used with `loginSourceId`. |
+| `loginSourceId` | `integer` | no |  | ID of the Forgejo authentication source (Site administration → Authentication sources) the account logs in through. Forgejo has no API to list sources, so this is the numeric id, not its name. |
+| `managementPolicy` | `string` | no | `"Manage"` | Whether the operator owns the Forgejo object or only looks it up. |
+| `maxRepoCreation` | `integer` | no |  | `-1` uses the instance default. |
+| `mustChangePassword` | `boolean` | no |  | Force a password change at first login. Local, non-bot users only; defaults to `true`. Until it's changed, Forgejo also refuses the account's API tokens. |
+| `prohibitLogin` | `boolean` | no | `false` | Disable the account entirely — web, git and API tokens alike. |
+| `restricted` | `boolean` | no | `false` | Restricted users only see what they are explicitly granted. |
+| `secretTargets` | `object[]` | no |  | Where the generated password of a local, non-bot user is written (`FORGEJO_USERNAME`, `FORGEJO_PASSWORD`, `FORGEJO_URL`). Required for those users; ignored otherwise. A target deleted later triggers a password reset, since the old value can't be read back. |
+| `username` | `string` | yes |  | Forgejo login. Changing it renames the account in place. |
+| `visibility` | `string` | no | `"public"` | Visibility of a Forgejo user or organization. |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoUser` YAML manifest.
+
+<CrdForm kind="ForgejoUser" />

@@ -1,0 +1,68 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoNamespacePolicy",
+  "scope": "Cluster",
+  "description": "Namespace allow-list for the namespaced kinds, enforced by the\nadmission webhook (CREATE/UPDATE) and re-checked by every reconciler.\n\nWhile no `ForgejoNamespacePolicy` exists, everything is allowed. As soon\nas one exists, a namespaced CR is only accepted if some `Allow` rule\nmatches its namespace and kind and covers the organizations and users it\nreferences — and no `Deny` rule matches. Rules of every policy are\npooled; deny always wins.",
+  "properties": {
+    "rules": {
+      "items": {
+        "properties": {
+          "allowedKinds": {
+            "items": {
+              "enum": [
+                "ForgejoRepository",
+                "ForgejoWebhook",
+                "ForgejoDeployKey",
+                "ForgejoOAuth2Application",
+                "ForgejoAccessToken"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allowedOrganizations": {
+            "description": "`ForgejoOrganization`s (CR names) the namespace may reference —\nowner of its repositories, target of its org webhooks. Unset: any.\nOn a `Deny` rule: only deny requests referencing one of these.",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "allowedUsers": {
+            "description": "`ForgejoUser`s (CR names) the namespace may reference — owner of a\nrepository or OAuth2 application, holder of an access token. Unset:\nany. Restricting this is what stops a namespace from minting tokens\nfor a privileged account. On a `Deny` rule: only deny requests\nreferencing one of these.",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "effect": {
+            "default": "Allow",
+            "enum": [
+              "Allow",
+              "Deny"
+            ],
+            "type": "string"
+          },
+          "namespaces": {
+            "description": "Namespace names, `*` for all, or a prefix glob like `team-*`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "allowedKinds",
+          "namespaces"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "rules"
+  ],
+  "type": "object"
+}

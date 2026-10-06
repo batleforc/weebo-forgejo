@@ -1,0 +1,290 @@
+//! Layer-3: repository, webhook and deploy-key controllers on a real
+//! apiserver, wired to the organization/team controllers they reference.
+
+mod support;
+
+use std::collections::BTreeMap;
+
+use adapters_inbound::controller;
+use api::common::{DeletionPolicy, LocalSecretKeyRef, ObjectRef, SecretTarget, Visibility};
+use api::keys::{ForgejoDeployKeySpec, KeySource};
+use api::organization::ForgejoOrganizationSpec;
+use api::repository::{BranchProtection, ForgejoRepositorySpec};
+use api::team::{ForgejoTeamSpec, TeamPermission};
+use api::webhook::ForgejoWebhookSpec;
+use api::{ForgejoDeployKey, ForgejoOrganization, ForgejoRepository, ForgejoTeam, ForgejoWebhook};
+use k8s_openapi::api::core::v1::Secret;
+use kube::api::{Api, ObjectMeta, PostParams};
+use support::{condition, harness, wait_for, wait_for_absence};
+
+const NS: &str = "default";
+
+fn meta(name: &str) -> ObjectMeta {
+    ObjectMeta {
+        name: Some(name.into()),
+        ..Default::default()
+    }
+}
+
+fn id_when_ready(status: Option<&api::ForgejoStatus>) -> Option<i64> {
+    (condition(status, "Ready")?.0 == "True").then_some(())?;
+    status?.forgejo_id.as_ref()?.parse().ok()
+}
+
+async fn org_and_team(client: &kube::Client) {
+    let orgs: Api<ForgejoOrganization> = Api::all(client.clone());
+    orgs.create(
+        &PostParams::default(),
+        &ForgejoOrganization {
+            metadata: meta("weebo"),
+            spec: ForgejoOrganizationSpec {
+                instance_ref: None,
+                name: "weebo".into(),
+                full_name: None,
+                description: None,
+                website: None,
+                location: None,
+                email: None,
+                visibility: Visibility::Public,
+                repo_admin_change_team_access: false,
+                owner_ref: None,
+                deletion_policy: DeletionPolicy::Orphan,
+            },
+            status: None,
+        },
+    )
+    .await
+    .unwrap();
+    let teams: Api<ForgejoTeam> = Api::all(client.clone());
+    teams
+        .create(
+            &PostParams::default(),
+            &ForgejoTeam {
+                metadata: meta("weebo-devs"),
+                spec: ForgejoTeamSpec {
+                    instance_ref: None,
+                    organization_ref: ObjectRef {
+                        name: "weebo".into(),
+                    },
+                    name: "devs".into(),
+                    description: None,
+                    permission: TeamPermission::Write,
+                    units_map: Default::default(),
+                    includes_all_repositories: false,
+                    can_create_org_repo: false,
+                    member_refs: vec![],
+                    deletion_policy: DeletionPolicy::Delete,
+                },
+                status: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+fn repo_spec() -> ForgejoRepositorySpec {
+    ForgejoRepositorySpec {
+        instance_ref: None,
+        organization_ref: Some(ObjectRef {
+            name: "weebo".into(),
+        }),
+        user_ref: None,
+        name: "app".into(),
+        description: Some("demo".into()),
+        website: None,
+        private: true,
+        is_template: false,
+        archived: false,
+        default_branch: None,
+        units: Default::default(),
+        init: Some(Default::default()),
+        from_template: None,
+        migrate: None,
+        branch_protections: vec![BranchProtection {
+            rule_name: "main".into(),
+            required_approvals: 1,
+            push_whitelist_teams: vec!["devs".into()],
+            enable_push: true,
+            ..Default::default()
+        }],
+        team_refs: vec![ObjectRef {
+            name: "weebo-devs".into(),
+        }],
+        deletion_policy: DeletionPolicy::Orphan,
+    }
+}
+
+#[tokio::test]
+async fn repository_with_team_hook_and_generated_deploy_key() {
+    let h = harness().await;
+    let (c, ctx) = (&h.client, &h.ctx);
+    tokio::spawn(controller::organization::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::team::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::repository::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::webhook::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::deploy_key::run(c.clone(), ctx.clone()));
+    org_and_team(&h.client).await;
+
+    let repos: Api<ForgejoRepository> = Api::namespaced(h.client.clone(), NS);
+    repos
+        .create(
+            &PostParams::default(),
+            &ForgejoRepository {
+                metadata: meta("app"),
+                spec: repo_spec(),
+                status: None,
+            },
+        )
+        .await
+        .unwrap();
+    let repo_id = wait_for(&repos, "app", |r| id_when_ready(r.status.as_ref())).await;
+    let repo = h.forgejo.repo(repo_id).unwrap();
+    assert_eq!(
+        (repo.owner.as_str(), repo.name.as_str(), repo.private),
+        ("weebo", "app", true)
+    );
+    assert_eq!(h.forgejo.repo_teams(repo_id), vec!["devs"]);
+    assert_eq!(
+        h.forgejo.protections(repo_id)[0].push_whitelist_teams,
+        vec!["devs"]
+    );
+
+    // Webhook with an HMAC secret from a Secret in the same namespace.
+    let secrets: Api<Secret> = Api::namespaced(h.client.clone(), NS);
+    secrets
+        .create(
+            &PostParams::default(),
+            &serde_json::from_value(serde_json::json!({
+                "metadata": {"name": "hook-secret"},
+                "stringData": {"hmac": "k1"},
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let hooks: Api<ForgejoWebhook> = Api::namespaced(h.client.clone(), NS);
+    hooks
+        .create(
+            &PostParams::default(),
+            &ForgejoWebhook {
+                metadata: meta("ci"),
+                spec: ForgejoWebhookSpec {
+                    instance_ref: None,
+                    repository_ref: Some(ObjectRef { name: "app".into() }),
+                    organization_ref: None,
+                    type_: "forgejo".into(),
+                    url: "https://ci.example.com/hook".into(),
+                    content_type: "json".into(),
+                    http_method: None,
+                    events: vec!["push".into()],
+                    branch_filter: None,
+                    active: true,
+                    secret_ref: Some(LocalSecretKeyRef {
+                        name: "hook-secret".into(),
+                        key: "hmac".into(),
+                    }),
+                    authorization_header_secret_ref: None,
+                    extra_config: BTreeMap::new(),
+                    deletion_policy: DeletionPolicy::Delete,
+                },
+                status: None,
+            },
+        )
+        .await
+        .unwrap();
+    let hook_id = wait_for(&hooks, "ci", |h| id_when_ready(h.status.as_ref())).await;
+    assert_eq!(h.forgejo.hook(hook_id).unwrap().1["secret"], "k1");
+    let hook = hooks.get("ci").await.unwrap();
+    assert_eq!(
+        hook.status.as_ref().unwrap().forgejo_name.as_deref(),
+        Some("repo:weebo/app")
+    );
+    assert!(hook.status.unwrap().applied_secret_hash.is_some());
+
+    // Generated deploy key: private half lands in a Secret.
+    let keys: Api<ForgejoDeployKey> = Api::namespaced(h.client.clone(), NS);
+    keys.create(
+        &PostParams::default(),
+        &ForgejoDeployKey {
+            metadata: meta("ci-key"),
+            spec: ForgejoDeployKeySpec {
+                instance_ref: None,
+                repository_ref: ObjectRef { name: "app".into() },
+                title: None,
+                read_only: true,
+                key: KeySource {
+                    public_key: None,
+                    secret_targets: vec![SecretTarget {
+                        backend: Default::default(),
+                        name: "ci-key".into(),
+                        namespace: None,
+                        path: None,
+                    }],
+                },
+                deletion_policy: DeletionPolicy::Delete,
+            },
+            status: None,
+        },
+    )
+    .await
+    .unwrap();
+    let key_id = wait_for(&keys, "ci-key", |k| id_when_ready(k.status.as_ref())).await;
+    let secret = secrets.get("ci-key").await.unwrap();
+    let data = secret.data.unwrap();
+    let public = String::from_utf8(data["ssh-publickey"].0.clone()).unwrap();
+    assert_eq!(h.forgejo.key(key_id).unwrap().key, public);
+    assert_eq!(h.forgejo.key(key_id).unwrap().title, "ci-key");
+
+    // Teardown: hook and key are deleted, the repository is orphaned.
+    hooks.delete("ci", &Default::default()).await.unwrap();
+    keys.delete("ci-key", &Default::default()).await.unwrap();
+    wait_for_absence(&hooks, "ci").await;
+    wait_for_absence(&keys, "ci-key").await;
+    assert!(h.forgejo.hook(hook_id).is_none());
+    assert!(h.forgejo.key(key_id).is_none());
+    assert!(secrets.get_opt("ci-key").await.unwrap().is_none());
+
+    repos.delete("app", &Default::default()).await.unwrap();
+    wait_for_absence(&repos, "app").await;
+    assert!(
+        h.forgejo.repo(repo_id).is_some(),
+        "repositories default to Orphan"
+    );
+}
+
+#[tokio::test]
+async fn repository_waits_for_its_team() {
+    let h = harness().await;
+    tokio::spawn(controller::repository::run(h.client.clone(), h.ctx.clone()));
+    tokio::spawn(controller::organization::run(
+        h.client.clone(),
+        h.ctx.clone(),
+    ));
+
+    let repos: Api<ForgejoRepository> = Api::namespaced(h.client.clone(), NS);
+    repos
+        .create(
+            &PostParams::default(),
+            &ForgejoRepository {
+                metadata: meta("app"),
+                spec: repo_spec(),
+                status: None,
+            },
+        )
+        .await
+        .unwrap();
+    // No team controller runs: the team CR exists but never becomes ready,
+    // and the repository says so instead of being created without it.
+    org_and_team(&h.client).await;
+    let blocked = wait_for(&repos, "app", |r| {
+        condition(r.status.as_ref(), "Ready").filter(|c| c.1 == "ReferenceNotReady")
+    })
+    .await;
+    assert_eq!(blocked.0, "False");
+    assert!(
+        h.forgejo
+            .calls()
+            .iter()
+            .all(|c| !c.starts_with("create_repository"))
+    );
+}

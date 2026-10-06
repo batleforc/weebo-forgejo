@@ -1,0 +1,12 @@
+target
+.git
+.github
+.forgejo
+.claude
+.prompt
+.tasks
+deploy
+docs
+spec
+graphify-out
+*.md

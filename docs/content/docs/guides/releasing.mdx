@@ -1,0 +1,59 @@
+---
+title: Releasing
+description: How a version is bumped, what gets published, and the checks that guard it.
+---
+
+Versions come from the commit history: commits follow Conventional
+Commits (enforced by [cocogitto](https://docs.cocogitto.io/) on every
+commit), and `cog bump --auto` derives the next version from them.
+
+## What a release produces
+
+For a tag `vX.Y.Z`, `publish.yml` pushes:
+
+| Artifact | Where |
+| --- | --- |
+| Operator image (distroless) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (+ `latest`) |
+| Operator image (Red Hat hardened) | `…:vX.Y.Z-hardened` (+ `hardened`) |
+| Helm chart | `oci://ghcr.io/batleforc/charts/weebo-forgejo`, version `X.Y.Z` |
+
+Both images also contain `weebo-forgejo-importer`
+([Migrating](/docs/guides/migration)). `latest`/`hardened` only move when
+the tag is the highest version. Each pushed image is scanned by trivy
+(HIGH/CRITICAL fail the job) and smoke-run before the job succeeds.
+
+## Bumping
+
+`cog bump` runs `.hooks/bump-versions.sh`, which writes the version into
+`Cargo.toml` (`[workspace.package]`), `Cargo.lock` and `Chart.yaml`
+(`version` and `appVersion`), commits, tags and updates `CHANGELOG.md`.
+
+**Locally (signed commits)** — the default when `main` requires signed
+commits:
+
+```bash
+cog bump --auto --dry-run   # shows the next version
+cog bump --auto             # bump commit + tag, signed by your git config
+git push origin main --follow-tags
+```
+
+The pushed tag triggers `publish.yml`.
+
+**From GitHub** — run the *Release* workflow manually. It bumps with the
+workflow's token, pushes the commit and tag, then calls `publish.yml` for
+that tag (a tag pushed with the workflow token triggers no other
+workflow). This only works if `main` accepts the bot's unsigned commit.
+
+To publish an existing tag again (e.g. after a registry hiccup), run
+`publish.yml` manually with that tag.
+
+## Before releasing
+
+| Check | Where |
+| --- | --- |
+| Lint, unit, contract and envtest tests, generated files up to date, chart lint, audit, both images build and run | `ci.yml`, every push |
+| kind end to end with both images: golden path, admission denials, leader failover, deletion policies | `e2e.yml`, weekly and on demand — run it before a release |
+| Against a real Forgejo: gateway, controllers, importer | `task test:live-forgejo` |
+
+The kind e2e runs locally too with a working container engine:
+`task e2e` (`ENGINE=podman` to build with podman).

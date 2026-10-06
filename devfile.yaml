@@ -1,5 +1,57 @@
 schemaVersion: 2.3.0
 metadata:
-  name: weebo-base
+  name: weebo-forgejo
 parent:
   uri: https://raw.githubusercontent.com/batleforc/WeeboDevImage/refs/heads/main/che-min-mise/devfile.yaml
+components:
+  - name: forgejo-data
+    volume:
+      size: 2Gi
+  # Throwaway Forgejo the operator is developed against. Kept idle (sleep
+  # infinity instead of its entrypoint) so the SQLite data can be wiped
+  # without Forgejo running on top of it: `task forgejo:start`, then
+  # `task forgejo:bootstrap` for an admin + API token (.tasks/forgejo.yaml).
+  #
+  # Sidecars share the pod's network namespace, so the operator reaches it
+  # on http://localhost:3000 — no per-container DNS name exists.
+  - name: forgejo
+    container:
+      # Pinned to the release the client is generated from (spec/, see
+      # .tasks/gen.yaml) — bump both together.
+      image: codeberg.org/forgejo/forgejo:16.0.5-rootless
+      command:
+        - sleep
+      args:
+        - infinity
+      memoryLimit: 1Gi
+      memoryRequest: 256Mi
+      cpuLimit: 500m
+      cpuRequest: 100m
+      env:
+        # Che runs containers under an arbitrary uid with no passwd entry;
+        # Forgejo refuses to start when the current user doesn't match
+        # RUN_USER and falls back to $USER for that check.
+        - name: USER
+          value: git
+        # The image's default /etc/gitea is not writable by that uid; keep
+        # the generated app.ini on the volume next to the data instead.
+        - name: GITEA_APP_INI
+          value: /var/lib/gitea/custom/conf/app.ini
+        - name: ROOT_URL
+          value: http://localhost:3000/
+        - name: DISABLE_SSH
+          value: "true"
+        - name: DB_TYPE
+          value: sqlite3
+        # Setting SECRET_KEY makes the image's setup script set
+        # INSTALL_LOCK=true, skipping the web install wizard.
+        - name: SECRET_KEY
+          value: dev-only-insecure-secret-key-change-me
+      volumeMounts:
+        - name: forgejo-data
+          path: /var/lib/gitea
+      endpoints:
+        - name: forgejo
+          targetPort: 3000
+          exposure: internal
+          protocol: http

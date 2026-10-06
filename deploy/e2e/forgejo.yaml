@@ -1,0 +1,76 @@
+# Disposable Forgejo for the kind e2e (deploy/e2e/run.sh): rootless image,
+# SQLite on an emptyDir, install page locked. Never use this anywhere else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forgejo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forgejo
+  namespace: forgejo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: forgejo
+  template:
+    metadata:
+      labels:
+        app: forgejo
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: forgejo
+          image: codeberg.org/forgejo/forgejo:16-rootless
+          env:
+            - name: FORGEJO__security__INSTALL_LOCK
+              value: "true"
+            - name: FORGEJO__database__DB_TYPE
+              value: sqlite3
+            - name: FORGEJO__server__ROOT_URL
+              value: http://forgejo.forgejo.svc:3000/
+            # The e2e webhooks point at an in-cluster URL.
+            - name: FORGEJO__webhook__ALLOWED_HOST_LIST
+              value: "*"
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/gitea
+            - name: config
+              mountPath: /etc/gitea
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forgejo
+  namespace: forgejo
+spec:
+  selector:
+    app: forgejo
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

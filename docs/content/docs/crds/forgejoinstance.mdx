@@ -1,0 +1,24 @@
+---
+title: ForgejoInstance
+description: Connection to a real Forgejo server (v16 or later).
+---
+
+Connection to a real Forgejo server (v16 or later). Cluster-scoped — an
+org-wide, shared piece of infrastructure, not owned by a single
+namespace. CRs without an `instanceRef` use the cluster's only
+`ForgejoInstance` (see `.prompt/plan.md`, "Instance par défaut").
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `secretStore` | `object` | no | `{"backend":"kubernetes"}` | Default destination of the secrets this instance's CRs emit (OAuth2 credentials, access tokens, generated passwords and deploy keys) when a CR sets no `secretTargets`. Defaults to a Kubernetes `Secret`. |
+| `tls` | `object` | no | `{"insecureSkipVerify":false}` | TLS verification for the API connection above — a private CA to trust (`tls.caSecretRef`), or the `tls.insecureSkipVerify` escape hatch. Defaults to plain platform-trust-store verification. |
+| `tokenSecretRef` | `object` | yes |  | `Secret` key holding an API token of a Forgejo **site admin**. The operator acts as that admin, and through the `Sudo` header as other users for per-user objects (OAuth2 applications). The token needs the scopes covering every kind it manages — `write:admin`, `write:organization`, `write:repository`, `write:user` at least. Re-read on every gateway call, so rotating it needs no restart. |
+| `url` | `string` | yes |  | Base web URL of the Forgejo instance, e.g. `https://git.example.com` — not the `/api/v1` REST endpoint, which is derived from it (see [`split_urls`]). Written as `FORGEJO_URL` into emitted secrets. |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoInstance` YAML manifest.
+
+<CrdForm kind="ForgejoInstance" />

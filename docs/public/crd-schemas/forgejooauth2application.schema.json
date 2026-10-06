@@ -1,0 +1,90 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoOAuth2Application",
+  "scope": "Namespaced",
+  "description": "An OAuth2 application registered in Forgejo, for apps that use Forgejo\nas their identity provider. Its credentials (`FORGEJO_CLIENT_ID`,\n`FORGEJO_CLIENT_SECRET`, `FORGEJO_URL` — the OIDC issuer) are written to\n`secretTargets`.\n\nForgejo regenerates the client secret on every update and never returns\nit again, so the application is only updated when the spec actually\ndiffers, when a target lost the secret, or on a new\n`forgejo.weebo.io/rotate-secret` nonce.",
+  "properties": {
+    "confidentialClient": {
+      "default": true,
+      "description": "Confidential clients authenticate with their secret; public clients\n(SPAs, CLIs) use PKCE only.",
+      "type": "boolean"
+    },
+    "deletionPolicy": {
+      "default": "Delete",
+      "description": "What happens to the Forgejo object when its CR is deleted.",
+      "enum": [
+        "Delete",
+        "Orphan"
+      ],
+      "type": "string"
+    },
+    "instanceRef": {
+      "nullable": true,
+      "type": "string"
+    },
+    "name": {
+      "description": "Display name. Defaults to the CR name.",
+      "nullable": true,
+      "type": "string"
+    },
+    "ownerRef": {
+      "description": "`ForgejoUser` owning the application (typically a `bot`) — the\noperator acts as that user through Forgejo's `Sudo` header. Unset:\nthe operator's admin account. Changing it recreates the application\n(new client id), which needs the\n`forgejo.weebo.io/allow-disruptive-update: \"true\"` annotation.",
+      "nullable": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "redirectUris": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "secretTargets": {
+      "description": "Defaults to one target named after the CR, in its namespace, on the\ninstance's default `secretStore` backend.",
+      "items": {
+        "description": "Where an emitted secret (generated password or key, OAuth2 credentials,\naccess token) is written. A CR may list several targets — the same\nvalue is fanned out to each.",
+        "properties": {
+          "backend": {
+            "default": "kubernetes",
+            "description": "`kubernetes` (default) or `vault`. A Vault target reuses the\nconnection (address, mount, auth) of the `ForgejoInstance`'s\n`secretStore.vault`, which must then be set.",
+            "enum": [
+              "kubernetes",
+              "vault"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Kubernetes: the `Secret` name. Vault: names the default path\n`<pathPrefix>/<namespace>/<name>` when `path` is unset.",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Kubernetes `Secret` namespace (Vault: the namespace segment of the\ndefault path). Defaults to the CR's own namespace; required on\ncluster-scoped CRs.",
+            "nullable": true,
+            "type": "string"
+          },
+          "path": {
+            "description": "Vault only: explicit KV v2 path under the instance's mount.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "redirectUris"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,19 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "weebo-forgejo.fullname" . }}-webhook
+  labels:
+    {{- include "weebo-forgejo.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "weebo-forgejo.webhookTlsSecretName" . }}
+  dnsNames:
+    - {{ include "weebo-forgejo.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "weebo-forgejo.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    {{- if .Values.certManager.createIssuer }}
+    name: {{ include "weebo-forgejo.webhookIssuerName" . }}
+    kind: Issuer
+    {{- else }}
+    name: {{ required "certManager.issuerRef.name is required when certManager.createIssuer is false (an existing Issuer/ClusterIssuer)" .Values.certManager.issuerRef.name }}
+    kind: {{ .Values.certManager.issuerRef.kind }}
+    {{- end }}

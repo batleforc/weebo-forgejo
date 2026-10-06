@@ -1,0 +1,40 @@
+weebo-forgejo-operator is installed.
+
+Prerequisite: cert-manager (it issues the admission webhook certificate).
+{{- if .Values.certManager.createIssuer }}
+This release provisions its own self-signed Issuer
+("{{ include "weebo-forgejo.webhookIssuerName" . }}").
+{{- else }}
+The Issuer/ClusterIssuer "{{ .Values.certManager.issuerRef.name }}" ({{ .Values.certManager.issuerRef.kind }}) must exist.
+{{- end }}
+
+1. Connect a Forgejo (v16 or later) with a site-admin token:
+
+     kubectl -n {{ .Release.Namespace }} create secret generic forgejo-admin --from-literal=token=<token>
+
+     apiVersion: forgejo.weebo.io/v1alpha1
+     kind: ForgejoInstance
+     metadata:
+       name: main
+     spec:
+       url: https://git.example.com
+       tokenSecretRef:
+         name: forgejo-admin
+         namespace: {{ .Release.Namespace }}
+         key: token
+
+   `kubectl get fji` shows the Forgejo version once connected.
+
+2. Restrict namespaces: as soon as one ForgejoNamespacePolicy exists, the
+   namespaced kinds (repositories, webhooks, deploy keys, OAuth2
+   applications, access tokens) are default-deny. Restrict
+   `allowedUsers` to stop a namespace from minting tokens for privileged
+   accounts.
+
+3. ArgoCD health: copy the `health.lua` key of the ConfigMap
+   {{ include "weebo-forgejo.fullname" . }}-argocd-health into `argocd-cm` as
+   `resource.customizations.health.forgejo.weebo.io_<Kind>` for each kind
+   (ForgejoInstance, ForgejoUser, ForgejoUserKey, ForgejoOrganization,
+   ForgejoTeam, ForgejoRepository, ForgejoWebhook, ForgejoDeployKey,
+   ForgejoOAuth2Application, ForgejoAccessToken, ForgejoNamespacePolicy).
+   Without it ArgoCD shows them as Progressing forever.

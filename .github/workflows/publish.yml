@@ -1,0 +1,119 @@
+name: Publish
+
+# Builds, pushes, scans and smoke-runs both operator images (`vX.Y.Z`
+# distroless, `vX.Y.Z-hardened` Red Hat hardened; both ship the importer)
+# and pushes the Helm chart (OCI, ghcr.io/batleforc/charts).
+#
+# Triggered by a pushed `v*` tag (a bump made locally with `cog bump`), or
+# called by release.yml: a tag pushed with GITHUB_TOKEN never triggers
+# another workflow, so the release job calls this one directly.
+on:
+  push:
+    tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z) to publish.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z) to (re)publish.
+        required: true
+        type: string
+
+env:
+  IMAGE: ghcr.io/batleforc/weebo-forgejo-operator
+  # The tag being published, whatever the trigger.
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - file: Containerfile
+            suffix: ""
+          - file: Containerfile.hardened
+            suffix: "-hardened"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: ./.github/actions/setup-mise
+      - run: mise install
+
+      - name: Compute tags (:latest only for the highest version tag)
+        id: tags
+        env:
+          # Through env, never interpolated into the script: a tag name may
+          # contain shell metacharacters.
+          REF_NAME: ${{ env.TAG }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          highest=$(git ls-remote --tags --refs origin 'refs/tags/v[0-9]*.[0-9]*.[0-9]*' \
+            | sed 's#.*refs/tags/##' | sort -V | tail -n1)
+          tags="${IMAGE}:${REF_NAME}${SUFFIX}"
+          if [ "$highest" = "$REF_NAME" ]; then
+            latest="latest"
+            [ -n "$SUFFIX" ] && latest="hardened"
+            tags="$(printf '%s\n%s:%s' "$tags" "$IMAGE" "$latest")"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+            echo "scan=${IMAGE}:${REF_NAME}${SUFFIX}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+
+      # `task audit` only sees the build files; this scans what shipped.
+      - name: Scan the pushed image
+        env:
+          SCAN: ${{ steps.tags.outputs.scan }}
+        run: mise exec -- trivy image --exit-code 1 --severity HIGH,CRITICAL "$SCAN"
+
+      # Proves the pushed image actually runs (glibc ABI of each base): the
+      # importer answers --version without needing a cluster.
+      - name: Smoke-run the pushed image
+        env:
+          SCAN: ${{ steps.tags.outputs.scan }}
+        run: docker run --rm --entrypoint /usr/local/bin/weebo-forgejo-importer "$SCAN" --version
+
+  chart:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: ./.github/actions/setup-mise
+      - run: mise install
+      - name: helm registry login
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | mise exec -- helm registry login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Package and push the chart
+        run: |
+          mise exec -- helm package deploy/charts/weebo-forgejo
+          mise exec -- helm push weebo-forgejo-*.tgz oci://ghcr.io/batleforc/charts

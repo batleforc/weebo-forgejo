@@ -1,0 +1,87 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoTeam",
+  "scope": "Cluster",
+  "description": "A team inside a `ForgejoOrganization`, with its members. Repositories\ngrant themselves access to it through `ForgejoRepository.spec.teamRefs`.",
+  "properties": {
+    "canCreateOrgRepo": {
+      "default": false,
+      "type": "boolean"
+    },
+    "deletionPolicy": {
+      "default": "Delete",
+      "description": "What happens to the Forgejo object when its CR is deleted.",
+      "enum": [
+        "Delete",
+        "Orphan"
+      ],
+      "type": "string"
+    },
+    "description": {
+      "nullable": true,
+      "type": "string"
+    },
+    "includesAllRepositories": {
+      "default": false,
+      "description": "Grant access to every repository of the organization, current and\nfuture.",
+      "type": "boolean"
+    },
+    "instanceRef": {
+      "nullable": true,
+      "type": "string"
+    },
+    "memberRefs": {
+      "description": "`ForgejoUser`s in the team. The member list is authoritative:\nanyone else is removed. A member whose user doesn't exist in Forgejo\nyet (e.g. an observed OIDC user who never logged in) is reported as\n`MemberPending` while the others are synced.",
+      "items": {
+        "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name (see `.prompt/plan.md`, \"Références\"): a\ncluster-scoped target is looked up cluster-wide, a namespaced one in the\nreferencing CR's own namespace only.",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "name": {
+      "description": "Team name, unique within the organization. `Owners` is reserved.",
+      "type": "string"
+    },
+    "organizationRef": {
+      "description": "`ForgejoOrganization` the team belongs to. A team can't move between\norganizations: changing this deletes and recreates it, which needs\nthe `forgejo.weebo.io/allow-disruptive-update: \"true\"` annotation.",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "permission": {
+      "default": "read",
+      "enum": [
+        "read",
+        "write",
+        "admin"
+      ],
+      "type": "string"
+    },
+    "unitsMap": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Per-unit access (`repo.code`, `repo.issues`, `repo.pulls`,\n`repo.releases`, `repo.wiki`, `repo.packages`, `repo.actions`, ...)\nto `none`, `read`, `write` or `admin`. Empty means every repository\nunit at `permission` (Forgejo refuses a team without units). Ignored\nby Forgejo when `permission` is `admin`.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "name",
+    "organizationRef"
+  ],
+  "type": "object"
+}

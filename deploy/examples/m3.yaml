@@ -1,0 +1,57 @@
+# M3 walkthrough. Credentials go to Kubernetes Secrets and/or Vault; Vault
+# targets reuse the ForgejoInstance's connection:
+#
+#   apiVersion: forgejo.weebo.io/v1alpha1
+#   kind: ForgejoInstance
+#   spec:
+#     secretStore:
+#       backend: kubernetes          # default for CRs without secretTargets
+#       vault:
+#         address: https://vault.example.com:8200
+#         mount: secret
+#         kubernetesAuthRole: weebo-forgejo
+#
+# A service account owning the SSO application and the CI tokens.
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: sso-bot
+spec:
+  username: sso-bot
+  email: sso-bot@example.com
+  bot: true
+---
+# Grafana logging in with Forgejo. Without secretTargets, the credentials
+# land in the `grafana` Secret of this namespace (FORGEJO_CLIENT_ID,
+# FORGEJO_CLIENT_SECRET, FORGEJO_URL). Rotate with:
+#   kubectl annotate fjoauth grafana forgejo.weebo.io/rotate-secret=$(date +%s) --overwrite
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoOAuth2Application
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  ownerRef:
+    name: sso-bot
+  redirectUris:
+    - https://grafana.example.com/login/generic_oauth
+---
+# A CI token limited to one repository, renewed monthly, fanned out to a
+# Kubernetes Secret and a Vault path.
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoAccessToken
+metadata:
+  name: ci
+  namespace: team-a
+spec:
+  userRef:
+    name: sso-bot
+  scopes: [write:repository, read:user]
+  repositoryRefs:
+    - name: app
+  rotationPeriod: 720h
+  secretTargets:
+    - name: ci-forgejo-token
+    - backend: vault
+      name: ci-forgejo-token
+      path: ci/team-a/forgejo

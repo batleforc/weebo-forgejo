@@ -1,0 +1,47 @@
+---
+title: Install
+description: Install the operator and its CRDs with Helm.
+---
+
+## Prerequisites
+
+- Kubernetes 1.30+.
+- [cert-manager](https://cert-manager.io): it issues the admission
+  webhook's certificate. The chart creates a self-signed `Issuer` by
+  default; set `certManager.createIssuer=false` and
+  `certManager.issuerRef.name` to use your own.
+- A Forgejo **v16 or later**. Older versions lack the admin token API the
+  operator relies on; their `ForgejoInstance` reports
+  `UnsupportedForgejoVersion`.
+
+## Install
+
+```bash
+helm install weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
+  --namespace weebo-forgejo --create-namespace
+```
+
+The CRDs ship in the chart's `crds/` directory (installed on first
+install, never removed by `helm uninstall`).
+
+## What gets deployed
+
+| Object | Why |
+| --- | --- |
+| Deployment (2 replicas) | Leader election: one replica reconciles, every replica serves the webhook |
+| PodDisruptionBudget | Keeps a webhook replica up during node drains (`failurePolicy: Fail`) |
+| ValidatingWebhookConfiguration | Allow-list on CREATE/UPDATE of the namespaced kinds — never on DELETE |
+| Certificate (+ Issuer) | Webhook TLS, rotated by cert-manager and reloaded every 60 s |
+| ClusterRole(+Binding) | The operator's own permissions |
+| ConfigMap `*-argocd-health` | ArgoCD health check for every kind (see [operations](/docs/guides/operations)) |
+
+## Main values
+
+| Value | Default | |
+| --- | --- | --- |
+| `replicaCount` | `2` | |
+| `image.tag` | chart `appVersion` | append `-hardened` for the Red Hat hardened image |
+| `webhook.failurePolicy` | `Fail` | the allow-list is a security boundary |
+| `certManager.createIssuer` | `true` | |
+| `rbac.namespacedExample.*` | disabled | a Role letting a team manage the namespaced kinds in its namespace |
+| `extraEnv` | `[]` | e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `RUST_LOG` |

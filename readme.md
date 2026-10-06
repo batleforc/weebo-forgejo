@@ -1,26 +1,32 @@
-# Weebo base project
+# weebo-forgejo
 
-This repository is meant to be a template used to bootstrap future projects.
+Kubernetes operator managing Forgejo (v16+) objects — users, organizations,
+teams, repositories, keys, webhooks, OAuth2 applications, access tokens —
+as CRDs. Sibling of [weebo-authentik](https://github.com/batleforc/weebo-authentik).
 
-## Eclipse Che
+Status: **M4** — `ForgejoInstance`, `ForgejoUser` (local, bot, external
+OIDC, observed), `ForgejoOrganization`, `ForgejoTeam`, `ForgejoRepository`
+(empty/template/mirror, branch protections, team access), `ForgejoWebhook`,
+`ForgejoDeployKey`, `ForgejoUserKey`, `ForgejoOAuth2Application`,
+`ForgejoAccessToken`, `ForgejoNamespacePolicy` (admission webhook);
+secrets to Kubernetes and/or Vault. Helm chart in
+[`deploy/charts/weebo-forgejo`](deploy/charts/weebo-forgejo), documentation
+site in [`docs/`](docs/) (`task docs`), examples in
+[`deploy/examples/`](deploy/examples/).
+Design and roadmap: [`.prompt/plan.md`](.prompt/plan.md).
 
-Those future projects are built around my way of viewing Eclipse Che and how i work with it. It's not, at least now, how it's commonly viewed.
-
-My view of Eclipse Che includes the usage of [mise](https://mise.jdx.dev/) to describe the packages needed in pair with [Weebo DotFile Che](https://github.com/batleforc/weebo-dotfiles-che) which is the base of all my workspaces.
-
-My custom image can be found [here](https://github.com/batleforc/WeeboDevImage)
-
-## Updating a project bootstrapped from this template
-
-Projects created before a template change catch up with `task template:sync`. It clones this repository into `.task/template`, overwrites the files the template owns, and prints a diff for the files every project customises so you merge those by hand. `task template:diff` shows the same comparison without writing anything.
-
-The list of owned versus reviewed files lives at the top of `.tasks/template.yaml`.
-
-A project that predates the task itself needs the file once:
+## Development
 
 ```bash
-mkdir -p .tasks
-curl -fsSL https://raw.githubusercontent.com/batleforc/weebo-base/main/.tasks/template.yaml -o .tasks/template.yaml
-# then add "template: ./.tasks/template.yaml" under includes: in Taskfile.yaml
-task template:sync
+task init     # tools (mise), Claude plugins, git hooks
+task lint
+task test
+task recu     # regenerate the Forgejo client + CRDs
+task audit    # cargo-deny + trivy
 ```
+
+The Forgejo REST client in `crates/forgejo-client` is generated from the
+vendored Swagger spec in `spec/` — see `task --list` under `gen:`.
+
+Project bootstrapped from the [weebo-base](https://github.com/batleforc/weebo-base)
+template; `task template:diff` / `task template:sync` pull template updates.

@@ -10,7 +10,7 @@ post_bump_hooks = []
 post_package_bump_hooks = []
 tag_prefix = "v"
 
-pre_bump_hooks = []
+pre_bump_hooks = ["./.hooks/bump-versions.sh {{version}}"]
 
 
 [git_hooks]
@@ -40,7 +40,7 @@ release = { changelog_title = "Releases" }
 path = "CHANGELOG.md"
 template = "remote"
 remote = "github.com"
-repository = "weebo-base"
+repository = "weebo-forgejo"
 owner = "batleforc"
 
 [bump_profiles]

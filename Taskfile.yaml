@@ -4,6 +4,23 @@ includes:
   mise: ./.tasks/mise.yaml
   claude: ./.tasks/claude.yaml
   template: ./.tasks/template.yaml
+  gen: ./.tasks/gen.yaml
+  forgejo: ./.tasks/forgejo.yaml
+  e2e: ./.tasks/e2e.yaml
+  tests:
+    taskfile: ./.tasks/test.yaml
+    flatten: true
+
+# `crates/testkit` builds the `envtest` crate, whose bindgen step needs a
+# real libclang.so and the C headers (crates/testkit/src/envtest.rs).
+# Defaults match Fedora's clang-libs + gcc; an exported value wins, even an
+# empty one (CI on Ubuntu sets BINDGEN_EXTRA_CLANG_ARGS="" — libclang-dev
+# finds its own headers there).
+env:
+  LIBCLANG_PATH:
+    sh: echo "${LIBCLANG_PATH-/usr/lib64}"
+  BINDGEN_EXTRA_CLANG_ARGS:
+    sh: echo "${BINDGEN_EXTRA_CLANG_ARGS--I/usr/lib/gcc/x86_64-redhat-linux/16/include -I/usr/include}"
 
 tasks:
   init:
@@ -13,36 +30,82 @@ tasks:
       - task claude:install
       - cog install-hook -a -o
 
-  init-repo:
-    desc: "Adapt the template to its new repo name (usage: task init-repo [NAME=my-project] [OWNER=batleforc], NAME defaults to the folder name)"
-    vars:
-      NAME: "{{.NAME | default (base .ROOT_DIR)}}"
-      OWNER: '{{.OWNER | default "batleforc"}}'
-    preconditions:
-      - sh: '[ "{{.NAME}}" != "weebo-base" ]'
-        msg: "NAME still resolves to 'weebo-base': pass NAME=<new-name> or rename the folder first"
+  doctor:
+    desc: "Check the local dev setup needed by envtest (Go, libclang, control-plane binaries) and the git hooks"
     cmds:
-      - "sed -i 's/^  name: weebo-base$/  name: {{.NAME}}/' devfile.yaml"
-      - sed -i 's/^repository = "weebo-base"$/repository = "{{.NAME}}"/' cog.toml
-      - sed -i 's/^owner = ".*"$/owner = "{{.OWNER}}"/' cog.toml
       - |
-        cat > readme.md <<'EOF'
-        # {{.NAME}}
+        ok=true
+        check() { if eval "$2" >/dev/null 2>&1; then echo "  [ok]   $1"; else echo "  [FAIL] $1 — $3"; ok=false; fi; }
+        check "go"              "mise exec -- go version"                    "mise install"
+        check "etcd"            "mise exec -- etcd --version"                "mise install"
+        check "kube-apiserver"  "mise exec -- kube-apiserver --version"      "mise install"
+        check "libclang.so"     "ls $LIBCLANG_PATH/libclang.so*"             "install clang-libs (or libclang-dev) and set LIBCLANG_PATH"
+        test -f .git/hooks/pre-commit && echo "  [ok]   git hooks" || echo "  [warn] git hooks not installed — task init"
+        $ok
 
-        Project bootstrapped from the [weebo-base](https://github.com/batleforc/weebo-base) template.
-        EOF
-      - echo "Repo adapted to '{{.NAME}}' (owner '{{.OWNER}}'), review the changes then commit them"
   recu:
-    desc: "Recuring job like regenerating Swagger spec"
+    desc: "Regenerate every committed artifact: the Forgejo client (offline, from the vendored spec) and the CRDs"
     cmds:
-      - echo "Your future spec generating cmd"
+      - task: gen:client
+      - mise exec -- cargo run -q -p crdgen -- --out deploy/crd/
+      # Helm's crds/ is a plain copy, kept in sync here so it can't drift.
+      - rm -f deploy/charts/weebo-forgejo/crds/*.yaml && cp deploy/crd/*.yaml deploy/charts/weebo-forgejo/crds/
+      # CRD reference pages + form schemas of the docs site.
+      - task: docs:deps
+      - rm -f docs/content/docs/crds/*.mdx docs/public/crd-schemas/*.json
+      - mise exec -- node docs/scripts/gen-crd-docs.mjs
 
   lint:
-    desc: "Linting your project to apply good practice"
+    desc: "cargo fmt --check + clippy -D warnings on the whole workspace, hadolint on both Containerfiles, actionlint on CI"
     cmds:
-      - echo "Something like cargo fmt && cargo clippy"
+      - mise exec -- cargo fmt --check
+      - mise exec -- cargo clippy --workspace --all-targets -- -D warnings
+      - mise exec -- hadolint Containerfile Containerfile.hardened
+      - mise exec -- actionlint
+
+  docs:deps:
+    desc: "Install the docs site's npm dependencies (from the lockfile) when missing"
+    status:
+      - test -d docs/node_modules
+    cmds:
+      - mise exec -- npm ci --prefix docs --no-fund
+
+  docs:
+    desc: "Run the Fumadocs documentation site in dev mode (http://localhost:3000)"
+    deps: [docs:deps]
+    dir: docs
+    cmds:
+      - mise exec -- npm run dev
+
+  docs:build:
+    desc: "Production build + lint of the documentation site"
+    deps: [docs:deps]
+    dir: docs
+    cmds:
+      - mise exec -- npm run lint
+      - mise exec -- npm run build
+
+  lint:helm:
+    desc: "helm lint + a template smoke render of the operator chart"
+    cmds:
+      - mise exec -- helm lint deploy/charts/weebo-forgejo
+      - mise exec -- helm template smoke deploy/charts/weebo-forgejo > /dev/null
+      - mise exec -- helm template smoke deploy/charts/weebo-forgejo --set certManager.createIssuer=false --set certManager.issuerRef.name=ca > /dev/null
 
   audit:
-    desc: "Check dependencies and Containerfile for CVE"
+    desc: "Check dependencies and Containerfiles for CVE (cargo-deny + trivy)"
     cmds:
-      - echo "Something like cargo audit, pnpm audit or trivy fs ."
+      # advisories (RUSTSEC, yanked, unmaintained), licenses and sources —
+      # see deny.toml.
+      - mise exec -- cargo deny check
+      # Lockfile CVEs from trivy's own DB, as a second opinion on cargo-deny.
+      - mise exec -- trivy fs --scanners vuln --exit-code 1 --severity HIGH,CRITICAL Cargo.lock
+      # The docs site's shipped dependencies. Dev tooling is excluded: its
+      # only finding (braces <=3.0.3 via eslint-config-next) has no fixed
+      # release yet and never reaches the built site.
+      - task: docs:deps
+      - mise exec -- npm audit --prefix docs --omit=dev --audit-level=high
+      # Misconfigurations in both images' build files (root user, unpinned
+      # bases, ...). Image *contents* need a built image: see the CI publish
+      # workflow, which scans what it pushes.
+      - mise exec -- trivy config --exit-code 1 --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml --skip-dirs docs/node_modules --skip-dirs target --file-patterns 'dockerfile:Containerfile.*' .

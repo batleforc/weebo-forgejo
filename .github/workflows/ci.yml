@@ -1,0 +1,130 @@
+name: CI
+
+# GitHub Actions syntax kept compatible with Forgejo Actions: no marketplace
+# action without a Forgejo equivalent, every tool comes from mise.toml.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-mise
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      # clippy --all-targets and the tests build crates/testkit's envtest,
+      # whose bindgen step needs libclang (crates/testkit/src/envtest.rs).
+      - name: Install libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+          LIBCLANG_SO="$(find /usr/lib -iname 'libclang.so*' 2>/dev/null | head -n1)"
+          if [ -z "$LIBCLANG_SO" ]; then
+            echo "::error::libclang.so not found after installing libclang-dev" >&2
+            exit 1
+          fi
+          {
+            echo "LIBCLANG_PATH=$(dirname "$LIBCLANG_SO")"
+            echo "BINDGEN_EXTRA_CLANG_ARGS="
+          } >> "$GITHUB_ENV"
+      - run: mise install
+      - run: mise exec -- task lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-mise
+      # target/ is deliberately not cached: keyed on Cargo.lock only, it
+      # never gets evicted and grows until the runner runs out of disk.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      # clippy --all-targets and the tests build crates/testkit's envtest,
+      # whose bindgen step needs libclang (crates/testkit/src/envtest.rs).
+      - name: Install libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+          LIBCLANG_SO="$(find /usr/lib -iname 'libclang.so*' 2>/dev/null | head -n1)"
+          if [ -z "$LIBCLANG_SO" ]; then
+            echo "::error::libclang.so not found after installing libclang-dev" >&2
+            exit 1
+          fi
+          {
+            echo "LIBCLANG_PATH=$(dirname "$LIBCLANG_SO")"
+            echo "BINDGEN_EXTRA_CLANG_ARGS="
+          } >> "$GITHUB_ENV"
+      - run: mise install
+      - run: mise exec -- task test:all
+
+  regen-and-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-mise
+      - run: mise install
+      # Regenerates the Forgejo client (offline, from the vendored spec) and
+      # the CRDs; both are committed and must never drift from their source.
+      - run: mise exec -- task recu --force
+      - name: Fail if committed generated files are stale
+        run: |
+          git diff --exit-code crates/forgejo-client/ deploy/crd/ \
+            deploy/charts/weebo-forgejo/crds/ docs/content/docs/crds/ docs/public/crd-schemas/
+          # A generated file that's new must be committed too.
+          test -z "$(git status --porcelain docs/content/docs/crds/ docs/public/crd-schemas/ deploy/)"
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-mise
+      - run: mise install
+      - run: mise exec -- task docs:build
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-mise
+      - run: mise install
+      - run: mise exec -- task lint:helm
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-mise
+      - run: mise install
+      - run: mise exec -- task audit
+
+  image-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        file: [Containerfile, Containerfile.hardened]
+    steps:
+      - uses: actions/checkout@v4
+      # Build-only proof that both images build (no container engine in the
+      # dev sandbox); publishing is publish.yml's job.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: false
+          load: true
+          tags: weebo-forgejo-operator:ci
+      # The image runs, not just builds (glibc ABI of each base).
+      - run: docker run --rm --entrypoint /usr/local/bin/weebo-forgejo-importer weebo-forgejo-operator:ci --version

@@ -1,0 +1,34 @@
+---
+title: ForgejoWebhook
+description: >-
+  A webhook on a `ForgejoRepository` (same namespace) or a `ForgejoOrganization`
+  — exactly one of the two refs.
+---
+
+A webhook on a `ForgejoRepository` (same namespace) or a
+`ForgejoOrganization` — exactly one of the two refs.
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `active` | `boolean` | no | `true` |  |
+| `authorizationHeaderSecretRef` | `object` | no |  | Value sent as the `Authorization` header (write-only as well). |
+| `branchFilter` | `string` | no |  | Glob limiting push/branch events, e.g. `main` or `{main,release/*}`. |
+| `contentType` | `string` | no | `"json"` | `json` (default) or `form`. |
+| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
+| `events` | `string[]` | no | `["push"]` | Trigger events (`push`, `pull_request`, `issues`, `release`, `create`, `delete`, ...). |
+| `extraConfig` | `object` | no |  | Type-specific settings (e.g. `username`/`channel` for Slack). |
+| `httpMethod` | `string` | no |  |  |
+| `instanceRef` | `string` | no |  |  |
+| `organizationRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw Forgejo name (see `.prompt/plan.md`, "Références"): a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
+| `repositoryRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw Forgejo name (see `.prompt/plan.md`, "Références"): a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
+| `secretRef` | `object` | no |  | HMAC secret signing the payloads. Write-only in Forgejo: a change of the Secret's value is detected through `status.appliedSecretHash`. |
+| `type` | `string` | no | `"forgejo"` | `forgejo` (default), `gitea`, `gogs`, `slack`, `discord`, `dingtalk`, `telegram`, `msteams`, `feishu`, `wechatwork` or `packagist`. Changing it recreates the hook. |
+| `url` | `string` | yes |  | Payload URL. |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoWebhook` YAML manifest.
+
+<CrdForm kind="ForgejoWebhook" />

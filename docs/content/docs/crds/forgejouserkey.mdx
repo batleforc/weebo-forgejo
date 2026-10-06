@@ -1,0 +1,25 @@
+---
+title: ForgejoUserKey
+description: An SSH public key of a `ForgejoUser` — typically a bot's.
+---
+
+An SSH public key of a `ForgejoUser` — typically a bot's. Same key
+handling as `ForgejoDeployKey`; generated keys need `secretTargets` with
+an explicit namespace (this CR is cluster-scoped).
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
+| `instanceRef` | `string` | no |  |  |
+| `publicKey` | `string` | no |  | An OpenSSH public key (`ssh-ed25519 AAAA... comment`). Unset: the operator generates an ed25519 pair. |
+| `secretTargets` | `object[]` | no |  | Destinations of a generated private key. Required when `publicKey` is unset; a target that disappears (or a new `forgejo.weebo.io/rotate-secret` nonce) generates a fresh pair. |
+| `title` | `string` | no |  | Defaults to the CR name. |
+| `userRef` | `object` | yes |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw Forgejo name (see `.prompt/plan.md`, "Références"): a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoUserKey` YAML manifest.
+
+<CrdForm kind="ForgejoUserKey" />

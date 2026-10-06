@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "weebo-forgejo.fullname" . }}
+  labels:
+    {{- include "weebo-forgejo.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "weebo-forgejo.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: webhook
+      port: {{ .Values.webhook.servicePort }}
+      targetPort: webhook
+      protocol: TCP

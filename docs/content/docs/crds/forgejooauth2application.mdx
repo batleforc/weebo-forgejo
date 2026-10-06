@@ -1,0 +1,34 @@
+---
+title: ForgejoOAuth2Application
+description: >-
+  An OAuth2 application registered in Forgejo, for apps that use Forgejo as
+  their identity provider.
+---
+
+An OAuth2 application registered in Forgejo, for apps that use Forgejo
+as their identity provider. Its credentials (`FORGEJO_CLIENT_ID`,
+`FORGEJO_CLIENT_SECRET`, `FORGEJO_URL` — the OIDC issuer) are written to
+`secretTargets`.
+
+Forgejo regenerates the client secret on every update and never returns
+it again, so the application is only updated when the spec actually
+differs, when a target lost the secret, or on a new
+`forgejo.weebo.io/rotate-secret` nonce.
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `confidentialClient` | `boolean` | no | `true` | Confidential clients authenticate with their secret; public clients (SPAs, CLIs) use PKCE only. |
+| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
+| `instanceRef` | `string` | no |  |  |
+| `name` | `string` | no |  | Display name. Defaults to the CR name. |
+| `ownerRef` | `object` | no |  | `ForgejoUser` owning the application (typically a `bot`) — the operator acts as that user through Forgejo's `Sudo` header. Unset: the operator's admin account. Changing it recreates the application (new client id), which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
+| `redirectUris` | `string[]` | yes |  |  |
+| `secretTargets` | `object[]` | no |  | Defaults to one target named after the CR, in its namespace, on the instance's default `secretStore` backend. |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoOAuth2Application` YAML manifest.
+
+<CrdForm kind="ForgejoOAuth2Application" />

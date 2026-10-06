@@ -1,0 +1,59 @@
+name: Release
+
+# Bumps the version from conventional commits, pushes the bump commit + tag,
+# then calls publish.yml for that tag (a tag pushed with GITHUB_TOKEN
+# triggers no workflow on its own). Manual only. If main's protection
+# requires signed commits, the bot's push is refused: bump locally instead
+# (`cog bump --auto`, then push the commit and tag) — publish.yml runs on
+# the pushed tag. See docs: "Releasing".
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.bump.outputs.bumped }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/setup-mise
+      - run: mise install
+      - name: Configure git identity for the bump commit
+        run: |
+          git config user.name "weebo-forgejo-bot"
+          git config user.email "actions@users.noreply.github.com"
+      - name: Bump version from conventional commits
+        id: bump
+        run: |
+          before=$(git rev-parse HEAD)
+          # Exits 0 when nothing needs a bump; any non-zero exit (e.g. the
+          # pre_bump_hooks script failing) is a real failure.
+          mise exec -- cog bump --auto --skip-ci
+          if [ "$before" = "$(git rev-parse HEAD)" ]; then
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$(git describe --tags --abbrev=0)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Push bump commit and tag
+        if: steps.bump.outputs.bumped == 'true'
+        run: |
+          git push origin HEAD:main
+          git push origin --tags
+
+  publish:
+    needs: bump
+    if: needs.bump.outputs.bumped == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag: ${{ needs.bump.outputs.tag }}

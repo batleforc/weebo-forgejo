@@ -1,0 +1,13 @@
+# Accepted findings of `task audit` (trivy), each scoped and justified.
+misconfigurations:
+  - id: KSV-0041
+    paths:
+      - deploy/charts/weebo-forgejo/templates/clusterrole.yaml
+    statement: >-
+      The operator writes emitted credentials (OAuth2 client secrets,
+      access tokens, generated passwords and SSH keys) into the namespace
+      each CR's secretTargets names, and reads the ForgejoInstance token,
+      webhook and migration Secrets they reference — cluster-wide Secret
+      access is the feature, not an accident. The ForgejoNamespacePolicy
+      allow-list and namespaced RBAC on the CRs bound who can make it
+      write where.

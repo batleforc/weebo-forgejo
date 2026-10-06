@@ -1,0 +1,46 @@
+{{- if .Values.rbac.namespacedExample.enabled -}}
+{{- $ns := .Values.rbac.namespacedExample.namespace | default .Release.Namespace -}}
+# Example namespaced Role: a team manages the namespaced kinds in its own
+# namespace. Cluster-scoped kinds (instances, users, organizations, teams,
+# user keys, namespace policies) stay with cluster admins.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "weebo-forgejo.fullname" . }}-author
+  namespace: {{ $ns }}
+  labels:
+    {{- include "weebo-forgejo.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["forgejo.weebo.io"]
+    resources:
+      - forgejorepositories
+      - forgejowebhooks
+      - forgejodeploykeys
+      - forgejooauth2applications
+      - forgejoaccesstokens
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["forgejo.weebo.io"]
+    resources:
+      - forgejorepositories/status
+      - forgejowebhooks/status
+      - forgejodeploykeys/status
+      - forgejooauth2applications/status
+      - forgejoaccesstokens/status
+    verbs: ["get"]
+{{- if .Values.rbac.namespacedExample.subjects }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "weebo-forgejo.fullname" . }}-author
+  namespace: {{ $ns }}
+  labels:
+    {{- include "weebo-forgejo.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "weebo-forgejo.fullname" . }}-author
+subjects:
+  {{- toYaml .Values.rbac.namespacedExample.subjects | nindent 2 }}
+{{- end }}
+{{- end -}}

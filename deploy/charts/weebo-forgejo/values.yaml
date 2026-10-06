@@ -1,0 +1,84 @@
+# Default values for weebo-forgejo.
+
+# -- Number of operator replicas. Safe above 1: only the elected leader
+# (a coordination.k8s.io Lease) runs the reconcilers, while the admission
+# webhook serves on every replica.
+replicaCount: 2
+
+image:
+  repository: ghcr.io/batleforc/weebo-forgejo-operator
+  # -- Defaults to .Chart.AppVersion when empty; append `-hardened` for
+  # the Red Hat hardened image.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  # -- e.g. nothing for Vault: the operator logs in with this
+  # ServiceAccount's own projected token (Kubernetes auth).
+  annotations: {}
+
+webhook:
+  # -- Container port of the admission webhook.
+  containerPort: 8443
+  # -- Service port targeted by the ValidatingWebhookConfiguration.
+  servicePort: 443
+  # -- `Fail` (default) blocks namespaced CRs while the webhook is
+  # unreachable: the allow-list is a security boundary. The reconcilers
+  # re-check it regardless.
+  failurePolicy: Fail
+
+# -- cert-manager issues the webhook certificate (cert-manager must be
+# installed).
+certManager:
+  # -- Provision a self-signed Issuer for the webhook certificate. Set to
+  # false to use an existing issuer through issuerRef.
+  createIssuer: true
+  issuerRef:
+    # -- Required when createIssuer is false.
+    name: ""
+    kind: ClusterIssuer
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+rbac:
+  # -- Optional namespaced Role(+Binding) EXAMPLE letting a team manage
+  # the namespaced kinds in its own namespace (see NOTES.txt). The
+  # ForgejoNamespacePolicy allow-list still decides which organizations
+  # and users that namespace may use.
+  namespacedExample:
+    enabled: false
+    namespace: ""
+    subjects: []
+
+resources: {}
+
+# The image runs as distroless's nonroot UID; both Containerfiles use it.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# -- Extra environment variables, e.g. OTEL_EXPORTER_OTLP_ENDPOINT or
+# RUST_LOG.
+extraEnv: []

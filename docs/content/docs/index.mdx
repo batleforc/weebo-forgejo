@@ -1,0 +1,32 @@
+---
+title: weebo-forgejo-operator
+description: A Kubernetes operator that manages Forgejo as CRDs.
+---
+
+`weebo-forgejo-operator` manages the objects *inside* an existing Forgejo
+(v16 or later) — users, organizations, teams, repositories, webhooks, SSH
+keys, OAuth2 applications and access tokens — as Kubernetes custom
+resources. Forgejo itself stays deployed by its own Helm chart.
+
+- **The CR is authoritative**: drift made in the Forgejo UI is corrected on
+  the next reconcile, and updates are only sent when something differs.
+- **No implicit adoption**: a name already taken in Forgejo is reported
+  (`ForgejoObjectAlreadyExists`), never silently taken over.
+- **Secrets out**: generated passwords and keys, OAuth2 credentials and
+  tokens are written to Kubernetes Secrets and/or Vault.
+- **Namespace allow-list**: which namespace may create what, in which
+  organization, for which user — enforced by an admission webhook and
+  re-checked by every reconciler.
+
+<Cards>
+  <Card title="Install via Helm" href="/docs/guides/install" />
+  <Card title="Connect a ForgejoInstance" href="/docs/guides/connect-instance" />
+  <Card title="Users, OIDC and teams" href="/docs/guides/users-and-oidc" />
+  <Card title="Repositories" href="/docs/guides/repositories" />
+  <Card title="OAuth2 applications, tokens and secrets" href="/docs/guides/credentials" />
+  <Card title="The allow-list" href="/docs/guides/allow-list" />
+  <Card title="Operating the operator" href="/docs/guides/operations" />
+  <Card title="Migrating an existing Forgejo" href="/docs/guides/migration" />
+  <Card title="Releasing" href="/docs/guides/releasing" />
+  <Card title="CRD reference" href="/docs/crds/forgejoinstance" />
+</Cards>

@@ -1,0 +1,66 @@
+---
+title: Connect a ForgejoInstance
+description: Point the operator at a Forgejo with a site-admin token.
+---
+
+## Create an admin token
+
+The operator acts as a **site administrator** (and, for OAuth2
+applications, as their owner through Forgejo's `Sudo` header). Create a
+token with every scope it needs — `all` is simplest:
+
+```bash
+forgejo admin user generate-access-token --username <admin> \
+  --token-name weebo-forgejo --scopes all --raw
+kubectl -n weebo-forgejo create secret generic forgejo-admin --from-literal=token=<token>
+```
+
+The token is re-read on every reconcile: rotating the Secret needs no
+restart.
+
+## The instance
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoInstance
+metadata:
+  name: main
+spec:
+  url: https://git.example.com        # web root, not /api/v1
+  tokenSecretRef:
+    name: forgejo-admin
+    namespace: weebo-forgejo
+    key: token
+  tls:
+    caSecretRef:                       # optional private CA (PEM)
+      name: internal-ca
+      namespace: weebo-forgejo
+      key: ca.crt
+```
+
+`kubectl get fji` shows `Ready` and the Forgejo version once connected.
+
+Every other CR has an optional `instanceRef`. Without it, the cluster's
+**only** `ForgejoInstance` is used — with zero or several, those CRs report
+`InstanceNotFound` / `AmbiguousDefaultInstance`.
+
+## Where secrets go
+
+`spec.secretStore` picks the default backend for CRs that emit secrets
+without listing `secretTargets`, and holds the Vault connection that every
+Vault target reuses:
+
+```yaml
+spec:
+  secretStore:
+    backend: kubernetes          # or vault
+    vault:
+      address: https://vault.example.com:8200
+      mount: secret              # KV v2
+      pathPrefix: weebo-forgejo  # default path: <pathPrefix>/<namespace>/<name>
+      kubernetesAuthRole: weebo-forgejo
+      caSecretRef: { name: vault-ca, namespace: weebo-forgejo, key: ca.crt }
+```
+
+The operator logs in to Vault with its own ServiceAccount token
+(Kubernetes auth) — bind the role to the `weebo-forgejo` ServiceAccount.

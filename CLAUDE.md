@@ -1,3 +1,59 @@
+# Weebo Forgejo
+
+Kubernetes operator that manages objects inside an existing Forgejo (v16+)
+— users, organizations, teams, repositories, keys, webhooks, OAuth2
+applications, access tokens — as CRDs. Sibling of
+[weebo-authentik](https://github.com/batleforc/weebo-authentik), same
+architecture and conventions. **`.prompt/plan.md`** is the authoritative
+design doc (CRD scope, reason codes, status model, mutation/deletion
+policy, client generation, milestones) — read it before any non-trivial
+change; this section is only an index.
+
+## Architecture (hexagonal)
+
+- `crates/domain` — pure logic (`ReasonCode` catalog, conditions). Zero
+  `kube`/`http` dependency.
+- `crates/api` — the CRD types (`kube::CustomResource` derives).
+- `crates/application` — `reconcile_*` use-cases + port traits (`ports.rs`).
+- `crates/adapters-inbound` — kube-runtime controllers, admission webhook
+  (`webhook.rs`) and the allow-list lookup it shares with the reconcilers
+  (`admission.rs`), reconcile metrics.
+- `crates/adapters-outbound` — `ForgejoHttpGateway` over `forgejo-client`.
+- `crates/forgejo-client` — **generated, never hand-edited**: openapi-generator
+  output from `spec/forgejo-v*.json` + `spec/patches/*.jq`
+  (`task gen:client`; `task gen:bump FORGEJO_VERSION=x.y.z` to move release).
+- `crates/operator` — the binary (webhook on every replica, leader
+  election, controllers). `crates/crdgen` — writes `deploy/crd/`
+  (generated, committed; `task recu` also copies them into the chart and
+  generates the docs' CRD pages).
+- `deploy/charts/weebo-forgejo` — Helm chart. `docs/` — Fumadocs site;
+  `docs/content/docs/crds/` and `docs/public/crd-schemas/` are generated.
+- `crates/importer` — `weebo-forgejo-importer`, the only adoption path:
+  `application::use_cases::import` over the `ForgejoInventory` port, then
+  CRs created paused (`forgejo.weebo.io/import-pending`) with seeded
+  status.
+- `deploy/e2e/` — kind e2e (`task e2e`, weekly `e2e.yml`).
+- `crates/testkit` — envtest harness, polling, `StaticGatewayFactory`.
+  `application::test_support` (feature `test-support`) holds the in-memory
+  `FakeForgejo`/`FakeSecretStore` used by use-case and controller tests.
+
+## Common commands
+
+```bash
+task lint                # fmt --check, clippy -D warnings, hadolint, actionlint
+task doctor              # check envtest prerequisites (Go, libclang, etcd, kube-apiserver)
+task test                # unit + contract tests
+task test:all            # + envtest controller tests (real apiserver)
+task test:live-forgejo   # gateway + controllers + importer against a real Forgejo (FORGEJO_URL/TOKEN)
+task e2e                 # kind e2e: chart + cert-manager + Forgejo, golden path (needs docker)
+task recu                # regenerate forgejo-client + CRDs (CI diffs both)
+task audit               # cargo-deny + trivy + npm audit (docs)
+task lint:helm           # helm lint + template smoke renders
+task docs                # docs dev server; task docs:build for lint + build
+task forgejo:start       # Che only: run the sidecar Forgejo (localhost:3000)
+task forgejo:bootstrap   # Che only: dev admin + API token
+```
+
 
 <!-- Eclipse Che Dedicated instruction --->
 # Eclipse che - Cloud Development Environment

@@ -1,0 +1,81 @@
+# M2 walkthrough, on top of m1.yaml (the `weebo` organization, its
+# `weebo-devs` team and the `ci-bot` user). Namespaced CRs live in the
+# namespace of the team that owns the application.
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: app
+  namespace: team-a
+spec:
+  organizationRef:
+    name: weebo
+  name: app
+  description: The team-a application
+  private: true
+  init:
+    readme: Default
+    license: MIT
+  units:
+    wiki: false
+  teamRefs:
+    - name: weebo-devs
+  branchProtections:
+    - ruleName: main
+      enablePush: true
+      pushWhitelistTeams: [devs]
+      requiredApprovals: 1
+      statusCheckContexts: [ci/build]
+---
+# Pull mirror of an upstream project, refreshed every 8 hours.
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: upstream-mirror
+  namespace: team-a
+spec:
+  organizationRef:
+    name: weebo
+  name: kube-rs
+  migrate:
+    cloneAddr: https://github.com/kube-rs/kube.git
+    mirror: true
+    mirrorInterval: 8h
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoWebhook
+metadata:
+  name: app-ci
+  namespace: team-a
+spec:
+  repositoryRef:
+    name: app
+  url: https://ci.example.com/hooks/forgejo
+  events: [push, pull_request]
+  branchFilter: main
+  secretRef:
+    name: app-ci-webhook
+    key: hmac
+---
+# Read-only deploy key for CI; the operator generates the pair and writes
+# it to the `app-deploy-key` Secret (kubernetes.io/ssh-auth key names).
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoDeployKey
+metadata:
+  name: app-ci
+  namespace: team-a
+spec:
+  repositoryRef:
+    name: app
+  secretTargets:
+    - name: app-deploy-key
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUserKey
+metadata:
+  name: ci-bot
+spec:
+  userRef:
+    name: ci-bot
+  secretTargets:
+    - name: ci-bot-ssh
+      namespace: ci

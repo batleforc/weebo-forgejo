@@ -1,0 +1,34 @@
+---
+title: ForgejoAccessToken
+description: >-
+  An access token of a `ForgejoUser` (typically a bot), issued through the admin
+  API (Forgejo v16+) and written to `secretTargets` as `FORGEJO_TOKEN`,
+  `FORGEJO_USERNAME` and `FORGEJO_URL`.
+---
+
+An access token of a `ForgejoUser` (typically a bot), issued through the
+admin API (Forgejo v16+) and written to `secretTargets` as
+`FORGEJO_TOKEN`, `FORGEJO_USERNAME` and `FORGEJO_URL`.
+
+Token values can't be read back: a lost target, a new
+`forgejo.weebo.io/rotate-secret` nonce or an elapsed `rotationPeriod`
+issues a new token (the old one is revoked first, as names are unique).
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
+| `instanceRef` | `string` | no |  |  |
+| `name` | `string` | no |  | Token name, unique per user. Defaults to `<namespace>-<cr name>`. |
+| `repositoryRefs` | `object[]` | no |  | Restrict the token to these `ForgejoRepository`s (same namespace). Same disruptive-update rule as `scopes`. |
+| `rotationPeriod` | `string` | no |  | Issue a new token once the current one is this old — a Go duration such as `720h`. |
+| `scopes` | `string[]` | yes |  | `all`, or `read:`/`write:` + `activitypub`, `admin`, `issue`, `misc`, `notification`, `organization`, `package`, `repository`, `user`. Changing scopes issues a new token, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
+| `secretTargets` | `object[]` | no |  | Defaults to one target named after the CR, in its namespace, on the instance's default `secretStore` backend. |
+| `userRef` | `object` | yes |  | `ForgejoUser` the token belongs to. |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoAccessToken` YAML manifest.
+
+<CrdForm kind="ForgejoAccessToken" />

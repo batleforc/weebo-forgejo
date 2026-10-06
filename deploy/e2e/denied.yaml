@@ -1,0 +1,23 @@
+# Each document must be refused by the admission webhook (run.sh applies
+# them one by one and expects NamespaceNotAllowed).
+# A namespace no rule covers.
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: rogue
+  namespace: other
+spec:
+  organizationRef:
+    name: weebo
+  name: rogue
+---
+# An allowed namespace minting a token for a user outside allowedUsers.
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoAccessToken
+metadata:
+  name: steal-alice
+  namespace: team-a
+spec:
+  userRef:
+    name: alice
+  scopes: [read:user]

@@ -1,0 +1,27 @@
+---
+title: ForgejoNamespacePolicy
+description: >-
+  Namespace allow-list for the namespaced kinds, enforced by the admission
+  webhook (CREATE/UPDATE) and re-checked by every reconciler.
+---
+
+Namespace allow-list for the namespaced kinds, enforced by the
+admission webhook (CREATE/UPDATE) and re-checked by every reconciler.
+
+While no `ForgejoNamespacePolicy` exists, everything is allowed. As soon
+as one exists, a namespaced CR is only accepted if some `Allow` rule
+matches its namespace and kind and covers the organizations and users it
+references — and no `Deny` rule matches. Rules of every policy are
+pooled; deny always wins.
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `rules` | `object[]` | yes |  |  |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoNamespacePolicy` YAML manifest.
+
+<CrdForm kind="ForgejoNamespacePolicy" />

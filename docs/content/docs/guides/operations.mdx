@@ -1,0 +1,81 @@
+---
+title: Operating the operator
+description: Status, reason codes, events, deletion, disruptive changes, metrics and ArgoCD.
+---
+
+## Status
+
+Every CR shares one status shape:
+
+```yaml
+status:
+  observedGeneration: 3
+  forgejoId: "42"            # the Forgejo object this CR owns
+  forgejoName: weebo/app     # the name Forgejo addresses it by
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: ReferenceNotReady
+      message: ForgejoOrganization "weebo" is not ready yet (InstanceUnreachable)
+```
+
+`kubectl get fjrepo,fjteam,fjuser -A` shows `Ready` for everything at a
+glance. A Kubernetes **Event** is recorded on every `Ready` transition.
+
+## Reason codes
+
+| Reason | Meaning |
+| --- | --- |
+| `Reconciled` | All good |
+| `InstanceNotFound` / `AmbiguousDefaultInstance` | No (unique) `ForgejoInstance` to use |
+| `InstanceUnreachable` / `TokenSecretNotFound` | Network, TLS, 5xx / missing admin token |
+| `UnsupportedForgejoVersion` | Forgejo older than v16 |
+| `ForgejoObjectAlreadyExists` | The name is taken by something this CR doesn't own — never adopted |
+| `ReferenceNotFound` / `ReferenceNotReady` | A `*Ref` is missing or not ready (re-checked as soon as it changes) |
+| `UserNotFound` | An observed user hasn't logged in yet |
+| `MemberPending` | (advisory) some team members don't exist yet |
+| `DisruptiveUpdateRefused` | The change needs `forgejo.weebo.io/allow-disruptive-update: "true"` |
+| `NamespaceNotAllowed` | Refused by a `ForgejoNamespacePolicy` |
+| `SecretTargetFailed` | Writing to a Kubernetes Secret or Vault failed |
+| `InvalidSpec` | Schema-valid, but not actionable (e.g. two owners) |
+| `ForgejoApiError` | Anything else Forgejo answered |
+
+## Disruptive changes
+
+Changes that can only be done by deleting and recreating (or that change
+URLs or credentials consumers rely on) are refused until the CR carries
+`forgejo.weebo.io/allow-disruptive-update: "true"`: repository transfer,
+moving a team to another organization, changing an OAuth2 application's
+owner, changing a token's scopes.
+
+## Deletion
+
+`spec.deletionPolicy`: `Orphan` keeps the Forgejo object, `Delete`
+removes it. Users, organizations and repositories default to `Orphan`;
+everything else to `Delete`. Users are never purged. Emitted secrets are
+always deleted with their CR.
+
+## Adopting existing objects
+
+The operator never adopts by name. To bring existing Forgejo objects under
+management, use `weebo-forgejo-importer`, which creates the CRs with the
+existing ids recorded in their status — see
+[Migrating an existing Forgejo](/docs/guides/migration).
+
+## Observability
+
+With `OTEL_EXPORTER_OTLP_ENDPOINT` set (`extraEnv`), traces and metrics
+are exported over OTLP:
+
+- `weebo_forgejo_reconcile_total{kind,result,reason}`
+- `weebo_forgejo_reconcile_duration_seconds{kind}`
+- `weebo_forgejo_webhook_decisions_total{kind,result}`
+
+`RUST_LOG` tunes log verbosity (default `info`).
+
+## ArgoCD
+
+ArgoCD needs a health check to understand these CRDs. The chart ships it
+in the `<release>-argocd-health` ConfigMap; copy its `health.lua` into
+`argocd-cm` as `resource.customizations.health.forgejo.weebo.io_<Kind>`
+for each kind.

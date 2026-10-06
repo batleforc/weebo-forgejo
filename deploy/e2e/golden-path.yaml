@@ -1,0 +1,83 @@
+# kind e2e golden path (deploy/e2e/run.sh applies it in two steps: the
+# cluster-scoped part, then — once the policy exists — the namespaced one).
+# --- cluster-scoped ---------------------------------------------------------
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoInstance
+metadata:
+  name: main
+spec:
+  url: http://forgejo.forgejo.svc:3000
+  tokenSecretRef:
+    name: forgejo-admin
+    namespace: forgejo
+    key: token
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: alice
+spec:
+  username: alice
+  email: alice@e2e.local
+  secretTargets:
+    - name: alice-password
+      namespace: team-a
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: ci-bot
+spec:
+  username: ci-bot
+  email: ci-bot@e2e.local
+  bot: true
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoOrganization
+metadata:
+  name: weebo
+spec:
+  name: weebo
+  visibility: private
+  ownerRef:
+    name: alice
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoTeam
+metadata:
+  name: weebo-devs
+spec:
+  organizationRef:
+    name: weebo
+  name: devs
+  permission: write
+  memberRefs:
+    - name: alice
+    - name: ci-bot
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUserKey
+metadata:
+  name: ci-bot
+spec:
+  userRef:
+    name: ci-bot
+  secretTargets:
+    - name: ci-bot-ssh
+      namespace: team-a
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoNamespacePolicy
+metadata:
+  name: teams
+spec:
+  rules:
+    - namespaces: ["team-*"]
+      allowedKinds:
+        - ForgejoRepository
+        - ForgejoWebhook
+        - ForgejoDeployKey
+        - ForgejoOAuth2Application
+        - ForgejoAccessToken
+      allowedOrganizations: [weebo]
+      allowedUsers: [ci-bot]

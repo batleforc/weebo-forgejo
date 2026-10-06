@@ -1,0 +1,40 @@
+---
+title: ForgejoRepository
+description: A Forgejo repository, owned by a `ForgejoOrganization` or a `ForgejoUser`.
+---
+
+A Forgejo repository, owned by a `ForgejoOrganization` or a
+`ForgejoUser`. Created empty (optionally initialized), from a template
+repository, or by migrating/mirroring a remote.
+
+Exactly one of `organizationRef`/`userRef`, and at most one of
+`init`/`fromTemplate`/`migrate` — checked by the reconciler
+(`InvalidSpec`), since kube's schema can't express one-of.
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `archived` | `boolean` | no | `false` | Archived repositories are read-only; their settings, branch protections and teams are left alone until unarchived. |
+| `branchProtections` | `object[]` | no |  | Branch protection rules. Authoritative: a rule not listed here is deleted. |
+| `defaultBranch` | `string` | no |  |  |
+| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR never deletes git history. |
+| `description` | `string` | no |  |  |
+| `fromTemplate` | `object` | no |  | Generate the repository from a template `ForgejoRepository` in the same namespace. Creation-time only. |
+| `init` | `object` | no |  | Creation-time initialization of an empty repository. |
+| `instanceRef` | `string` | no |  |  |
+| `isTemplate` | `boolean` | no | `false` | Mark the repository as a template others can be generated from. |
+| `migrate` | `object` | no |  | Migrate (or pull-mirror) a remote repository. Creation-time only, except `mirrorInterval`, which stays in sync. |
+| `name` | `string` | yes |  | Repository name. Changing it renames in place (Forgejo keeps a redirect from the old name). Changing the owner transfers the repository, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
+| `organizationRef` | `object` | no |  | Owning `ForgejoOrganization` (cluster-scoped). |
+| `private` | `boolean` | no | `false` |  |
+| `teamRefs` | `object[]` | no |  | `ForgejoTeam`s granted access (organization-owned repositories only; the teams must belong to the owning organization). Authoritative, except for the `Owners` team and teams with `includesAllRepositories`, which Forgejo always grants. |
+| `units` | `object` | no | `{}` | Repository units to enable or disable. Unset = Forgejo's default. |
+| `userRef` | `object` | no |  | Owning `ForgejoUser` (cluster-scoped). |
+| `website` | `string` | no |  |  |
+
+## Build a manifest
+
+Fill in the fields below to generate a ready-to-apply `ForgejoRepository` YAML manifest.
+
+<CrdForm kind="ForgejoRepository" />

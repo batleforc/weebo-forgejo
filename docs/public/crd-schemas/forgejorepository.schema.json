@@ -1,0 +1,406 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoRepository",
+  "scope": "Namespaced",
+  "description": "A Forgejo repository, owned by a `ForgejoOrganization` or a\n`ForgejoUser`. Created empty (optionally initialized), from a template\nrepository, or by migrating/mirroring a remote.\n\nExactly one of `organizationRef`/`userRef`, and at most one of\n`init`/`fromTemplate`/`migrate` — checked by the reconciler\n(`InvalidSpec`), since kube's schema can't express one-of.",
+  "properties": {
+    "archived": {
+      "default": false,
+      "description": "Archived repositories are read-only; their settings, branch\nprotections and teams are left alone until unarchived.",
+      "type": "boolean"
+    },
+    "branchProtections": {
+      "description": "Branch protection rules. Authoritative: a rule not listed here is\ndeleted.",
+      "items": {
+        "description": "One branch protection rule. Allow-lists name Forgejo users and teams\ndirectly (not CRs); each `enable*Whitelist` switch is derived from\nwhether its lists are non-empty.",
+        "properties": {
+          "applyToAdmins": {
+            "default": false,
+            "type": "boolean"
+          },
+          "approvalsWhitelistTeams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "approvalsWhitelistUsernames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "blockOnOfficialReviewRequests": {
+            "default": false,
+            "type": "boolean"
+          },
+          "blockOnOutdatedBranch": {
+            "default": false,
+            "type": "boolean"
+          },
+          "blockOnRejectedReviews": {
+            "default": false,
+            "type": "boolean"
+          },
+          "dismissStaleApprovals": {
+            "default": false,
+            "type": "boolean"
+          },
+          "enablePush": {
+            "default": false,
+            "description": "Allow pushing at all; with push allow-lists, only those may push.",
+            "type": "boolean"
+          },
+          "ignoreStaleApprovals": {
+            "default": false,
+            "type": "boolean"
+          },
+          "mergeWhitelistTeams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mergeWhitelistUsernames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "protectedFilePatterns": {
+            "nullable": true,
+            "type": "string"
+          },
+          "pushWhitelistDeployKeys": {
+            "default": false,
+            "type": "boolean"
+          },
+          "pushWhitelistTeams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pushWhitelistUsernames": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "requireSignedCommits": {
+            "default": false,
+            "type": "boolean"
+          },
+          "requiredApprovals": {
+            "default": 0,
+            "format": "int64",
+            "type": "integer"
+          },
+          "ruleName": {
+            "description": "Branch name or glob (`main`, `release/*`).",
+            "type": "string"
+          },
+          "statusCheckContexts": {
+            "description": "Required status checks; enables the check when non-empty.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unprotectedFilePatterns": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "ruleName"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "defaultBranch": {
+      "nullable": true,
+      "type": "string"
+    },
+    "deletionPolicy": {
+      "default": "Orphan",
+      "description": "Defaults to `Orphan`: deleting the CR never deletes git history.",
+      "enum": [
+        "Delete",
+        "Orphan"
+      ],
+      "type": "string"
+    },
+    "description": {
+      "nullable": true,
+      "type": "string"
+    },
+    "fromTemplate": {
+      "description": "Generate the repository from a template `ForgejoRepository` in the\nsame namespace. Creation-time only.",
+      "nullable": true,
+      "properties": {
+        "avatar": {
+          "default": false,
+          "type": "boolean"
+        },
+        "gitContent": {
+          "default": true,
+          "type": "boolean"
+        },
+        "gitHooks": {
+          "default": false,
+          "type": "boolean"
+        },
+        "labels": {
+          "default": false,
+          "type": "boolean"
+        },
+        "protectedBranches": {
+          "default": false,
+          "type": "boolean"
+        },
+        "repositoryRef": {
+          "description": "Template `ForgejoRepository` in the same namespace (must have\n`isTemplate: true`).",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "topics": {
+          "default": false,
+          "type": "boolean"
+        },
+        "webhooks": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "repositoryRef"
+      ],
+      "type": "object"
+    },
+    "init": {
+      "description": "Creation-time initialization of an empty repository.",
+      "nullable": true,
+      "properties": {
+        "autoInit": {
+          "default": true,
+          "description": "Create an initial commit (README, and the files below).",
+          "type": "boolean"
+        },
+        "gitignores": {
+          "description": "`.gitignore` template names, comma-separated (e.g. `Rust,Node`).",
+          "nullable": true,
+          "type": "string"
+        },
+        "license": {
+          "description": "License template name (e.g. `MIT`).",
+          "nullable": true,
+          "type": "string"
+        },
+        "objectFormat": {
+          "description": "`sha1` (default) or `sha256`.",
+          "nullable": true,
+          "type": "string"
+        },
+        "readme": {
+          "description": "README template name (`Default`).",
+          "nullable": true,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "instanceRef": {
+      "nullable": true,
+      "type": "string"
+    },
+    "isTemplate": {
+      "default": false,
+      "description": "Mark the repository as a template others can be generated from.",
+      "type": "boolean"
+    },
+    "migrate": {
+      "description": "Migrate (or pull-mirror) a remote repository. Creation-time only,\nexcept `mirrorInterval`, which stays in sync.",
+      "nullable": true,
+      "properties": {
+        "authSecretRef": {
+          "description": "Credentials for the remote, from a `Secret` in this namespace.",
+          "nullable": true,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "nullable": true,
+              "type": "string"
+            },
+            "tokenKey": {
+              "nullable": true,
+              "type": "string"
+            },
+            "usernameKey": {
+              "nullable": true,
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "cloneAddr": {
+          "description": "URL to clone from.",
+          "type": "string"
+        },
+        "issues": {
+          "default": false,
+          "type": "boolean"
+        },
+        "labels": {
+          "default": false,
+          "type": "boolean"
+        },
+        "lfs": {
+          "default": false,
+          "type": "boolean"
+        },
+        "milestones": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mirror": {
+          "default": false,
+          "description": "Keep the repository as a pull mirror of `cloneAddr`.",
+          "type": "boolean"
+        },
+        "mirrorInterval": {
+          "description": "Pull-mirror sync interval, a Go duration (`8h`, `30m`). Kept in sync\nafter creation; `0` disables periodic sync.",
+          "nullable": true,
+          "type": "string"
+        },
+        "pullRequests": {
+          "default": false,
+          "type": "boolean"
+        },
+        "releases": {
+          "default": false,
+          "type": "boolean"
+        },
+        "service": {
+          "default": "git",
+          "description": "`git` (default), `github`, `gitea`, `gitlab`, `gogs`, `onedev`,\n`gitbucket`, `codebase`, `forgejo` or `pagure`. Non-`git` services\ncan also bring issues, PRs, releases... (flags below).",
+          "type": "string"
+        },
+        "wiki": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cloneAddr"
+      ],
+      "type": "object"
+    },
+    "name": {
+      "description": "Repository name. Changing it renames in place (Forgejo keeps a\nredirect from the old name). Changing the owner transfers the\nrepository, which needs the\n`forgejo.weebo.io/allow-disruptive-update: \"true\"` annotation.",
+      "type": "string"
+    },
+    "organizationRef": {
+      "description": "Owning `ForgejoOrganization` (cluster-scoped).",
+      "nullable": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "private": {
+      "default": false,
+      "type": "boolean"
+    },
+    "teamRefs": {
+      "description": "`ForgejoTeam`s granted access (organization-owned repositories only;\nthe teams must belong to the owning organization). Authoritative,\nexcept for the `Owners` team and teams with\n`includesAllRepositories`, which Forgejo always grants.",
+      "items": {
+        "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name (see `.prompt/plan.md`, \"Références\"): a\ncluster-scoped target is looked up cluster-wide, a namespaced one in the\nreferencing CR's own namespace only.",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "units": {
+      "default": {},
+      "description": "Repository units to enable or disable. Unset = Forgejo's default.",
+      "properties": {
+        "actions": {
+          "nullable": true,
+          "type": "boolean"
+        },
+        "issues": {
+          "nullable": true,
+          "type": "boolean"
+        },
+        "packages": {
+          "nullable": true,
+          "type": "boolean"
+        },
+        "projects": {
+          "nullable": true,
+          "type": "boolean"
+        },
+        "pullRequests": {
+          "nullable": true,
+          "type": "boolean"
+        },
+        "releases": {
+          "nullable": true,
+          "type": "boolean"
+        },
+        "wiki": {
+          "nullable": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "userRef": {
+      "description": "Owning `ForgejoUser` (cluster-scoped).",
+      "nullable": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "website": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,38 @@
+version: "3"
+
+tasks:
+  test:
+    desc: "Fast unit + contract tests (lib-level, no cluster, no Forgejo)"
+    cmds:
+      # --no-fail-fast: one failing crate must not hide the others' results.
+      - mise exec -- cargo test --workspace --lib --bins --no-fail-fast
+
+  test:integration:
+    desc: "Every test target, including integration tests under crates/*/tests"
+    cmds:
+      - mise exec -- cargo test --workspace --tests --no-fail-fast
+
+  test:all:
+    desc: "Every test suite: unit/contract + integration"
+    cmds:
+      - task: test
+      - task: test:integration
+
+  test:live-forgejo:
+    desc: >
+      Layer-4 tests against a real Forgejo (ignored by default): the HTTP
+      gateway, then every controller end to end on envtest, then an
+      importer round trip. Needs
+      FORGEJO_URL and FORGEJO_TOKEN (site-admin, all scopes); in Che,
+      `task forgejo:start forgejo:bootstrap` provides both for
+      http://localhost:3000. FORGEJO_SOURCE_ID optionally covers external
+      users.
+    requires:
+      vars: [FORGEJO_URL, FORGEJO_TOKEN]
+    env:
+      FORGEJO_URL: "{{.FORGEJO_URL}}"
+      FORGEJO_TOKEN: "{{.FORGEJO_TOKEN}}"
+    cmds:
+      - mise exec -- cargo test -p adapters-outbound --test live_forgejo -- --ignored
+      - mise exec -- cargo test -p adapters-inbound --test live_forgejo -- --ignored
+      - mise exec -- cargo test -p importer --test live_forgejo -- --ignored

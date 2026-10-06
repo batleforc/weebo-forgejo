@@ -1,0 +1,40 @@
+version: "3"
+
+# Forgejo REST client generation — see .prompt/plan.md, "Client Forgejo
+# généré". The spec is vendored under spec/, so `client` runs offline and
+# is safe to call from `task recu` / the pre-commit hook; only `spec`
+# touches the network.
+
+vars:
+  FORGEJO_VERSION: '{{.FORGEJO_VERSION | default "16.0.5"}}'
+
+tasks:
+  spec:
+    desc: "Download and vendor Forgejo's Swagger spec for a release (usage: task gen:spec [FORGEJO_VERSION=16.0.5])"
+    cmds:
+      - spec/scripts/fetch-spec.sh "{{.FORGEJO_VERSION}}"
+
+  client:
+    desc: "Regenerate crates/forgejo-client from the vendored spec + spec/patches/*.jq (usage: task gen:client [FORGEJO_VERSION=16.0.5])"
+    sources:
+      - spec/forgejo-v{{.FORGEJO_VERSION}}.json
+      - spec/patches/*.jq
+      - spec/openapi-generator.yaml
+      - spec/forgejo-client.Cargo.toml
+      - spec/scripts/gen-client.sh
+    generates:
+      - crates/forgejo-client/src/**/*.rs
+      - crates/forgejo-client/Cargo.toml
+    cmds:
+      - mise exec -- spec/scripts/gen-client.sh "{{.FORGEJO_VERSION}}"
+
+  bump:
+    desc: "Move the client to another Forgejo release: vendor its spec, then regenerate (usage: task gen:bump FORGEJO_VERSION=x.y.z)"
+    requires:
+      vars: [FORGEJO_VERSION]
+    cmds:
+      - task: spec
+        vars: { FORGEJO_VERSION: "{{.FORGEJO_VERSION}}" }
+      - task: client
+        vars: { FORGEJO_VERSION: "{{.FORGEJO_VERSION}}" }
+      - echo "Update FORGEJO_VERSION's default in .tasks/gen.yaml and the devfile's forgejo image, then delete the old spec file"

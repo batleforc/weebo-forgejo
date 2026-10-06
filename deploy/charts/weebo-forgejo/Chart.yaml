@@ -1,0 +1,9 @@
+apiVersion: v2
+name: weebo-forgejo
+description: Kubernetes operator managing Forgejo users, organizations, teams, repositories, webhooks, keys, OAuth2 applications and access tokens as CRDs.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/batleforc/weebo-forgejo
+sources:
+  - https://github.com/batleforc/weebo-forgejo

@@ -1,0 +1,21 @@
+# Namespace allow-list. From the moment this exists, the namespaced kinds
+# are default-deny cluster-wide.
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoNamespacePolicy
+metadata:
+  name: teams
+spec:
+  rules:
+    # Every team namespace may manage repositories (and their hooks and
+    # deploy keys) in the `weebo` organization only.
+    - namespaces: ["team-*"]
+      allowedKinds: [ForgejoRepository, ForgejoWebhook, ForgejoDeployKey]
+      allowedOrganizations: [weebo]
+    # team-a may issue tokens for its own bot — and nobody else's.
+    - namespaces: [team-a]
+      allowedKinds: [ForgejoAccessToken]
+      allowedUsers: [ci-bot]
+    # Single sign-on applications are owned by sso-bot, from monitoring.
+    - namespaces: [monitoring]
+      allowedKinds: [ForgejoOAuth2Application]
+      allowedUsers: [sso-bot]

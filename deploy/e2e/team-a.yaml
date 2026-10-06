@@ -1,0 +1,76 @@
+# Namespaced half of the golden path, allowed by the `teams` policy.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-ci-webhook
+  namespace: team-a
+stringData:
+  hmac: e2e-hmac-secret
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: app
+  namespace: team-a
+spec:
+  organizationRef:
+    name: weebo
+  name: app
+  private: true
+  init:
+    readme: Default
+  teamRefs:
+    - name: weebo-devs
+  branchProtections:
+    - ruleName: main
+      enablePush: true
+      pushWhitelistTeams: [devs]
+      requiredApprovals: 1
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoWebhook
+metadata:
+  name: app-ci
+  namespace: team-a
+spec:
+  repositoryRef:
+    name: app
+  url: http://ci.team-a.svc/hooks/forgejo
+  events: [push, pull_request]
+  secretRef:
+    name: app-ci-webhook
+    key: hmac
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoDeployKey
+metadata:
+  name: app-ci
+  namespace: team-a
+spec:
+  repositoryRef:
+    name: app
+  secretTargets:
+    - name: app-deploy-key
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoOAuth2Application
+metadata:
+  name: grafana
+  namespace: team-a
+spec:
+  ownerRef:
+    name: ci-bot
+  redirectUris:
+    - https://grafana.e2e.local/login/generic_oauth
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoAccessToken
+metadata:
+  name: ci
+  namespace: team-a
+spec:
+  userRef:
+    name: ci-bot
+  scopes: [read:repository, read:user]
+  repositoryRefs:
+    - name: app

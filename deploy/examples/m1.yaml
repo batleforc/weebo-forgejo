@@ -1,0 +1,71 @@
+# M1 walkthrough: an instance, three kinds of users, an organization and a
+# team. Create the admin token Secret first:
+#   kubectl -n forgejo create secret generic forgejo-admin --from-literal=token=<site-admin token>
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoInstance
+metadata:
+  name: main
+spec:
+  url: https://git.example.com
+  tokenSecretRef:
+    name: forgejo-admin
+    namespace: forgejo
+    key: token
+---
+# Pre-provisioned OIDC account, linked at first login through
+# authentication source 2 (Site administration → Authentication sources).
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: alice
+spec:
+  username: alice
+  email: alice@example.com
+  loginSourceId: 2
+  loginName: alice
+---
+# Someone Forgejo will create on their first OIDC login: only observed, so
+# teams can list them before they ever logged in (MemberPending until then).
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: carol
+spec:
+  username: carol
+  managementPolicy: Observe
+---
+# Service account: its random password is never emitted, so it only
+# works through ForgejoAccessTokens and ForgejoUserKeys.
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: ci-bot
+spec:
+  username: ci-bot
+  email: ci-bot@example.com
+  bot: true
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoOrganization
+metadata:
+  name: weebo
+spec:
+  name: weebo
+  fullName: Weebo
+  visibility: private
+  ownerRef:
+    name: alice
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoTeam
+metadata:
+  name: weebo-devs
+spec:
+  organizationRef:
+    name: weebo
+  name: devs
+  permission: write
+  memberRefs:
+    - name: alice
+    - name: carol
+    - name: ci-bot

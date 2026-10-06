@@ -1,0 +1,129 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoWebhook",
+  "scope": "Namespaced",
+  "description": "A webhook on a `ForgejoRepository` (same namespace) or a\n`ForgejoOrganization` — exactly one of the two refs.",
+  "properties": {
+    "active": {
+      "default": true,
+      "type": "boolean"
+    },
+    "authorizationHeaderSecretRef": {
+      "description": "Value sent as the `Authorization` header (write-only as well).",
+      "nullable": true,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "name"
+      ],
+      "type": "object"
+    },
+    "branchFilter": {
+      "description": "Glob limiting push/branch events, e.g. `main` or `{main,release/*}`.",
+      "nullable": true,
+      "type": "string"
+    },
+    "contentType": {
+      "default": "json",
+      "description": "`json` (default) or `form`.",
+      "type": "string"
+    },
+    "deletionPolicy": {
+      "default": "Delete",
+      "description": "What happens to the Forgejo object when its CR is deleted.",
+      "enum": [
+        "Delete",
+        "Orphan"
+      ],
+      "type": "string"
+    },
+    "events": {
+      "default": [
+        "push"
+      ],
+      "description": "Trigger events (`push`, `pull_request`, `issues`, `release`,\n`create`, `delete`, ...).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "extraConfig": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Type-specific settings (e.g. `username`/`channel` for Slack).",
+      "type": "object"
+    },
+    "httpMethod": {
+      "nullable": true,
+      "type": "string"
+    },
+    "instanceRef": {
+      "nullable": true,
+      "type": "string"
+    },
+    "organizationRef": {
+      "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name (see `.prompt/plan.md`, \"Références\"): a\ncluster-scoped target is looked up cluster-wide, a namespaced one in the\nreferencing CR's own namespace only.",
+      "nullable": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "repositoryRef": {
+      "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name (see `.prompt/plan.md`, \"Références\"): a\ncluster-scoped target is looked up cluster-wide, a namespaced one in the\nreferencing CR's own namespace only.",
+      "nullable": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "secretRef": {
+      "description": "HMAC secret signing the payloads. Write-only in Forgejo: a change of\nthe Secret's value is detected through `status.appliedSecretHash`.",
+      "nullable": true,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "name"
+      ],
+      "type": "object"
+    },
+    "type": {
+      "default": "forgejo",
+      "description": "`forgejo` (default), `gitea`, `gogs`, `slack`, `discord`,\n`dingtalk`, `telegram`, `msteams`, `feishu`, `wechatwork` or\n`packagist`. Changing it recreates the hook.",
+      "type": "string"
+    },
+    "url": {
+      "description": "Payload URL.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+}

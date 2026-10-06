@@ -1,0 +1,77 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoOrganization",
+  "scope": "Cluster",
+  "description": "A Forgejo organization.",
+  "properties": {
+    "deletionPolicy": {
+      "default": "Orphan",
+      "description": "Defaults to `Orphan`: deleting the CR never deletes the\norganization (Forgejo also refuses while it still owns repos).",
+      "enum": [
+        "Delete",
+        "Orphan"
+      ],
+      "type": "string"
+    },
+    "description": {
+      "nullable": true,
+      "type": "string"
+    },
+    "email": {
+      "nullable": true,
+      "type": "string"
+    },
+    "fullName": {
+      "nullable": true,
+      "type": "string"
+    },
+    "instanceRef": {
+      "nullable": true,
+      "type": "string"
+    },
+    "location": {
+      "nullable": true,
+      "type": "string"
+    },
+    "name": {
+      "description": "Organization name (its URL slug). Changing it renames in place.",
+      "type": "string"
+    },
+    "ownerRef": {
+      "description": "`ForgejoUser` that becomes the organization's first owner. Only read\nat creation; without it the operator's admin account owns it.",
+      "nullable": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "repoAdminChangeTeamAccess": {
+      "default": false,
+      "description": "Let repository admins change which teams can access their repo.",
+      "type": "boolean"
+    },
+    "visibility": {
+      "default": "public",
+      "description": "Visibility of a Forgejo user or organization.",
+      "enum": [
+        "public",
+        "private",
+        "limited"
+      ],
+      "type": "string"
+    },
+    "website": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "type": "object"
+}

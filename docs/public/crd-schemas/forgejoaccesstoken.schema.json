@@ -1,0 +1,107 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoAccessToken",
+  "scope": "Namespaced",
+  "description": "An access token of a `ForgejoUser` (typically a bot), issued through the\nadmin API (Forgejo v16+) and written to `secretTargets` as\n`FORGEJO_TOKEN`, `FORGEJO_USERNAME` and `FORGEJO_URL`.\n\nToken values can't be read back: a lost target, a new\n`forgejo.weebo.io/rotate-secret` nonce or an elapsed `rotationPeriod`\nissues a new token (the old one is revoked first, as names are unique).",
+  "properties": {
+    "deletionPolicy": {
+      "default": "Delete",
+      "description": "What happens to the Forgejo object when its CR is deleted.",
+      "enum": [
+        "Delete",
+        "Orphan"
+      ],
+      "type": "string"
+    },
+    "instanceRef": {
+      "nullable": true,
+      "type": "string"
+    },
+    "name": {
+      "description": "Token name, unique per user. Defaults to `<namespace>-<cr name>`.",
+      "nullable": true,
+      "type": "string"
+    },
+    "repositoryRefs": {
+      "description": "Restrict the token to these `ForgejoRepository`s (same namespace).\nSame disruptive-update rule as `scopes`.",
+      "items": {
+        "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name (see `.prompt/plan.md`, \"Références\"): a\ncluster-scoped target is looked up cluster-wide, a namespaced one in the\nreferencing CR's own namespace only.",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "rotationPeriod": {
+      "description": "Issue a new token once the current one is this old — a Go duration\nsuch as `720h`.",
+      "nullable": true,
+      "type": "string"
+    },
+    "scopes": {
+      "description": "`all`, or `read:`/`write:` + `activitypub`, `admin`, `issue`,\n`misc`, `notification`, `organization`, `package`, `repository`,\n`user`. Changing scopes issues a new token, which needs the\n`forgejo.weebo.io/allow-disruptive-update: \"true\"` annotation.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "secretTargets": {
+      "description": "Defaults to one target named after the CR, in its namespace, on the\ninstance's default `secretStore` backend.",
+      "items": {
+        "description": "Where an emitted secret (generated password or key, OAuth2 credentials,\naccess token) is written. A CR may list several targets — the same\nvalue is fanned out to each.",
+        "properties": {
+          "backend": {
+            "default": "kubernetes",
+            "description": "`kubernetes` (default) or `vault`. A Vault target reuses the\nconnection (address, mount, auth) of the `ForgejoInstance`'s\n`secretStore.vault`, which must then be set.",
+            "enum": [
+              "kubernetes",
+              "vault"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Kubernetes: the `Secret` name. Vault: names the default path\n`<pathPrefix>/<namespace>/<name>` when `path` is unset.",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Kubernetes `Secret` namespace (Vault: the namespace segment of the\ndefault path). Defaults to the CR's own namespace; required on\ncluster-scoped CRs.",
+            "nullable": true,
+            "type": "string"
+          },
+          "path": {
+            "description": "Vault only: explicit KV v2 path under the instance's mount.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "userRef": {
+      "description": "`ForgejoUser` the token belongs to.",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "scopes",
+    "userRef"
+  ],
+  "type": "object"
+}
