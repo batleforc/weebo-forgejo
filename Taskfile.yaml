@@ -1,0 +1,48 @@
+version: "3"
+
+includes:
+  mise: ./.tasks/mise.yaml
+  claude: ./.tasks/claude.yaml
+  template: ./.tasks/template.yaml
+
+tasks:
+  init:
+    desc: "Init folder"
+    cmds:
+      - task mise:install
+      - task claude:install
+      - cog install-hook -a -o
+
+  init-repo:
+    desc: "Adapt the template to its new repo name (usage: task init-repo [NAME=my-project] [OWNER=batleforc], NAME defaults to the folder name)"
+    vars:
+      NAME: "{{.NAME | default (base .ROOT_DIR)}}"
+      OWNER: '{{.OWNER | default "batleforc"}}'
+    preconditions:
+      - sh: '[ "{{.NAME}}" != "weebo-base" ]'
+        msg: "NAME still resolves to 'weebo-base': pass NAME=<new-name> or rename the folder first"
+    cmds:
+      - "sed -i 's/^  name: weebo-base$/  name: {{.NAME}}/' devfile.yaml"
+      - sed -i 's/^repository = "weebo-base"$/repository = "{{.NAME}}"/' cog.toml
+      - sed -i 's/^owner = ".*"$/owner = "{{.OWNER}}"/' cog.toml
+      - |
+        cat > readme.md <<'EOF'
+        # {{.NAME}}
+
+        Project bootstrapped from the [weebo-base](https://github.com/batleforc/weebo-base) template.
+        EOF
+      - echo "Repo adapted to '{{.NAME}}' (owner '{{.OWNER}}'), review the changes then commit them"
+  recu:
+    desc: "Recuring job like regenerating Swagger spec"
+    cmds:
+      - echo "Your future spec generating cmd"
+
+  lint:
+    desc: "Linting your project to apply good practice"
+    cmds:
+      - echo "Something like cargo fmt && cargo clippy"
+
+  audit:
+    desc: "Check dependencies and Containerfile for CVE"
+    cmds:
+      - echo "Something like cargo audit, pnpm audit or trivy fs ."

@@ -1,0 +1,46 @@
+from_latest_tag = true
+ignore_merge_commits = false
+disable_changelog = false
+disable_bump_commit = false
+generate_mono_repository_global_tag = true
+branch_whitelist = []
+skip_ci = "[skip ci]"
+skip_untracked = false
+post_bump_hooks = []
+post_package_bump_hooks = []
+tag_prefix = "v"
+
+pre_bump_hooks = []
+
+
+[git_hooks]
+
+[git_hooks.commit-msg]
+script = """#!/bin/sh
+set -e
+cog verify --file "$1"
+"""
+
+[git_hooks.pre-commit]
+script = """#!/bin/sh
+set -e
+task recu
+git add -u # in case recu needed to regenerate files, add need to be done before linting (-u: tracked files only)
+task lint
+git add -u # in case linting fixed anything
+.hooks/end-of-line.sh
+.hooks/whitespace-fixer.sh
+gitleaks git --pre-commit --redact --staged --verbose
+"""
+
+[commit_types]
+release = { changelog_title = "Releases" }
+
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+repository = "weebo-base"
+owner = "batleforc"
+
+[bump_profiles]

@@ -1,0 +1,12 @@
+[tools]
+cocogitto = "latest"
+node = "24"
+rust = "latest"
+task = "latest"
+gitleaks = "latest"
+jq = "latest"
+claude = "latest"
+rtk = "latest"
+uv = "latest"
+"pipx:desloppify[full]" = "latest"
+"pipx:graphifyy" = "latest"

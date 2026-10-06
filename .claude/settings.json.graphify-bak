@@ -1,0 +1,21 @@
+{
+  "extraKnownMarketplaces": {
+    "weebo": {
+      "source": {
+        "source": "github",
+        "repo": "batleforc/weebo-skills"
+      }
+    },
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "monofolio-design@weebo": true,
+    "batlehub@weebo": true,
+    "ponytail@ponytail": true
+  }
+}

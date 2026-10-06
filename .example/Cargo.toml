@@ -1,0 +1,27 @@
+# This is an example Cargo.toml
+# It's made to reduce the size of the target folder has we have a
+# huge problem with it growing over 100Gb pretty easily.
+# A second focus need to be made on keeping dependecy up to date and cve less.
+
+[workspace]
+resolver = "2"
+members = []
+
+[workspace.package]
+version = "1.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.lints.clippy]
+wildcard_imports = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
