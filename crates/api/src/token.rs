@@ -40,7 +40,8 @@ pub struct ForgejoAccessTokenSpec {
     /// `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
     pub scopes: Vec<String>,
     /// Restrict the token to these `ForgejoRepository`s (same namespace).
-    /// Same disruptive-update rule as `scopes`.
+    /// Forgejo then only accepts the `read:`/`write:` `issue` and
+    /// `repository` scopes. Same disruptive-update rule as `scopes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repository_refs: Vec<ObjectRef>,
     /// Issue a new token once the current one is this old — a Go duration

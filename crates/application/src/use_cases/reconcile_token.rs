@@ -36,6 +36,14 @@ pub fn token_name(spec: &ForgejoAccessTokenSpec, namespace: &str, cr_name: &str)
         .unwrap_or_else(|| format!("{namespace}-{cr_name}"))
 }
 
+/// The only scopes Forgejo accepts on a token limited to repositories.
+const REPOSITORY_LIMITED_SCOPES: [&str; 4] = [
+    "read:issue",
+    "write:issue",
+    "read:repository",
+    "write:repository",
+];
+
 pub async fn reconcile_token(
     input: TokenInput<'_>,
     gateway: &dyn ForgejoGateway,
@@ -50,6 +58,26 @@ pub async fn reconcile_token(
             Failure::new(
                 ReasonCode::InvalidSpec,
                 format!("spec.rotationPeriod {p:?} is not a positive Go duration (e.g. 720h)"),
+            ),
+        );
+    }
+    // Forgejo refuses (400) a repository-limited token with any other
+    // scope; say so before the round trip.
+    if !spec.repository_refs.is_empty()
+        && let Some(bad) = spec
+            .scopes
+            .iter()
+            .find(|s| !REPOSITORY_LIMITED_SCOPES.contains(&s.as_str()))
+    {
+        return Outcome::failed(
+            input.current,
+            Failure::new(
+                ReasonCode::InvalidSpec,
+                format!(
+                    "scope {bad:?} can't be combined with spec.repositoryRefs: Forgejo only \
+                     allows {} on repository-limited tokens",
+                    REPOSITORY_LIMITED_SCOPES.join(", ")
+                ),
             ),
         );
     }
@@ -303,5 +331,16 @@ mod tests {
         s.rotation_period = Some("monthly".into());
         let outcome = reconcile_token(input(&s, None, 0), &fj, &secrets).await;
         assert_eq!(outcome.reason(), ReasonCode::InvalidSpec);
+    }
+
+    #[tokio::test]
+    async fn repository_limited_token_rejects_other_scopes() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let mut s = spec();
+        s.repository_refs = vec![api::common::ObjectRef { name: "app".into() }];
+        s.scopes = vec!["read:repository".into(), "read:user".into()];
+        let outcome = reconcile_token(input(&s, None, 0), &fj, &secrets).await;
+        assert_eq!(outcome.reason(), ReasonCode::InvalidSpec);
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
     }
 }

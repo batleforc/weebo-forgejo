@@ -71,6 +71,6 @@ metadata:
 spec:
   userRef:
     name: ci-bot
-  scopes: [read:repository, read:user]
+  scopes: [read:repository]
   repositoryRefs:
     - name: app

@@ -49,6 +49,7 @@ spec:
               port: http
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           volumeMounts:
@@ -56,10 +57,14 @@ spec:
               mountPath: /var/lib/gitea
             - name: config
               mountPath: /etc/gitea
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: data
           emptyDir: {}
         - name: config
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
 ---
 apiVersion: v1

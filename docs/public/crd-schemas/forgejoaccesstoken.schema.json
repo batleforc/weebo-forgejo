@@ -23,7 +23,7 @@
       "type": "string"
     },
     "repositoryRefs": {
-      "description": "Restrict the token to these `ForgejoRepository`s (same namespace).\nSame disruptive-update rule as `scopes`.",
+      "description": "Restrict the token to these `ForgejoRepository`s (same namespace).\nForgejo then only accepts the `read:`/`write:` `issue` and\n`repository` scopes. Same disruptive-update rule as `scopes`.",
       "items": {
         "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name (see `.prompt/plan.md`, \"Références\"): a\ncluster-scoped target is looked up cluster-wide, a namespaced one in the\nreferencing CR's own namespace only.",
         "properties": {

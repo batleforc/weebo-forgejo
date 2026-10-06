@@ -7,7 +7,8 @@
 #
 # Env: IMAGE (operator image already loaded in the cluster, default
 # weebo-forgejo-operator:e2e), CERT_MANAGER_VERSION (default latest).
-set -euo pipefail
+# -E: functions (ready, ...) inherit the ERR trap that dumps diagnostics.
+set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHART="$HERE/../charts/weebo-forgejo"
@@ -95,8 +96,8 @@ forgejo_api /repos/weebo/app/teams | jq -e 'any(.name == "devs")' >/dev/null || 
 forgejo_api /teams/"$(kubectl get forgejoteam weebo-devs -o jsonpath='{.status.forgejoId}')"/members \
   | jq -e '[.[].login] | sort == ["alice", "ci-bot"]' >/dev/null || fail "team members"
 token="$(kubectl -n team-a get secret ci -o jsonpath='{.data.FORGEJO_TOKEN}' | base64 -d)"
-curl -fsS -H "Authorization: token $token" http://127.0.0.1:13000/api/v1/user \
-  | jq -e '.login == "ci-bot"' >/dev/null || fail "the issued token does not act as ci-bot"
+curl -fsS -H "Authorization: token $token" http://127.0.0.1:13000/api/v1/repos/weebo/app \
+  | jq -e '.full_name == "weebo/app"' >/dev/null || fail "the issued token can't read weebo/app"
 
 step "policy denials"
 # One document per apply, so each refusal is checked on its own.

@@ -54,7 +54,8 @@ spec:
               repositoryRefs:
                 description: |-
                   Restrict the token to these `ForgejoRepository`s (same namespace).
-                  Same disruptive-update rule as `scopes`.
+                  Forgejo then only accepts the `read:`/`write:` `issue` and
+                  `repository` scopes. Same disruptive-update rule as `scopes`.
                 items:
                   description: |-
                     Reference to another CR of this operator, by `metadata.name`. Always a

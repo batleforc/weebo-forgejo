@@ -46,7 +46,7 @@ metadata:
 spec:
   userRef:
     name: sso-bot
-  scopes: [write:repository, read:user]
+  scopes: [write:repository]
   repositoryRefs:
     - name: app
   rotationPeriod: 720h
