@@ -500,6 +500,93 @@ async fn repository_lifecycle() {
     gw.delete_user(&user).await.unwrap();
 }
 
+const OTHER_DEPLOY_KEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDs3J/6KpTdghMXcL313VedZU2+QE8noabrP3etYEazY live-c";
+const OTHER_USER_KEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE3sH2n03276iqumX7xO1UkM88Z/EUWZQwPZRLJphckF live-d";
+
+/// What the key reconcile and cleanup rely on: a key read through an owner
+/// that doesn't hold it is absent, while deleting it there is refused
+/// (403 "You do not have access to this key") — so the use-case only
+/// deletes where `get` found the key. Once the key is gone, a deploy key
+/// delete succeeds anywhere (204) and a user key delete is a 404.
+#[tokio::test]
+#[ignore = "needs a live Forgejo: task test:live-forgejo"]
+async fn keys_are_only_visible_on_their_owner() {
+    use application::ports::{DesiredRepository, RepositoryInitOptions};
+
+    let gw = gateway();
+    let s = suffix();
+    let org = format!("live-korg-{s}");
+    let (alice, bob) = (format!("live-kalice-{s}"), format!("live-kbob-{s}"));
+    gw.create_organization(
+        None,
+        &DesiredOrganization {
+            name: org.clone(),
+            visibility: "public",
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut repos = Vec::new();
+    for name in ["holder", "other"] {
+        let desired = DesiredRepository {
+            name: name.into(),
+            ..Default::default()
+        };
+        let created = gw
+            .create_repository(&org, true, &desired, &RepositoryInitOptions::default())
+            .await
+            .unwrap();
+        repos.push(created.name);
+    }
+    let (holder, other) = (&repos[0], &repos[1]);
+
+    // Deploy key.
+    let k = gw
+        .create_deploy_key(holder, "ci", OTHER_DEPLOY_KEY, true)
+        .await
+        .unwrap();
+    assert!(gw.get_deploy_key(other, k.id).await.unwrap().is_none());
+    let refused = gw.delete_deploy_key(other, k.id).await;
+    assert!(
+        matches!(refused, Err(GatewayError::Api(ref m)) if m.contains("refused access to the object")),
+        "deleting through another repository: {refused:?}"
+    );
+    assert!(gw.get_deploy_key(holder, k.id).await.unwrap().is_some());
+    gw.delete_deploy_key(holder, k.id).await.unwrap();
+    gw.delete_deploy_key(other, k.id).await.unwrap();
+    gw.delete_deploy_key(holder, k.id).await.unwrap();
+
+    // User key.
+    gw.create_user(&local_user(&alice)).await.unwrap();
+    gw.create_user(&local_user(&bob)).await.unwrap();
+    let uk = gw
+        .create_user_key(&alice, "laptop", OTHER_USER_KEY)
+        .await
+        .unwrap();
+    assert!(gw.get_user_key(&bob, uk.id).await.unwrap().is_none());
+    let refused = gw.delete_user_key(&bob, uk.id).await;
+    assert!(
+        matches!(refused, Err(GatewayError::Api(ref m)) if m.contains("refused access to the object")),
+        "deleting through another user: {refused:?}"
+    );
+    assert!(gw.get_user_key(&alice, uk.id).await.unwrap().is_some());
+    gw.delete_user_key(&alice, uk.id).await.unwrap();
+    assert!(matches!(
+        gw.delete_user_key(&bob, uk.id).await,
+        Err(GatewayError::NotFound(_))
+    ));
+
+    for repo in &repos {
+        gw.delete_repository(repo).await.unwrap();
+    }
+    gw.delete_organization(&org).await.unwrap();
+    gw.delete_user(&alice).await.unwrap();
+    gw.delete_user(&bob).await.unwrap();
+}
+
 #[tokio::test]
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn oauth2_apps_through_sudo_and_admin_tokens() {

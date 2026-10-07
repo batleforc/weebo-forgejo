@@ -32,6 +32,9 @@ pub struct KeyInput<'a> {
     /// The CR's namespace; `None` for the cluster-scoped `ForgejoUserKey`.
     pub namespace: Option<&'a str>,
     pub current: Option<ForgejoRef>,
+    /// Where `current` was created (the `forgejo.weebo.io/key-owner`
+    /// record); `None` = unknown, assumed to be `owner`.
+    pub created_on: Option<KeyOwner>,
     /// The `forgejo.weebo.io/rotate-secret` annotation.
     pub rotate_nonce: Option<String>,
     pub last_rotation: Option<String>,
@@ -61,7 +64,21 @@ pub async fn reconcile_key(
 
     let remote = match &input.current {
         Some(c) => match get(&input.owner, c.id, gateway).await {
-            Ok(r) => r,
+            Ok(Some(r)) => Some(r),
+            // Not on `owner`: if the ref moved to another repository/user
+            // (and not merely a rename, which keeps the key where `get`
+            // found it), the key may still be on the old one — delete it
+            // there before creating its replacement. Only once `get` found
+            // it there: the old name may belong to another account or
+            // repository by now, which refuses a key that isn't its own.
+            Ok(None) => {
+                if let Some(old) = input.created_on.as_ref().filter(|o| **o != input.owner)
+                    && let Err(e) = delete_if_held(old, c.id, gateway).await
+                {
+                    return Outcome::failed(input.current.clone(), e);
+                }
+                None
+            }
             Err(e) => return Outcome::failed(input.current.clone(), e),
         },
         None => None,
@@ -132,12 +149,18 @@ pub async fn reconcile_key(
     outcome
 }
 
-/// `owner` is `None` only when the controller can find no record of the
-/// repository/user the key was created on (never resolved, nothing
+/// `owners` are the repositories/users the key may be on (where it was
+/// created, then the current ref, which differs after a rename): it is
+/// deleted on the first one `get` finds it on. A key found on none of
+/// them is already gone. Never deleting blind matters: a wrong owner
+/// doesn't always answer `NotFound` (Forgejo refuses a key that isn't the
+/// repository's or the user's, e.g. once another account took a renamed
+/// one's name), and that refusal would hold the finalizer forever. Empty
+/// only when the controller has no record at all (never resolved, nothing
 /// recorded): the key can't be addressed, only the emitted secrets are
 /// left to delete.
 pub async fn cleanup_key(
-    owner: Option<&KeyOwner>,
+    owners: &[KeyOwner],
     source: &KeySource,
     namespace: Option<&str>,
     deletion_policy: DeletionPolicy,
@@ -146,10 +169,15 @@ pub async fn cleanup_key(
     secrets: &dyn SecretStore,
 ) -> Result<(), Failure> {
     if deletion_policy == DeletionPolicy::Delete
-        && let (Some(owner), Some(current)) = (owner, current)
+        && let Some(current) = current
+        && !owners.is_empty()
     {
         let gateway = gateway.map_err(Clone::clone)?;
-        gone_ok(delete(owner, current.id, gateway).await)?;
+        for owner in owners {
+            if delete_if_held(owner, current.id, gateway).await? {
+                break;
+            }
+        }
     }
     if source.public_key.is_none() {
         for target in &source.secret_targets {
@@ -197,6 +225,20 @@ async fn delete(
         KeyOwner::Repository(repo) => gateway.delete_deploy_key(repo, id).await,
         KeyOwner::User(user) => gateway.delete_user_key(user, id).await,
     }
+}
+
+/// Deletes key `id` from `owner` if `owner` holds it; `Ok(false)` when it
+/// doesn't.
+async fn delete_if_held(
+    owner: &KeyOwner,
+    id: i64,
+    gateway: &dyn ForgejoGateway,
+) -> Result<bool, GatewayError> {
+    if get(owner, id, gateway).await?.is_none() {
+        return Ok(false);
+    }
+    gone_ok(delete(owner, id, gateway).await)?;
+    Ok(true)
 }
 
 async fn any_target_missing(
@@ -265,6 +307,7 @@ mod tests {
             source,
             namespace: Some("team-a"),
             current,
+            created_on: None,
             rotate_nonce: None,
             last_rotation: None,
         }
@@ -353,6 +396,134 @@ mod tests {
         assert_eq!(outcome.reason(), ReasonCode::InvalidSpec);
     }
 
+    #[tokio::test]
+    async fn moved_ref_deletes_the_key_on_the_old_owner() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let source = generated();
+        let first = reconcile_key(input(&source, None), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+
+        let mut moved = input(&source, Some(first.clone()));
+        moved.owner = KeyOwner::Repository("weebo/other".into());
+        moved.created_on = Some(KeyOwner::Repository("weebo/app".into()));
+        let outcome = reconcile_key(moved, &fj, &secrets).await;
+        assert!(outcome.ready.is_ok(), "{outcome:?}");
+        let second = outcome.forgejo.unwrap();
+        assert!(fj.key(first.id).is_none(), "old repository's key deleted");
+        assert_eq!(
+            fj.calls(),
+            vec![
+                "create_deploy_key weebo/app ci".to_string(),
+                format!("delete_deploy_key weebo/app {}", first.id),
+                "create_deploy_key weebo/other ci".to_string(),
+            ]
+        );
+        assert!(fj.key(second.id).is_some());
+    }
+
+    #[tokio::test]
+    async fn renamed_owner_keeps_its_key() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let source = generated();
+        let first = reconcile_key(input(&source, None), &fj, &secrets)
+            .await
+            .forgejo;
+        fj.clear_calls();
+        // Recorded under a name the key no longer answers to, but `get`
+        // finds it on the current owner: nothing to move.
+        let mut renamed = input(&source, first.clone());
+        renamed.created_on = Some(KeyOwner::Repository("weebo/old-name".into()));
+        let outcome = reconcile_key(renamed, &fj, &secrets).await;
+        assert_eq!(outcome.forgejo, first);
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+    }
+
+    #[tokio::test]
+    async fn cleanup_falls_back_to_the_next_owner() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let source = generated();
+        let created = reconcile_key(input(&source, None), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        let owners = [
+            KeyOwner::Repository("weebo/old-name".into()),
+            KeyOwner::Repository("weebo/app".into()),
+        ];
+        // The recorded name now belongs to another repository, which would
+        // refuse the key outright: it is only deleted where it is.
+        fj.clear_calls();
+        cleanup_key(
+            &owners,
+            &source,
+            Some("team-a"),
+            DeletionPolicy::Delete,
+            Some(&created),
+            Ok(&fj),
+            &secrets,
+        )
+        .await
+        .unwrap();
+        assert!(fj.key(created.id).is_none());
+        assert_eq!(
+            fj.calls(),
+            vec![format!("delete_deploy_key weebo/app {}", created.id)]
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_of_a_key_gone_everywhere_succeeds() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let source = generated();
+        let created = reconcile_key(input(&source, None), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        fj.remove_key(created.id);
+        fj.clear_calls();
+        let owners = [
+            KeyOwner::Repository("weebo/old-name".into()),
+            KeyOwner::Repository("weebo/app".into()),
+        ];
+        cleanup_key(
+            &owners,
+            &source,
+            Some("team-a"),
+            DeletionPolicy::Delete,
+            Some(&created),
+            Ok(&fj),
+            &secrets,
+        )
+        .await
+        .unwrap();
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+    }
+
+    #[tokio::test]
+    async fn key_gone_from_a_taken_over_old_owner_is_recreated() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let source = generated();
+        let first = reconcile_key(input(&source, None), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        // Deleted out of band; the recorded owner name is someone else's
+        // now and would refuse a blind delete.
+        fj.remove_key(first.id);
+        fj.clear_calls();
+        let mut moved = input(&source, Some(first.clone()));
+        moved.owner = KeyOwner::Repository("weebo/renamed".into());
+        moved.created_on = Some(KeyOwner::Repository("weebo/app".into()));
+        let outcome = reconcile_key(moved, &fj, &secrets).await;
+        assert!(outcome.ready.is_ok(), "{outcome:?}");
+        assert_eq!(
+            fj.calls(),
+            vec!["create_deploy_key weebo/renamed ci".to_string()]
+        );
+    }
+
     /// An unresolvable instance only blocks a cleanup that must call
     /// Forgejo: an orphaned key still has its secret removed.
     #[tokio::test]
@@ -367,7 +538,7 @@ mod tests {
         let unresolved = Failure::new(ReasonCode::InstanceNotFound, "gone");
 
         let deleting = cleanup_key(
-            Some(&owner),
+            std::slice::from_ref(&owner),
             &source,
             Some("team-a"),
             DeletionPolicy::Delete,
@@ -380,7 +551,7 @@ mod tests {
         assert!(fj.key(created.id).is_some());
 
         cleanup_key(
-            Some(&owner),
+            std::slice::from_ref(&owner),
             &source,
             Some("team-a"),
             DeletionPolicy::Orphan,

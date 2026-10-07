@@ -189,6 +189,7 @@ async fn cleanup(token: &ForgejoAccessToken, ctx: &Ctx) -> Result<Action, Error>
         &token.name_any(),
         &token.namespace().unwrap_or_default(),
         current_ref(token).as_ref(),
+        owner_id(&token.status),
         gateway.as_deref(),
         secrets.as_ref(),
     )

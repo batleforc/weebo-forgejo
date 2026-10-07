@@ -208,7 +208,10 @@ async fn import_round_trips_a_live_organization() {
             spec: &r.spec,
             current: current(&r.status),
             owner: repo::Owner::Organization(org_name.clone()),
-            source: None,
+            source: Err(application::use_cases::Failure::new(
+                domain::error::ReasonCode::ReferenceNotReady,
+                "not needed",
+            )),
             teams: vec!["Dev".into()],
             allow_disruptive_update: false,
         },

@@ -182,7 +182,7 @@ async fn apply(
     Ok(requeue_after(&outcome))
 }
 
-type Inputs = (Owner, Option<Source>, Vec<String>);
+type Inputs = (Owner, Result<Source, Failure>, Vec<String>);
 
 async fn resolve_inputs(
     repo: &ForgejoRepository,
@@ -223,11 +223,22 @@ async fn resolve_inputs(
     };
 
     // Resolved even when a repository is owned, in case it was deleted out
-    // of band; only a create needs it to succeed.
-    let source = match source(spec, &ns, ctx).await? {
-        Ok(s) => Some(s),
-        Err(f) if creating => return Ok(Err(f)),
-        Err(_) => None,
+    // of band; only a create needs it to succeed. An owned repository
+    // keeps being reconciled while its source is unreadable (a template
+    // CR not ready, a migrate Secret forbidden or an apiserver hiccup).
+    let source = match source(spec, &ns, ctx).await {
+        Ok(Ok(s)) => Ok(s),
+        Ok(Err(f)) if creating => return Ok(Err(f)),
+        Err(e) if creating => return Err(e),
+        Ok(Err(f)) => Err(f),
+        Err(e) => {
+            tracing::warn!(
+                repository = %repo.name_any(),
+                error = %e,
+                "source of an owned repository unreadable; only needed to recreate it"
+            );
+            Err(Failure::new(ReasonCode::ReferenceNotReady, e.to_string()))
+        }
     };
 
     let mut teams = Vec::with_capacity(spec.team_refs.len());

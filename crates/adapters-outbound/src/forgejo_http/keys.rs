@@ -3,7 +3,7 @@ use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{admin_api, repository_api, user_api};
 use forgejo_client::models;
 
-use super::{PAGE_SIZE, all_pages, classify, classify_create, found, missing_id};
+use super::{PAGE_SIZE, classify, classify_create, find_in_pages, found, missing_id};
 
 pub(super) fn split(full_name: &str) -> Result<(String, String), GatewayError> {
     full_name
@@ -82,25 +82,25 @@ pub(super) async fn get_user(
     id: i64,
 ) -> Result<Option<RemoteKey>, GatewayError> {
     // A missing user reads as an empty list: the key is just as absent.
-    let keys = all_pages(|page| async move {
-        let params = user_api::UserListKeysParams {
-            username: username.to_string(),
-            fingerprint: None,
-            page: Some(page),
-            limit: Some(PAGE_SIZE),
-        };
-        Ok(found(user_api::user_list_keys(config, params).await)?.unwrap_or_default())
-    })
+    let key = find_in_pages(
+        |page| async move {
+            let params = user_api::UserListKeysParams {
+                username: username.to_string(),
+                fingerprint: None,
+                page: Some(page),
+                limit: Some(PAGE_SIZE),
+            };
+            Ok(found(user_api::user_list_keys(config, params).await)?.unwrap_or_default())
+        },
+        |k| k.id == Some(id),
+    )
     .await?;
-    Ok(keys
-        .into_iter()
-        .find(|k| k.id == Some(id))
-        .map(|k| RemoteKey {
-            id,
-            title: k.title.unwrap_or_default(),
-            key: k.key.unwrap_or_default(),
-            read_only: k.read_only.unwrap_or_default(),
-        }))
+    Ok(key.map(|k| RemoteKey {
+        id,
+        title: k.title.unwrap_or_default(),
+        key: k.key.unwrap_or_default(),
+        read_only: k.read_only.unwrap_or_default(),
+    }))
 }
 
 pub(super) async fn create_user(

@@ -250,6 +250,10 @@ pub async fn import(
             let mut cr =
                 ForgejoDeployKey::new(&suffixed(repo_cr, &format!("key-{}", key.id)), spec);
             cr.metadata.namespace = Some(options.namespace.clone());
+            cr.metadata.annotations = Some(BTreeMap::from([(
+                api::KEY_OWNER_ANNOTATION.to_string(),
+                full_name.clone(),
+            )]));
             cr.status = seeded(key.id, &key.title);
             out.deploy_keys.push(cr);
         }
@@ -784,6 +788,11 @@ mod tests {
         let key = &out.deploy_keys[0];
         assert_eq!(key.spec.key.public_key.as_deref(), Some("ssh-ed25519 AAAA"));
         assert!(key.spec.read_only);
+        assert_eq!(
+            key.metadata.annotations.as_ref().unwrap()[api::KEY_OWNER_ANNOTATION],
+            "weebo/app",
+            "cleanup can find the key without the repository CR"
+        );
         assert!(out.warnings.is_empty(), "{:?}", out.warnings);
     }
 
@@ -882,7 +891,10 @@ mod tests {
                 spec: &r.spec,
                 current: current(&r.status, r),
                 owner: repo::Owner::Organization("weebo".into()),
-                source: None,
+                source: Err(crate::use_cases::Failure::new(
+                    domain::error::ReasonCode::ReferenceNotReady,
+                    "not needed",
+                )),
                 teams: vec!["Dev".into()],
                 allow_disruptive_update: false,
             },

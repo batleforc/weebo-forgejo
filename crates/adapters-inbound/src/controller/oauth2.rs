@@ -150,6 +150,7 @@ async fn cleanup(app: &ForgejoOAuth2Application, ctx: &Ctx) -> Result<Action, Er
         &app.name_any(),
         &app.namespace().unwrap_or_default(),
         current_ref(app).as_ref(),
+        owner_id(&app.status),
         gateway.as_deref(),
         secrets.as_ref(),
     )

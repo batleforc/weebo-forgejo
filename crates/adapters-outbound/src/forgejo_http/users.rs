@@ -5,6 +5,30 @@ use forgejo_client::models;
 
 use super::{classify, classify_create, found, missing_id, organizations};
 
+/// `GET /users/search?uid=`: the only lookup by id (an admin token sees
+/// every account, whatever its visibility).
+pub(super) async fn login_by_id(
+    config: &Configuration,
+    id: i64,
+) -> Result<Option<String>, GatewayError> {
+    let params = user_api::UserSearchParams {
+        q: None,
+        uid: Some(id),
+        sort: None,
+        page: None,
+        limit: Some(1),
+    };
+    let found = user_api::user_search(config, params)
+        .await
+        .map_err(classify)?;
+    Ok(found
+        .data
+        .unwrap_or_default()
+        .into_iter()
+        .find(|u| u.id == Some(id))
+        .and_then(|u| u.login))
+}
+
 pub(super) async fn get(
     config: &Configuration,
     username: &str,

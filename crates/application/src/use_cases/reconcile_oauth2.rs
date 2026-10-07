@@ -11,7 +11,9 @@ use domain::error::ReasonCode;
 
 use crate::ports::{DesiredOAuth2App, ForgejoGateway, ForgejoRef, RemoteOAuth2App, SecretStore};
 use crate::use_cases::emit::{self, rotation_requested};
-use crate::use_cases::{CleanupGateway, Failure, Outcome, gone_ok, same_owner};
+use crate::use_cases::{
+    CleanupGateway, Failure, Outcome, gone_ok, owner_login_now, previous_owner,
+};
 
 pub struct OAuth2Input<'a> {
     pub spec: &'a ForgejoOAuth2ApplicationSpec,
@@ -39,18 +41,47 @@ pub async fn reconcile_oauth2(
     gateway: &dyn ForgejoGateway,
     secrets: &dyn SecretStore,
 ) -> Outcome {
+    let (current, stored, desired) = (
+        input.current.clone(),
+        input.current_owner_id,
+        input.owner_id,
+    );
+    sync(input, gateway, secrets)
+        .await
+        .with_owner(current.as_ref(), stored, desired)
+}
+
+async fn sync(
+    input: OAuth2Input<'_>,
+    gateway: &dyn ForgejoGateway,
+    secrets: &dyn SecretStore,
+) -> Outcome {
     let desired = desired_app(&input);
     let owner_name = input.owner.clone().unwrap_or_default();
     let targets = emit::targets(&input.spec.secret_targets, input.cr_name, secrets);
     let ns = Some(input.namespace);
 
     // An application can't change owner: delete under the old one, then
-    // create under the new one (new client id). Compared by id: a renamed
-    // owner is still the same one.
+    // create under the new one (new client id). A renamed owner is still
+    // the same one.
     let mut current = input.current.clone();
-    if let Some(c) = &current
-        && !same_owner(&c.name, input.current_owner_id, &owner_name, input.owner_id)
-    {
+    let previous = match &current {
+        Some(c) => match previous_owner(
+            gateway,
+            &c.name,
+            input.current_owner_id,
+            &owner_name,
+            input.owner_id,
+            input.allow_disruptive_update,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => return Outcome::failed(current, e),
+        },
+        None => None,
+    };
+    if let (Some(c), Some(previous)) = (&current, &previous) {
         if !input.allow_disruptive_update {
             return Outcome::failed(
                 current,
@@ -61,7 +92,7 @@ pub async fn reconcile_oauth2(
                 ),
             );
         }
-        if let Err(e) = gone_ok(gateway.delete_oauth2_app(sudo(&c.name), c.id).await) {
+        if let Err(e) = gone_ok(gateway.delete_oauth2_app(sudo(previous), c.id).await) {
             return Outcome::failed(current, e);
         }
         current = None;
@@ -111,7 +142,6 @@ pub async fn reconcile_oauth2(
         name: owner_name,
     });
     let mut outcome = Outcome::synced(current.clone(), "application synced");
-    outcome.owner_id = input.owner_id;
     if let Some(secret) = secret {
         let data = BTreeMap::from([
             ("FORGEJO_CLIENT_ID".to_string(), app.client_id.clone()),
@@ -124,7 +154,6 @@ pub async fn reconcile_oauth2(
         if let Err(f) = emit::write_all(&targets, ns, &data, secrets).await {
             let mut failed = Outcome::failed(current, f);
             failed.secret_pending = Some(true);
-            failed.owner_id = input.owner_id;
             return failed;
         }
         outcome.secret_pending = Some(false);
@@ -133,11 +162,14 @@ pub async fn reconcile_oauth2(
     outcome
 }
 
+/// `owner_id` is `status.ownerId`: the application is deleted on that
+/// account under its login now (see `cleanup_token`).
 pub async fn cleanup_oauth2(
     spec: &ForgejoOAuth2ApplicationSpec,
     cr_name: &str,
     namespace: &str,
     current: Option<&ForgejoRef>,
+    owner_id: Option<i64>,
     gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
 ) -> Result<(), Failure> {
@@ -145,7 +177,10 @@ pub async fn cleanup_oauth2(
         && let Some(c) = current
     {
         let gateway = gateway.map_err(Clone::clone)?;
-        gone_ok(gateway.delete_oauth2_app(sudo(&c.name), c.id).await)?;
+        // A deleted account took its applications with it.
+        if let Some(owner) = owner_login_now(gateway, &c.name, owner_id).await? {
+            gone_ok(gateway.delete_oauth2_app(sudo(&owner), c.id).await)?;
+        }
     }
     let targets = emit::targets(&spec.secret_targets, cr_name, secrets);
     emit::delete_all(&targets, Some(namespace), secrets).await

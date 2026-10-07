@@ -11,7 +11,9 @@ use domain::error::ReasonCode;
 use crate::ports::{DesiredToken, ForgejoGateway, ForgejoRef, RemoteToken, SecretStore};
 use crate::use_cases::emit::{self, rotation_requested};
 use crate::use_cases::reconcile_repository::go_duration_secs;
-use crate::use_cases::{CleanupGateway, Failure, Outcome, gone_ok, same_owner};
+use crate::use_cases::{
+    CleanupGateway, Failure, Outcome, gone_ok, owner_login_now, previous_owner,
+};
 
 pub struct TokenInput<'a> {
     pub spec: &'a ForgejoAccessTokenSpec,
@@ -52,6 +54,17 @@ const REPOSITORY_LIMITED_SCOPES: [&str; 4] = [
 ];
 
 pub async fn reconcile_token(
+    input: TokenInput<'_>,
+    gateway: &dyn ForgejoGateway,
+    secrets: &dyn SecretStore,
+) -> Outcome {
+    let (current, stored, desired) = (input.current.clone(), input.owner_id, input.user_id);
+    issue(input, gateway, secrets)
+        .await
+        .with_owner(current.as_ref(), stored, desired)
+}
+
+async fn issue(
     input: TokenInput<'_>,
     gateway: &dyn ForgejoGateway,
     secrets: &dyn SecretStore,
@@ -97,12 +110,27 @@ pub async fn reconcile_token(
     let ns = Some(input.namespace);
 
     // A changed userRef: the old user's token is revoked below and a new
-    // one issued — same disruption as a scope change. Compared by id: a
-    // renamed user is still the same one.
-    let same_user = input
-        .current
-        .as_ref()
-        .is_none_or(|c| same_owner(&c.name, input.owner_id, &input.user, input.user_id));
+    // one issued — same disruption as a scope change. A renamed user is
+    // still the same one.
+    let previous = match &input.current {
+        Some(c) => {
+            match previous_owner(
+                gateway,
+                &c.name,
+                input.owner_id,
+                &input.user,
+                input.user_id,
+                input.allow_disruptive_update,
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => return Outcome::failed(input.current.clone(), e),
+            }
+        }
+        None => None,
+    };
+    let same_user = previous.is_none();
     if !same_user && !input.allow_disruptive_update {
         return Outcome::failed(
             input.current.clone(),
@@ -157,7 +185,6 @@ pub async fn reconcile_token(
                 name: input.user.clone(),
             });
             let mut outcome = Outcome::synced(current, "token valid");
-            outcome.owner_id = input.user_id;
             // Come back when it expires, not at the next 300 s requeue.
             outcome.due_in = expires_at.map(|at| (at - input.now).max(1) as u64);
             return outcome;
@@ -170,7 +197,7 @@ pub async fn reconcile_token(
     if let Some(c) = &input.current
         && let Err(e) = gone_ok(
             gateway
-                .delete_access_token(if same_user { &input.user } else { &c.name }, c.id)
+                .delete_access_token(previous.as_deref().unwrap_or(&input.user), c.id)
                 .await,
         )
     {
@@ -194,12 +221,10 @@ pub async fn reconcile_token(
         // issue again next time, whether the targets exist or not.
         let mut outcome = Outcome::failed(current, f);
         outcome.secret_pending = Some(true);
-        outcome.owner_id = input.user_id;
         return outcome;
     }
     let mut outcome = Outcome::synced(current, "token issued");
     outcome.secret_pending = Some(false);
-    outcome.owner_id = input.user_id;
     outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
     outcome.due_in = spec
         .rotation_period
@@ -209,11 +234,16 @@ pub async fn reconcile_token(
     outcome
 }
 
+/// `owner_id` is `status.ownerId`: the token is revoked on that account
+/// under its login now, not the stored one — a rename (and another account
+/// taking the old login) would otherwise revoke on the wrong user, whose
+/// `NotFound` reads as success and leaves the token live.
 pub async fn cleanup_token(
     spec: &ForgejoAccessTokenSpec,
     cr_name: &str,
     namespace: &str,
     current: Option<&ForgejoRef>,
+    owner_id: Option<i64>,
     gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
 ) -> Result<(), Failure> {
@@ -221,7 +251,10 @@ pub async fn cleanup_token(
         && let Some(c) = current
     {
         let gateway = gateway.map_err(Clone::clone)?;
-        gone_ok(gateway.delete_access_token(&c.name, c.id).await)?;
+        // A deleted account took its tokens with it.
+        if let Some(user) = owner_login_now(gateway, &c.name, owner_id).await? {
+            gone_ok(gateway.delete_access_token(&user, c.id).await)?;
+        }
     }
     let targets = emit::targets(&spec.secret_targets, cr_name, secrets);
     emit::delete_all(&targets, Some(namespace), secrets).await
@@ -430,6 +463,95 @@ mod tests {
                 name: "ci-robot".into()
             })
         );
+    }
+
+    #[tokio::test]
+    async fn recreated_user_gets_a_new_token() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let s = spec();
+        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        // Deleted out of band and recreated under the same login: new id,
+        // and the token went with the old account.
+        fj.remove_user("ci-bot");
+        let new_id = fj.insert_user("ci-bot");
+
+        let mut recreated = input(&s, Some(first.clone()), 0);
+        recreated.user_id = Some(new_id);
+        let outcome = reconcile_token(recreated, &fj, &secrets).await;
+        assert!(outcome.ready.is_ok(), "{outcome:?}");
+        assert_eq!(outcome.owner_id, Some(new_id));
+        let issued = outcome.forgejo.unwrap();
+        assert_ne!(issued.id, first.id);
+        assert_eq!(fj.token(issued.id).unwrap().1, value(&secrets));
+    }
+
+    #[tokio::test]
+    async fn login_taken_over_after_a_rename_revokes_the_old_token() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let s = spec();
+        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        // ci-bot renamed away (its token follows), a new ci-bot created.
+        fj.rename_user("ci-bot", "ci-old").await.unwrap();
+        let newcomer = fj.insert_user("ci-bot");
+
+        let mut taken = input(&s, Some(first.clone()), 0);
+        taken.user_id = Some(newcomer);
+        let refused = reconcile_token(taken, &fj, &secrets).await;
+        assert_eq!(refused.reason(), ReasonCode::DisruptiveUpdateRefused);
+        assert_eq!(refused.owner_id, Some(1), "still the old account's token");
+
+        let mut allowed = input(&s, Some(first.clone()), 0);
+        allowed.user_id = Some(newcomer);
+        allowed.allow_disruptive_update = true;
+        let renewed = reconcile_token(allowed, &fj, &secrets).await;
+        assert!(renewed.ready.is_ok(), "{renewed:?}");
+        assert!(
+            fj.token(first.id).is_none(),
+            "revoked on the renamed account"
+        );
+        assert_eq!(renewed.owner_id, Some(newcomer));
+    }
+
+    #[tokio::test]
+    async fn cleanup_revokes_on_the_renamed_account() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let s = spec();
+        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        // Renamed away and the login taken over before any reconcile.
+        fj.rename_user("ci-bot", "ci-old").await.unwrap();
+        let newcomer = fj.insert_user("ci-bot");
+        cleanup_token(&s, "ci", "team-a", Some(&first), Some(1), Ok(&fj), &secrets)
+            .await
+            .unwrap();
+        assert!(fj.token(first.id).is_none(), "revoked on ci-old");
+
+        // The account deleted with its tokens: nothing left to revoke.
+        let mut fresh = input(&s, None, 0);
+        fresh.user_id = Some(newcomer);
+        let again = reconcile_token(fresh, &fj, &secrets).await.forgejo.unwrap();
+        fj.remove_user("ci-bot");
+        fj.clear_calls();
+        cleanup_token(
+            &s,
+            "ci",
+            "team-a",
+            Some(&again),
+            Some(newcomer),
+            Ok(&fj),
+            &secrets,
+        )
+        .await
+        .unwrap();
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
     }
 
     #[tokio::test]

@@ -46,11 +46,11 @@ pub struct RepositoryInput<'a> {
     /// `status.forgejoId` (id) / `status.forgejoName` (`owner/name`).
     pub current: Option<ForgejoRef>,
     pub owner: Owner,
-    /// `Some` whenever the controller could resolve it. Required when
+    /// Why the controller couldn't resolve it otherwise. Required when
     /// nothing is owned yet; when something is, an unresolvable source (a
     /// template deleted since) must not block the existing repository — it
-    /// only blocks recreating one that vanished.
-    pub source: Option<Source>,
+    /// only blocks recreating one that vanished, and says why.
+    pub source: Result<Source, Failure>,
     /// Names of the resolved `spec.teamRefs`, all `Ready`.
     pub teams: Vec<String>,
     pub allow_disruptive_update: bool,
@@ -218,19 +218,22 @@ async fn create(
 ) -> Result<RemoteRepository, (Option<ForgejoRef>, Failure)> {
     let owner = input.owner.name();
     let source = match input.source.clone() {
-        Some(s) => s,
-        None if input.spec.from_template.is_none() && input.spec.migrate.is_none() => {
+        Ok(s) => s,
+        Err(_) if input.spec.from_template.is_none() && input.spec.migrate.is_none() => {
             Source::Empty(init_options(input.spec))
         }
         // Never fall back to an empty repository for a mirror or a
         // template-generated one.
-        None => {
+        Err(f) => {
             return Err((
                 None,
                 Failure::new(
                     ReasonCode::ReferenceNotReady,
-                    "the repository is gone from Forgejo and spec.fromTemplate/spec.migrate \
-                     can't be resolved to recreate it",
+                    format!(
+                        "the repository is gone from Forgejo and spec.fromTemplate/spec.migrate \
+                         can't be resolved to recreate it: {}",
+                        f.message
+                    ),
                 ),
             ));
         }
@@ -530,7 +533,7 @@ mod tests {
             spec,
             current,
             owner: Owner::Organization(owner.into()),
-            source: Some(Source::Empty(Default::default())),
+            source: Ok(Source::Empty(Default::default())),
             teams: vec![],
             allow_disruptive_update: false,
         }
@@ -718,7 +721,7 @@ mod tests {
             auth_secret_ref: None,
         });
         let mut i = input(&s, None, "weebo");
-        i.source = Some(Source::Migrate(MigrateOptions {
+        i.source = Ok(Source::Migrate(MigrateOptions {
             clone_addr: "https://example.com/x.git".into(),
             mirror: true,
             mirror_interval: Some("8h".into()),
@@ -760,19 +763,30 @@ mod tests {
             ..Default::default()
         });
         let mut first = input(&s, None, "weebo");
-        first.source = Some(migrate.clone());
+        first.source = Ok(migrate.clone());
         let current = reconcile_repository(first, &fj).await.forgejo.unwrap();
         fj.delete_repository("weebo/mirror").await.unwrap();
 
         // The source couldn't be resolved: wait, don't create an empty one.
         let mut unresolved = input(&s, Some(current.clone()), "weebo");
-        unresolved.source = None;
+        unresolved.source = Err(Failure::new(
+            ReasonCode::ReferenceNotReady,
+            "secrets is forbidden",
+        ));
         let waiting = reconcile_repository(unresolved, &fj).await;
         assert_eq!(waiting.reason(), ReasonCode::ReferenceNotReady);
+        assert!(
+            waiting
+                .ready
+                .unwrap_err()
+                .message
+                .ends_with("secrets is forbidden"),
+            "says why"
+        );
         assert!(waiting.forgejo.is_none());
 
         let mut resolved = input(&s, Some(current), "weebo");
-        resolved.source = Some(migrate);
+        resolved.source = Ok(migrate);
         let recreated = reconcile_repository(resolved, &fj).await.forgejo.unwrap();
         assert!(fj.repo(recreated.id).unwrap().mirror);
     }

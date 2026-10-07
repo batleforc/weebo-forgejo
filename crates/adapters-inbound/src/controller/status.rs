@@ -152,6 +152,11 @@ where
     if let Some(r) = &outcome.forgejo {
         status["forgejoId"] = r.id.to_string().into();
         status["forgejoName"] = r.name.clone().into();
+        // The account `forgejo` belongs to, always alongside it: `null`
+        // (the admin account, or a kind without an owner) drops a stale id.
+        status["ownerId"] = outcome
+            .owner_id
+            .map_or(serde_json::Value::Null, |id| id.to_string().into());
     }
     if let Some(hash) = &outcome.secret_hash {
         status["appliedSecretHash"] = hash.clone().into();
@@ -166,9 +171,6 @@ where
         } else {
             serde_json::Value::Null
         };
-    }
-    if let Some(owner) = outcome.owner_id {
-        status["ownerId"] = owner.to_string().into();
     }
     api.patch_status(
         &obj.name_any(),

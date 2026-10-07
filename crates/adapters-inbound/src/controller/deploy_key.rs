@@ -101,7 +101,7 @@ async fn apply(
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
         Ok(()) => match repository(&current, ctx).await? {
-            Err(f) => Outcome::failed(owned, f),
+            Err(f) => Outcome::failed(owned.clone(), f),
             Ok(full_name) => match super::backends(ctx, current.spec.instance_ref.as_deref()).await
             {
                 Ok((gateway, secrets)) => {
@@ -116,7 +116,9 @@ async fn apply(
                         read_only: current.spec.read_only,
                         source: &current.spec.key,
                         namespace: Some(&ns),
-                        current: owned,
+                        current: owned.clone(),
+                        created_on: super::key_owner(&current.metadata)
+                            .map(|o| KeyOwner::Repository(o.to_string())),
                         rotate_nonce: rotate_nonce(&current.metadata),
                         last_rotation: current
                             .status
@@ -125,43 +127,34 @@ async fn apply(
                     };
                     reconcile_key(input, gateway.as_ref(), secrets.as_ref()).await
                 }
-                Err(f) => Outcome::failed(owned, f),
+                Err(f) => Outcome::failed(owned.clone(), f),
             },
         },
     };
 
-    if let (Some(owner), Some(_)) = (&resolved, &outcome.forgejo) {
-        super::record_key_owner(api, &current, owner).await?;
-    }
     record_reconcile("ForgejoDeployKey", outcome.reason(), started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
+    super::record_key_owner(api, &current, resolved.as_deref(), owned.as_ref(), &outcome).await?;
     Ok(requeue_after(&outcome))
 }
 
 async fn cleanup(key: &ForgejoDeployKey, ctx: &Ctx) -> Result<Action, Error> {
     let ns = key.namespace().unwrap_or_default();
     let instance = key.spec.instance_ref.as_deref();
-    // The repository CR may be not ready or already gone (a namespace
-    // deletion, an `Orphan` repository): fall back to the owner recorded
-    // when the key was created.
+    // Where the key was created first (the ref may have changed since),
+    // then the repository's current name; the repository CR may be not
+    // ready or already gone (a namespace deletion, an `Orphan` repository).
     let repos: Api<ForgejoRepository> = Api::namespaced(ctx.client.clone(), &ns);
-    let owner = recorded_name(&repos, &key.spec.repository_ref.name, instance)
-        .await?
-        .or_else(|| super::key_owner(&key.metadata).map(str::to_string))
-        .map(KeyOwner::Repository);
-    if owner.is_none()
-        && current_ref(key).is_some()
-        && key.spec.deletion_policy == api::common::DeletionPolicy::Delete
-    {
-        tracing::warn!(
-            key = %key.name_any(),
-            "ForgejoDeployKey: no record of the key's owner, the Forgejo key can't be deleted"
-        );
-    }
+    let parent = recorded_name(&repos, &key.spec.repository_ref.name, instance).await?;
+    let delete = key.spec.deletion_policy == api::common::DeletionPolicy::Delete;
+    let owners: Vec<KeyOwner> = super::key_cleanup_owners(key, parent, delete)
+        .into_iter()
+        .map(KeyOwner::Repository)
+        .collect();
     let gateway = super::cleanup_gateway(ctx, instance).await;
     let secrets = super::cleanup_secrets(ctx, instance).await;
     cleanup_key(
-        owner.as_ref(),
+        &owners,
         &key.spec.key,
         Some(&ns),
         key.spec.deletion_policy,

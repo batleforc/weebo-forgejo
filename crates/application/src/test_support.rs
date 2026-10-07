@@ -186,6 +186,11 @@ impl FakeForgejo {
             .map(|k| k.remote.clone())
     }
 
+    /// Deletes a key out of band.
+    pub fn remove_key(&self, id: i64) {
+        self.state.lock().unwrap().keys.remove(&id);
+    }
+
     /// Seeds a user as if it existed before (e.g. created by OIDC login).
     pub fn insert_user(&self, login: &str) -> i64 {
         let mut s = self.state.lock().unwrap();
@@ -217,8 +222,11 @@ impl FakeForgejo {
     }
 
     /// Simulates an out-of-band deletion in the Forgejo UI.
+    /// Like Forgejo, takes the user's access tokens along.
     pub fn remove_user(&self, login: &str) {
-        self.state.lock().unwrap().users.remove(login);
+        let mut s = self.state.lock().unwrap();
+        s.users.remove(login);
+        s.tokens.retain(|_, (owner, _, _)| owner != login);
     }
 
     fn begin(
@@ -409,6 +417,15 @@ impl ForgejoGateway for FakeForgejo {
             .users
             .get(username)
             .map(|u| u.remote.clone()))
+    }
+
+    async fn user_login(&self, id: i64) -> Result<Option<String>, GatewayError> {
+        Ok(self
+            .begin(None)?
+            .users
+            .values()
+            .find(|u| u.remote.id == id)
+            .map(|u| u.remote.login.clone()))
     }
 
     async fn create_user(&self, user: &DesiredUser) -> Result<ForgejoRef, GatewayError> {

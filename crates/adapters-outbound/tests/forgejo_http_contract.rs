@@ -63,6 +63,46 @@ async fn server_errors_classify_as_unreachable() {
     ));
 }
 
+/// A 403 blames the token only when Forgejo says so (bodies as Forgejo 16
+/// sends them); otherwise the object is what was refused.
+#[tokio::test]
+async fn forbidden_tells_the_token_from_the_object() {
+    let cases = [
+        (401, "token is required", "admin token was refused"),
+        (
+            403,
+            "token does not have at least one of required scope(s): [write:admin]",
+            "admin token was refused",
+        ),
+        (
+            403,
+            "user should be the site admin",
+            "admin token was refused",
+        ),
+        (
+            403,
+            "You do not have access to this key",
+            "Forgejo refused access to the object",
+        ),
+    ];
+    for (status, message, expected) in cases {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/repos/weebo/app/keys/7"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({"message": message})))
+            .mount(&server)
+            .await;
+        let err = gateway(&server)
+            .delete_deploy_key("weebo/app", 7)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, GatewayError::Api(m) if m.starts_with(&status.to_string()) && m.contains(expected)),
+            "{status} {message:?}: {err:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn create_user_posts_to_admin_and_returns_the_id() {
     let server = MockServer::start().await;
@@ -509,4 +549,28 @@ async fn a_400_saying_already_used_is_a_collision() {
         gateway(&server).create_access_token("bot", &token).await,
         Err(GatewayError::AlreadyExists(_))
     ));
+}
+
+#[tokio::test]
+async fn user_login_searches_by_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/search"))
+        .and(query_param("uid", "7"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "data": [{"id": 7, "login": "alicia"}]})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/search"))
+        .and(query_param("uid", "8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true, "data": []})))
+        .mount(&server)
+        .await;
+
+    let gw = gateway(&server);
+    assert_eq!(gw.user_login(7).await.unwrap().as_deref(), Some("alicia"));
+    assert_eq!(gw.user_login(8).await.unwrap(), None, "account gone");
 }

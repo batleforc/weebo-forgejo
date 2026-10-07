@@ -32,12 +32,7 @@ use kube::runtime::events::Recorder;
 
 pub use api::FINALIZER;
 
-/// Set by the operator on `ForgejoDeployKey`/`ForgejoUserKey`: the
-/// Forgejo-side owner (`owner/repo` or login) the key was created on.
-/// Forgejo only addresses a key through its owner, and the owner's CR may
-/// be gone by the time the key's finalizer runs (a namespace deletion, an
-/// `Orphan` repository or user).
-pub const KEY_OWNER_ANNOTATION: &str = "forgejo.weebo.io/key-owner";
+pub use api::KEY_OWNER_ANNOTATION;
 
 /// Shared by every controller. Concrete adapters are built and injected
 /// once in `operator::main` (or by a test) — no controller names
@@ -181,12 +176,34 @@ pub fn requeue_after(outcome: &Outcome) -> Action {
     Action::requeue(Duration::from_secs(secs))
 }
 
-/// Records `owner` in [`KEY_OWNER_ANNOTATION`] when it isn't there yet.
-pub async fn record_key_owner<K>(api: &Api<K>, obj: &K, owner: &str) -> Result<(), kube::Error>
+/// Records in [`KEY_OWNER_ANNOTATION`] that the key now lives on
+/// `resolved`, once `outcome` shows it: a success, or a new key. A failure
+/// that kept the `previous` key leaves the record as it was — which is
+/// where the next reconcile or the cleanup must look for it — even when
+/// there is none yet (an imported or older key): nothing confirmed the key
+/// is on `resolved`, it may still be on the ref's previous target, and
+/// the cleanup already falls back to the parent's current name. Called
+/// after the status is published, so a key just created is never lost to
+/// a failed annotation patch.
+pub async fn record_key_owner<K>(
+    api: &Api<K>,
+    obj: &K,
+    resolved: Option<&str>,
+    previous: Option<&application::ports::ForgejoRef>,
+    outcome: &Outcome,
+) -> Result<(), kube::Error>
 where
     K: kube::Resource<DynamicType = ()> + Clone + std::fmt::Debug + serde::de::DeserializeOwned,
 {
-    if key_owner(obj.meta()) == Some(owner) {
+    let Some(owner) = resolved else {
+        return Ok(());
+    };
+    let recorded = key_owner(obj.meta());
+    let on_owner = outcome
+        .forgejo
+        .as_ref()
+        .is_some_and(|r| outcome.ready.is_ok() || Some(r) != previous);
+    if !on_owner || recorded == Some(owner) {
         return Ok(());
     }
     let patch = serde_json::json!({
@@ -199,6 +216,33 @@ where
     )
     .await?;
     Ok(())
+}
+
+/// Where a key being deleted may live, most likely first: the owner
+/// recorded when it was created, then the parent CR's current name (which
+/// differs after a rename the annotation hasn't caught up with). Warns
+/// when there's no record at all of a Forgejo key that should be deleted.
+pub fn key_cleanup_owners<K>(key: &K, parent: Option<String>, delete: bool) -> Vec<String>
+where
+    K: kube::Resource<DynamicType = ()> + status::HasStatus,
+{
+    let mut owners: Vec<String> = key_owner(key.meta())
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    if let Some(parent) = parent
+        && !owners.contains(&parent)
+    {
+        owners.push(parent);
+    }
+    if owners.is_empty() && delete && status::current_ref(key).is_some() {
+        tracing::warn!(
+            kind = %K::kind(&()),
+            key = %kube::ResourceExt::name_any(key),
+            "no record of the key's owner, the Forgejo key can't be deleted"
+        );
+    }
+    owners
 }
 
 pub fn key_owner(meta: &kube::api::ObjectMeta) -> Option<&str> {

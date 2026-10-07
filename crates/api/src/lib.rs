@@ -38,3 +38,9 @@ pub const ROTATE_SECRET_ANNOTATION: &str = "forgejo.weebo.io/rotate-secret";
 /// controllers leave the CR alone until it's removed, so they never try to
 /// create the object the CR is about to adopt.
 pub const IMPORT_PENDING_ANNOTATION: &str = "forgejo.weebo.io/import-pending";
+/// Set on `ForgejoDeployKey`/`ForgejoUserKey` (by the operator, or the
+/// importer): the Forgejo-side owner (`owner/repo` or login) the key was
+/// created on. Forgejo only addresses a key through its owner, and the
+/// owner's CR may be gone by the time the key's finalizer runs (a
+/// namespace deletion, an `Orphan` repository or user).
+pub const KEY_OWNER_ANNOTATION: &str = "forgejo.weebo.io/key-owner";

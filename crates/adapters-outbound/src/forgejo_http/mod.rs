@@ -21,6 +21,7 @@ use application::ports::{
 };
 use forgejo_client::apis::configuration::{ApiKey, Configuration};
 use forgejo_client::apis::{Error, miscellaneous_api};
+use forgejo_client::models;
 use serde::de::DeserializeOwned;
 
 pub struct ForgejoHttpGateway {
@@ -82,6 +83,9 @@ impl ForgejoGateway for ForgejoHttpGateway {
 
     async fn get_user(&self, username: &str) -> Result<Option<RemoteUser>, GatewayError> {
         users::get(&self.config, username).await
+    }
+    async fn user_login(&self, id: i64) -> Result<Option<String>, GatewayError> {
+        users::login_by_id(&self.config, id).await
     }
     async fn create_user(&self, user: &DesiredUser) -> Result<ForgejoRef, GatewayError> {
         users::create(&self.config, user).await
@@ -402,9 +406,14 @@ fn classify_as<T: std::fmt::Debug>(err: Error<T>, claims_name: bool) -> GatewayE
                 404 => GatewayError::NotFound(body),
                 s @ (408 | 429) => GatewayError::Unreachable(format!("{s}: {body}")),
                 s if s >= 500 => GatewayError::Unreachable(format!("{s}: {body}")),
-                s @ (401 | 403) => GatewayError::Api(format!(
+                s @ (401 | 403) if s == 401 || token_refused(&body) => GatewayError::Api(format!(
                     "{s}: the instance's admin token was refused (revoked, or missing a scope): {body}"
                 )),
+                // The token is fine, the object isn't its to touch (e.g. a
+                // key that belongs to another repository or user).
+                403 => {
+                    GatewayError::Api(format!("403: Forgejo refused access to the object: {body}"))
+                }
                 s => GatewayError::Api(format!("{s}: {body}")),
             }
         }
@@ -413,26 +422,122 @@ fn classify_as<T: std::fmt::Debug>(err: Error<T>, claims_name: bool) -> GatewayE
     }
 }
 
+/// Whether a 403 is about the token itself — a missing scope, or an
+/// account that isn't site admin — rather than about the object.
+fn token_refused(body: &str) -> bool {
+    body.contains("required scope") || body.contains("site admin")
+}
+
 /// Requested page size (Forgejo's `MAX_RESPONSE_ITEMS` default).
 pub(crate) const PAGE_SIZE: i32 = 50;
 
-/// Fetches pages until one comes back empty. Forgejo silently clamps
-/// `limit` to its `[api] MAX_RESPONSE_ITEMS`, so a page shorter than
-/// [`PAGE_SIZE`] is no proof it was the last one.
-pub(crate) async fn all_pages<T, F, Fut>(mut fetch: F) -> Result<Vec<T>, GatewayError>
+/// Hard stop on a listing that never ends, counted in items rather than
+/// pages: Forgejo clamps `limit` to its `MAX_RESPONSE_ITEMS`, so a page
+/// count would shrink with that setting. Every page handed on holds at
+/// least one item, so this bounds the requests too.
+const MAX_ITEMS: usize = 50_000;
+
+/// What a listed item is told apart by: its Forgejo id.
+pub(crate) trait Listed {
+    fn list_id(&self) -> Option<i64>;
+}
+
+macro_rules! listed_by_id {
+    ($($t:ty),* $(,)?) => {$(
+        impl Listed for $t {
+            fn list_id(&self) -> Option<i64> {
+                self.id
+            }
+        }
+    )*};
+}
+
+listed_by_id!(
+    models::AccessToken,
+    models::DeployKey,
+    models::Hook,
+    models::Organization,
+    models::PublicKey,
+    models::Repository,
+    models::Team,
+    models::User,
+);
+
+/// Fetches pages until one comes back empty. A short page is no proof it
+/// was the last one: Forgejo silently clamps `limit` to its `[api]
+/// MAX_RESPONSE_ITEMS`, and some listings filter (visibility,
+/// permissions) after paginating.
+pub(crate) async fn all_pages<T, F, Fut>(fetch: F) -> Result<Vec<T>, GatewayError>
 where
+    T: Listed,
     F: FnMut(i32) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<T>, GatewayError>>,
 {
     let mut out = Vec::new();
+    each_page(fetch, |batch| {
+        out.extend(batch);
+        false
+    })
+    .await?;
+    Ok(out)
+}
+
+/// Like [`all_pages`], but stops at the first item matching `pred`.
+pub(crate) async fn find_in_pages<T, F, Fut>(
+    fetch: F,
+    mut pred: impl FnMut(&T) -> bool,
+) -> Result<Option<T>, GatewayError>
+where
+    T: Listed,
+    F: FnMut(i32) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>, GatewayError>>,
+{
+    let mut hit = None;
+    each_page(fetch, |batch| {
+        hit = batch.into_iter().find(&mut pred);
+        hit.is_some()
+    })
+    .await?;
+    Ok(hit)
+}
+
+/// Hands each page to `visit` until it returns `true` or a page comes
+/// back empty. A page holding the same ids as the one before means the
+/// endpoint ignored `page` (it returned everything already): that's the
+/// end too. Ids, not whole items: a field like `updated` may change
+/// between two requests.
+async fn each_page<T, F, Fut>(
+    mut fetch: F,
+    mut visit: impl FnMut(Vec<T>) -> bool,
+) -> Result<(), GatewayError>
+where
+    T: Listed,
+    F: FnMut(i32) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>, GatewayError>>,
+{
+    let mut previous: Vec<Option<i64>> = Vec::new();
+    let mut seen = 0usize;
     for page in 1.. {
         let batch = fetch(page).await?;
         if batch.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<Option<i64>> = batch.iter().map(Listed::list_id).collect();
+        if ids == previous {
+            return Ok(());
+        }
+        seen += batch.len();
+        if seen > MAX_ITEMS {
             break;
         }
-        out.extend(batch);
+        if visit(batch) {
+            return Ok(());
+        }
+        previous = ids;
     }
-    Ok(out)
+    Err(GatewayError::Api(format!(
+        "listing still not exhausted after {MAX_ITEMS} items"
+    )))
 }
 
 /// `Ok(None)` for a 404, so lookups read as "absent" rather than failures.
@@ -465,4 +570,135 @@ pub(crate) fn wire_string<T: serde::Serialize>(value: &T) -> String {
 
 pub(crate) fn missing_id(what: &str) -> GatewayError {
     GatewayError::Api(format!("Forgejo returned a {what} without an id"))
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    impl Listed for i32 {
+        fn list_id(&self) -> Option<i64> {
+            Some(i64::from(*self))
+        }
+    }
+
+    /// An item whose id is stable but whose other fields change between
+    /// requests.
+    #[derive(Debug)]
+    struct Stamped {
+        id: i64,
+        updated: i32,
+    }
+
+    impl Listed for Stamped {
+        fn list_id(&self) -> Option<i64> {
+            Some(self.id)
+        }
+    }
+
+    /// A listing of `total` items served `clamp` at a time.
+    async fn served(
+        total: i32,
+        clamp: i32,
+        ignore_page: bool,
+    ) -> (Result<Vec<i32>, GatewayError>, i32) {
+        let calls = Mutex::new(0);
+        let result = all_pages(|page| {
+            *calls.lock().unwrap() += 1;
+            let page = if ignore_page { 1 } else { page };
+            let start = (page - 1) * clamp;
+            async move { Ok((start..(start + clamp).min(total)).collect()) }
+        })
+        .await;
+        (result, calls.into_inner().unwrap())
+    }
+
+    #[tokio::test]
+    async fn every_page_until_an_empty_one() {
+        let (items, calls) = served(120, 50, false).await;
+        assert_eq!(items.unwrap().len(), 120);
+        assert_eq!(calls, 4);
+    }
+
+    #[tokio::test]
+    async fn short_first_page_is_not_trusted() {
+        // Clamped to 20 by the server: page 1 is short of PAGE_SIZE but
+        // not the end.
+        let (items, _) = served(45, 20, false).await;
+        assert_eq!(items.unwrap(), (0..45).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn short_page_mid_listing_is_not_the_end() {
+        // Page 2 filtered down after pagination, page 3 still full.
+        let pages = [vec![1, 2, 3], vec![4], vec![5, 6, 7], vec![]];
+        let items = all_pages(|page| {
+            let batch = pages[page as usize - 1].clone();
+            async move { Ok(batch) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(items, vec![1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[tokio::test]
+    async fn endpoint_ignoring_page_terminates() {
+        let (items, calls) = served(30, 50, true).await;
+        assert_eq!(items.unwrap().len(), 30);
+        assert_eq!(calls, 2);
+    }
+
+    #[tokio::test]
+    async fn endpoint_ignoring_page_terminates_on_ids_alone() {
+        // Two pages of the same ids, served by an endpoint ignoring
+        // `page`: stops at the repeat even though nothing compares equal
+        // beyond the id.
+        let items = all_pages(|page| async move {
+            Ok(vec![
+                Stamped {
+                    id: 1,
+                    updated: page,
+                },
+                Stamped {
+                    id: 2,
+                    updated: page,
+                },
+            ])
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            items.iter().map(|s| (s.id, s.updated)).collect::<Vec<_>>(),
+            [(1, 1), (2, 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn cap_counts_items_not_pages() {
+        // Clamped to 10 per page: 1 000 pages aren't the end of the cap.
+        let (items, _) = served(20_000, 10, false).await;
+        assert_eq!(items.unwrap().len(), 20_000);
+        let (items, calls) = served(i32::MAX, 10_000, false).await;
+        assert!(items.is_err());
+        assert_eq!(calls, 6);
+    }
+
+    #[tokio::test]
+    async fn find_stops_at_the_hit() {
+        let calls = Mutex::new(0);
+        let hit = find_in_pages(
+            |page| {
+                *calls.lock().unwrap() += 1;
+                let start = (page - 1) * 50;
+                async move { Ok((start..start + 50).collect::<Vec<i32>>()) }
+            },
+            |i| *i == 60,
+        )
+        .await
+        .unwrap();
+        assert_eq!(hit, Some(60));
+        assert_eq!(calls.into_inner().unwrap(), 2);
+    }
 }

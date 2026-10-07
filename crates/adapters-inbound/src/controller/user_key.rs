@@ -76,7 +76,7 @@ async fn apply(
 
     let mut resolved = None;
     let outcome = match user(&current, ctx).await? {
-        Err(f) => Outcome::failed(owned, f),
+        Err(f) => Outcome::failed(owned.clone(), f),
         Ok(login) => match super::backends(ctx, current.spec.instance_ref.as_deref()).await {
             Ok((gateway, secrets)) => {
                 resolved = Some(login.clone());
@@ -90,7 +90,9 @@ async fn apply(
                     read_only: false,
                     source: &current.spec.key,
                     namespace: None,
-                    current: owned,
+                    current: owned.clone(),
+                    created_on: super::key_owner(&current.metadata)
+                        .map(|o| KeyOwner::User(o.to_string())),
                     rotate_nonce: rotate_nonce(&current.metadata),
                     last_rotation: current
                         .status
@@ -99,40 +101,32 @@ async fn apply(
                 };
                 reconcile_key(input, gateway.as_ref(), secrets.as_ref()).await
             }
-            Err(f) => Outcome::failed(owned, f),
+            Err(f) => Outcome::failed(owned.clone(), f),
         },
     };
 
-    if let (Some(owner), Some(_)) = (&resolved, &outcome.forgejo) {
-        super::record_key_owner(api, &current, owner).await?;
-    }
     record_reconcile("ForgejoUserKey", outcome.reason(), started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
+    super::record_key_owner(api, &current, resolved.as_deref(), owned.as_ref(), &outcome).await?;
     Ok(requeue_after(&outcome))
 }
 
 async fn cleanup(key: &ForgejoUserKey, ctx: &Ctx) -> Result<Action, Error> {
     let instance = key.spec.instance_ref.as_deref();
-    // The user CR may be not ready or already gone (an `Orphan` user):
-    // fall back to the owner recorded when the key was created.
+    // Where the key was created first (the ref may have changed since),
+    // then the user's current login; the user CR may be not ready or
+    // already gone (an `Orphan` user).
     let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
-    let owner = recorded_name(&users, &key.spec.user_ref.name, instance)
-        .await?
-        .or_else(|| super::key_owner(&key.metadata).map(str::to_string))
-        .map(KeyOwner::User);
-    if owner.is_none()
-        && current_ref(key).is_some()
-        && key.spec.deletion_policy == api::common::DeletionPolicy::Delete
-    {
-        tracing::warn!(
-            key = %key.name_any(),
-            "ForgejoUserKey: no record of the key's owner, the Forgejo key can't be deleted"
-        );
-    }
+    let parent = recorded_name(&users, &key.spec.user_ref.name, instance).await?;
+    let delete = key.spec.deletion_policy == api::common::DeletionPolicy::Delete;
+    let owners: Vec<KeyOwner> = super::key_cleanup_owners(key, parent, delete)
+        .into_iter()
+        .map(KeyOwner::User)
+        .collect();
     let gateway = super::cleanup_gateway(ctx, instance).await;
     let secrets = super::cleanup_secrets(ctx, instance).await;
     cleanup_key(
-        owner.as_ref(),
+        &owners,
         &key.spec.key,
         None,
         key.spec.deletion_policy,

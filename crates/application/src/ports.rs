@@ -374,6 +374,9 @@ pub trait ForgejoGateway: Send + Sync {
 
     /// `Ok(None)` when no user has that login.
     async fn get_user(&self, username: &str) -> Result<Option<RemoteUser>, GatewayError>;
+    /// Current login of the user with that Forgejo id; `Ok(None)` when
+    /// the account is gone.
+    async fn user_login(&self, id: i64) -> Result<Option<String>, GatewayError>;
     /// Attempt-create-first: a taken login is `GatewayError::AlreadyExists`,
     /// never a silent adopt. Only the creation fields are sent; callers
     /// follow with `edit_user`.
