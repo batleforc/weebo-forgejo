@@ -43,7 +43,7 @@ impl ForgejoGatewayFactory {
         let token_ref = &instance.spec.token_secret_ref;
         let token = read_secret_key(&self.client, token_ref)
             .await
-            .map_err(GatewayFactoryError::ResolutionFailed)?
+            .map_err(GatewayFactoryError::Kubernetes)?
             .ok_or_else(|| {
                 GatewayFactoryError::TokenSecret(format!(
                     "secret {}/{} has no key {:?}",
@@ -57,7 +57,7 @@ impl ForgejoGatewayFactory {
             Some(ca_ref) => Some(
                 read_secret_key(&self.client, ca_ref)
                     .await
-                    .map_err(GatewayFactoryError::ResolutionFailed)?
+                    .map_err(GatewayFactoryError::Kubernetes)?
                     .ok_or_else(|| {
                         GatewayFactoryError::ResolutionFailed(format!(
                             "tls.caSecretRef {}/{} has no key {:?}",
@@ -88,7 +88,7 @@ impl GatewayFactory for ForgejoGatewayFactory {
             .instances
             .list()
             .await
-            .map_err(GatewayFactoryError::ResolutionFailed)?;
+            .map_err(GatewayFactoryError::Kubernetes)?;
         let instance = select(&instances, instance_ref)?;
         self.build(instance).await
     }

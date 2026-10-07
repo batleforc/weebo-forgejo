@@ -131,10 +131,11 @@ async fn edit_user_switches_back_to_local_login_explicitly() {
     let server = MockServer::start().await;
     Mock::given(method("PATCH"))
         .and(path("/api/v1/admin/users/alice"))
-        // Forgejo wants source_id and login_name together; 0 = local.
+        // Forgejo wants source_id and login_name together; 0 = local, and
+        // it stores login_name verbatim: a local account keeps "".
         .and(body_partial_json(json!({
             "source_id": 0,
-            "login_name": "alice",
+            "login_name": "",
             "prohibit_login": false,
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7})))
@@ -241,10 +242,12 @@ async fn team_round_trip_reads_its_organization_and_permission() {
     assert_eq!(team.units_map["repo.wiki"], "read");
 }
 
+/// Forgejo clamps `limit` to its `MAX_RESPONSE_ITEMS` (here 30): a short
+/// page is not the last one, only an empty page is.
 #[tokio::test]
-async fn team_members_are_paginated() {
+async fn team_members_are_paginated_until_an_empty_page() {
     let server = MockServer::start().await;
-    let page: Vec<_> = (0..50)
+    let page: Vec<_> = (0..30)
         .map(|i| json!({"login": format!("u{i:02}")}))
         .collect();
     Mock::given(method("GET"))
@@ -259,10 +262,111 @@ async fn team_members_are_paginated() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"login": "zed"}])))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/teams/9/members"))
+        .and(query_param("page", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
 
     let members = gateway(&server).list_team_members(9).await.unwrap();
-    assert_eq!(members.len(), 51);
+    assert_eq!(members.len(), 31);
     assert!(members.contains(&"zed".to_string()));
+}
+
+#[tokio::test]
+async fn access_tokens_are_paginated_until_an_empty_page() {
+    let server = MockServer::start().await;
+    for (page, body) in [
+        ("1", json!([{"id": 1, "name": "a"}])),
+        ("2", json!([{"id": 2, "name": "b"}])),
+        ("3", json!([])),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/v1/admin/users/bot/tokens"))
+            .and(query_param("page", page))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+    let tokens = gateway(&server).list_access_tokens("bot").await.unwrap();
+    assert_eq!(tokens.iter().map(|t| t.id).collect::<Vec<_>>(), [1, 2]);
+}
+
+#[tokio::test]
+async fn an_organization_is_not_a_user() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/users/weebo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 3, "login": "weebo"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/orgs/weebo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 3, "name": "weebo"})))
+        .mount(&server)
+        .await;
+    assert_eq!(gateway(&server).get_user("weebo").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn timeouts_and_rate_limits_are_transient() {
+    for status in [408, 429] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/version"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        assert!(
+            matches!(
+                gateway(&server).server_version().await,
+                Err(GatewayError::Unreachable(_))
+            ),
+            "{status}"
+        );
+    }
+}
+
+/// "already" only means a name collision on a call that claims a name.
+#[tokio::test]
+async fn an_edit_422_saying_already_is_an_api_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/admin/users/alice"))
+        .respond_with(
+            ResponseTemplate::new(422).set_body_json(json!({"message": "e-mail already in use"})),
+        )
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        gateway(&server).edit_user("alice", &user("alice")).await,
+        Err(GatewayError::Api(_))
+    ));
+}
+
+#[tokio::test]
+async fn an_oauth2_app_created_without_a_secret_is_removed_and_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/user/applications/oauth2"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 5, "client_id": "c"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/user/applications/oauth2/5"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let app = application::ports::DesiredOAuth2App {
+        name: "app".into(),
+        ..Default::default()
+    };
+    assert!(matches!(
+        gateway(&server).create_oauth2_app(None, &app).await,
+        Err(GatewayError::Api(_))
+    ));
 }
 
 #[tokio::test]

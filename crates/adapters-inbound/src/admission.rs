@@ -51,7 +51,13 @@ impl Governed for ForgejoDeployKey {
 impl Governed for ForgejoOAuth2Application {
     const KIND: NamespacedKind = NamespacedKind::ForgejoOAuth2Application;
     fn references(&self) -> (Vec<String>, Vec<String>) {
-        (vec![], names([self.spec.owner_ref.as_ref()]))
+        // Without an owner the app belongs to the operator's admin account:
+        // that is a user too, or `allowedUsers` would vacuously cover it.
+        let owner = match &self.spec.owner_ref {
+            Some(r) => r.name.clone(),
+            None => domain::allow_list::INSTANCE_ADMIN.to_string(),
+        };
+        (vec![], vec![owner])
     }
 }
 
@@ -89,4 +95,58 @@ pub async fn enforce<K: Governed>(
         users: &users,
     };
     Ok(check(&request, &policies(client).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use domain::allow_list::{Decision, Effect, Kind, Rule, evaluate};
+
+    use super::*;
+
+    fn app(owner: Option<&str>) -> ForgejoOAuth2Application {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoOAuth2Application",
+            "metadata": {"name": "app"},
+            "spec": {
+                "redirectUris": ["https://x/cb"],
+                "ownerRef": owner.map(|n| serde_json::json!({"name": n})),
+            },
+        }))
+        .unwrap()
+    }
+
+    fn decide(app: &ForgejoOAuth2Application, users: Option<&[&str]>) -> Decision {
+        let (organizations, refs) = app.references();
+        let rule = Rule {
+            namespaces: vec!["team-a".into()],
+            kinds: vec![Kind::OAuth2Application],
+            organizations: None,
+            users: users.map(|u| u.iter().map(|s| s.to_string()).collect()),
+            effect: Effect::Allow,
+        };
+        let request = Request {
+            namespace: "team-a",
+            kind: Kind::OAuth2Application,
+            organizations: &organizations,
+            users: &refs,
+        };
+        evaluate(&request, &[rule], true)
+    }
+
+    #[test]
+    fn an_app_without_owner_is_not_covered_by_a_restricted_allowed_users() {
+        assert!(matches!(
+            decide(&app(None), Some(&["sso-bot"])),
+            Decision::Denied(_)
+        ));
+        assert_eq!(
+            decide(&app(Some("sso-bot")), Some(&["sso-bot"])),
+            Decision::Allowed
+        );
+        assert_eq!(
+            decide(&app(None), Some(&[domain::allow_list::INSTANCE_ADMIN])),
+            Decision::Allowed
+        );
+        assert_eq!(decide(&app(None), None), Decision::Allowed);
+    }
 }

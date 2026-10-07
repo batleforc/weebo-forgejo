@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoAccessToken, ForgejoRepository, ForgejoUser};
+use application::ports::ForgejoRef;
 use application::use_cases::reconcile_token::{TokenInput, cleanup_token, reconcile_token};
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
@@ -13,7 +14,7 @@ use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
 use super::refs::{require, resolve};
-use super::status::current_ref;
+use super::status::{current_ref, owner_id, secret_pending};
 use super::{
     Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, rotate_nonce,
     status,
@@ -71,6 +72,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                     .collect::<Vec<_>>()
             },
         )
+        .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx)
         .for_each(|res| async move {
             if let Err(err) = res {
@@ -93,11 +95,11 @@ async fn reconcile(obj: Arc<ForgejoAccessToken>, ctx: Arc<Ctx>) -> Result<Action
     .map_err(|e| Error::Finalizer(e.to_string()))
 }
 
-/// `(user login, repository full names)`.
+/// `(user, repository full names)`.
 async fn resolve_inputs(
     token: &ForgejoAccessToken,
     ctx: &Ctx,
-) -> Result<Result<(String, Vec<String>), Failure>, Error> {
+) -> Result<Result<(ForgejoRef, Vec<String>), Failure>, Error> {
     let instance = token.spec.instance_ref.as_deref();
     let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
     let user_name = &token.spec.user_ref.name;
@@ -106,7 +108,7 @@ async fn resolve_inputs(
         user_name,
         resolve(&users, user_name, instance).await?,
     ) {
-        Ok(u) => u.name,
+        Ok(u) => u,
         Err(f) => return Ok(Err(f)),
     };
     let ns = token.namespace().unwrap_or_default();
@@ -148,9 +150,12 @@ async fn apply(
                             spec: &current.spec,
                             cr_name: &name,
                             namespace: &ns,
-                            user,
+                            user: user.name,
+                            user_id: Some(user.id),
                             repositories,
                             current: owned,
+                            owner_id: owner_id(&current.status),
+                            secret_pending: secret_pending(&current.status),
                             rotate_nonce: rotate_nonce(&current.metadata),
                             last_rotation: current
                                 .status
@@ -176,15 +181,15 @@ async fn apply(
 }
 
 async fn cleanup(token: &ForgejoAccessToken, ctx: &Ctx) -> Result<Action, Error> {
-    let (gateway, secrets) = super::backends(ctx, token.spec.instance_ref.as_deref())
-        .await
-        .map_err(|f| Error::Cleanup(f.message))?;
+    let instance = token.spec.instance_ref.as_deref();
+    let gateway = super::cleanup_gateway(ctx, instance).await;
+    let secrets = super::cleanup_secrets(ctx, instance).await;
     cleanup_token(
         &token.spec,
         &token.name_any(),
         &token.namespace().unwrap_or_default(),
         current_ref(token).as_ref(),
-        gateway.as_ref(),
+        gateway.as_deref(),
         secrets.as_ref(),
     )
     .await

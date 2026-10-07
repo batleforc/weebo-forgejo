@@ -21,6 +21,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
         Api::<ForgejoNamespacePolicy>::all(client),
         watcher::Config::default(),
     )
+    .graceful_shutdown_on(ctx.shutdown.wait())
     .run(reconcile, error_policy, ctx)
     .for_each(|res| async move {
         if let Err(err) = res {

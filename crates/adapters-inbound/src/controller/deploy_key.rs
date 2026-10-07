@@ -12,7 +12,7 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{require, resolve};
+use super::refs::{recorded_name, require, resolve};
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, rotate_nonce, status};
 use crate::metrics::record_reconcile;
@@ -51,6 +51,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                     .collect::<Vec<_>>()
             },
         )
+        .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx)
         .for_each(|res| async move {
             if let Err(err) = res {
@@ -95,6 +96,7 @@ async fn apply(
     let ns = current.namespace().unwrap_or_default();
 
     let namespace = current.namespace().unwrap_or_default();
+    let mut resolved = None;
     let outcome = match crate::admission::enforce(&ctx.client, &namespace, &current).await? {
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
@@ -103,6 +105,7 @@ async fn apply(
             Ok(full_name) => match super::backends(ctx, current.spec.instance_ref.as_deref()).await
             {
                 Ok((gateway, secrets)) => {
+                    resolved = Some(full_name.clone());
                     let input = KeyInput {
                         owner: KeyOwner::Repository(full_name),
                         title: current
@@ -127,6 +130,9 @@ async fn apply(
         },
     };
 
+    if let (Some(owner), Some(_)) = (&resolved, &outcome.forgejo) {
+        super::record_key_owner(api, &current, owner).await?;
+    }
     record_reconcile("ForgejoDeployKey", outcome.reason(), started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
@@ -134,20 +140,33 @@ async fn apply(
 
 async fn cleanup(key: &ForgejoDeployKey, ctx: &Ctx) -> Result<Action, Error> {
     let ns = key.namespace().unwrap_or_default();
-    let owner = match repository(key, ctx).await? {
-        Ok(full_name) => Some(KeyOwner::Repository(full_name)),
-        Err(_) => None,
-    };
-    let (gateway, secrets) = super::backends(ctx, key.spec.instance_ref.as_deref())
-        .await
-        .map_err(|f| Error::Cleanup(f.message))?;
+    let instance = key.spec.instance_ref.as_deref();
+    // The repository CR may be not ready or already gone (a namespace
+    // deletion, an `Orphan` repository): fall back to the owner recorded
+    // when the key was created.
+    let repos: Api<ForgejoRepository> = Api::namespaced(ctx.client.clone(), &ns);
+    let owner = recorded_name(&repos, &key.spec.repository_ref.name, instance)
+        .await?
+        .or_else(|| super::key_owner(&key.metadata).map(str::to_string))
+        .map(KeyOwner::Repository);
+    if owner.is_none()
+        && current_ref(key).is_some()
+        && key.spec.deletion_policy == api::common::DeletionPolicy::Delete
+    {
+        tracing::warn!(
+            key = %key.name_any(),
+            "ForgejoDeployKey: no record of the key's owner, the Forgejo key can't be deleted"
+        );
+    }
+    let gateway = super::cleanup_gateway(ctx, instance).await;
+    let secrets = super::cleanup_secrets(ctx, instance).await;
     cleanup_key(
         owner.as_ref(),
         &key.spec.key,
         Some(&ns),
         key.spec.deletion_policy,
         current_ref(key).as_ref(),
-        gateway.as_ref(),
+        gateway.as_deref(),
         secrets.as_ref(),
     )
     .await

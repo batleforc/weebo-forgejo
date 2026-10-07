@@ -6,9 +6,9 @@
 
 use adapters_outbound::forgejo_http::ForgejoHttpGateway;
 use anyhow::Context;
-use application::use_cases::import::{ImportOptions, import};
+use application::use_cases::import::{Existing, ImportOptions, import};
 use clap::Parser;
-use importer::{apply_all, to_yaml};
+use importer::{apply_all, existing, to_yaml};
 use kube::Client;
 
 #[derive(Parser, Debug)]
@@ -58,11 +58,23 @@ async fn main() -> anyhow::Result<()> {
             .timeout(std::time::Duration::from_secs(30))
             .build()?,
     );
+    // With `--apply`, the CRs already there: names stay those of earlier
+    // runs and avoid the ones owned by other objects.
+    let (client, existing) = if args.apply {
+        let client = Client::try_default()
+            .await
+            .context("connecting to Kubernetes")?;
+        let existing = existing(&client, &args.namespace).await?;
+        (Some(client), existing)
+    } else {
+        (None, Existing::default())
+    };
     let options = ImportOptions {
         instance_ref: args.instance_ref,
         namespace: args.namespace,
         owners: args.owners,
         manage_users: args.manage_users,
+        existing,
     };
     let imported = import(&gateway, &options)
         .await
@@ -71,10 +83,7 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("warning: {warning}");
     }
 
-    if args.apply {
-        let client = Client::try_default()
-            .await
-            .context("connecting to Kubernetes")?;
+    if let Some(client) = client {
         let s = apply_all(&client, &imported).await;
         eprintln!(
             "{} adopted, {} already adopted, {} failed",

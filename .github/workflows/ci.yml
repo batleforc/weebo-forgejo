@@ -7,14 +7,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-mise
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -41,12 +44,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-mise
       # target/ is deliberately not cached: keyed on Cargo.lock only, it
       # never gets evicted and grows until the runner runs out of disk.
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -76,10 +79,10 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-mise
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -101,7 +104,7 @@ jobs:
       - run: mise install
       - run: mise exec -- task forgejo:container:start ENGINE=docker
       - run: mise exec -- task coverage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: lcov
@@ -111,7 +114,7 @@ jobs:
   regen-and-diff:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-mise
       - run: mise install
       # Regenerates the Forgejo client (offline, from the vendored spec) and
@@ -122,12 +125,12 @@ jobs:
           git diff --exit-code crates/forgejo-client/ deploy/crd/ \
             deploy/charts/weebo-forgejo/crds/ docs/content/docs/crds/ docs/public/crd-schemas/
           # A generated file that's new must be committed too.
-          test -z "$(git status --porcelain docs/content/docs/crds/ docs/public/crd-schemas/ deploy/)"
+          test -z "$(git status --porcelain crates/forgejo-client/ docs/content/docs/crds/ docs/public/crd-schemas/ deploy/)"
 
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-mise
       - run: mise install
       - run: mise exec -- task docs:build
@@ -135,7 +138,7 @@ jobs:
   helm-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-mise
       - run: mise install
       - run: mise exec -- task lint:helm
@@ -143,7 +146,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-mise
       - run: mise install
       - run: mise exec -- task audit
@@ -154,10 +157,10 @@ jobs:
       matrix:
         file: [Containerfile, Containerfile.hardened]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Build-only proof that both images build (no container engine in the
       # dev sandbox); publishing is publish.yml's job.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ${{ matrix.file }}

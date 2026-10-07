@@ -80,6 +80,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                     .collect::<Vec<_>>()
             },
         )
+        .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx)
         .for_each(|res| async move {
             if let Err(err) = res {
@@ -213,12 +214,8 @@ async fn resolve_inputs(
 }
 
 async fn cleanup(hook: &ForgejoWebhook, ctx: &Ctx) -> Result<Action, Error> {
-    let gateway = ctx
-        .gateways
-        .gateway_for(hook.spec.instance_ref.as_deref())
-        .await
-        .map_err(|e| Error::Cleanup(e.to_string()))?;
-    cleanup_webhook(&hook.spec, current_ref(hook).as_ref(), gateway.as_ref())
+    let gateway = super::cleanup_gateway(ctx, hook.spec.instance_ref.as_deref()).await;
+    cleanup_webhook(&hook.spec, current_ref(hook).as_ref(), gateway.as_deref())
         .await
         .map_err(|f| Error::Cleanup(f.message))?;
     Ok(Action::await_change())

@@ -11,7 +11,7 @@ use domain::error::ReasonCode;
 use crate::ports::{DesiredToken, ForgejoGateway, ForgejoRef, RemoteToken, SecretStore};
 use crate::use_cases::emit::{self, rotation_requested};
 use crate::use_cases::reconcile_repository::go_duration_secs;
-use crate::use_cases::{Failure, Outcome, gone_ok};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, gone_ok, same_owner};
 
 pub struct TokenInput<'a> {
     pub spec: &'a ForgejoAccessTokenSpec,
@@ -19,10 +19,17 @@ pub struct TokenInput<'a> {
     pub namespace: &'a str,
     /// Login of the resolved `spec.userRef`.
     pub user: String,
+    /// Forgejo id of the resolved `spec.userRef`.
+    pub user_id: Option<i64>,
     /// `owner/name` of the resolved `spec.repositoryRefs`.
     pub repositories: Vec<String>,
     /// `status.forgejoId` (token id) / `status.forgejoName` (user login).
     pub current: Option<ForgejoRef>,
+    /// `status.ownerId`: the id of the user `current` was issued for.
+    pub owner_id: Option<i64>,
+    /// `status.secretPending`: the last issued token never reached every
+    /// target, which may still hold a revoked one.
+    pub secret_pending: bool,
     pub rotate_nonce: Option<String>,
     pub last_rotation: Option<String>,
     pub allow_disruptive_update: bool,
@@ -90,8 +97,22 @@ pub async fn reconcile_token(
     let ns = Some(input.namespace);
 
     // A changed userRef: the old user's token is revoked below and a new
-    // one issued — same disruption as a scope change.
-    let same_user = input.current.as_ref().is_none_or(|c| c.name == input.user);
+    // one issued — same disruption as a scope change. Compared by id: a
+    // renamed user is still the same one.
+    let same_user = input
+        .current
+        .as_ref()
+        .is_none_or(|c| same_owner(&c.name, input.owner_id, &input.user, input.user_id));
+    if !same_user && !input.allow_disruptive_update {
+        return Outcome::failed(
+            input.current.clone(),
+            Failure::new(
+                ReasonCode::DisruptiveUpdateRefused,
+                "changing userRef revokes the current token and issues one for the new user; \
+                 annotate the CR with forgejo.weebo.io/allow-disruptive-update=\"true\"",
+            ),
+        );
+    }
     let remote = match (&input.current, same_user) {
         (Some(c), true) => match gateway.list_access_tokens(&input.user).await {
             Ok(tokens) => tokens.into_iter().find(|t| t.id == c.id),
@@ -127,9 +148,16 @@ pub async fn reconcile_token(
         let renew = token_differs(&desired, r)
             || expired
             || lost
+            || input.secret_pending
             || rotation_requested(&input.rotate_nonce, &input.last_rotation);
         if !renew {
-            let mut outcome = Outcome::synced(input.current, "token valid");
+            // Under the user's current login: a rename moved the token along.
+            let current = input.current.map(|c| ForgejoRef {
+                id: c.id,
+                name: input.user.clone(),
+            });
+            let mut outcome = Outcome::synced(current, "token valid");
+            outcome.owner_id = input.user_id;
             // Come back when it expires, not at the next 300 s requeue.
             outcome.due_in = expires_at.map(|at| (at - input.now).max(1) as u64);
             return outcome;
@@ -137,9 +165,14 @@ pub async fn reconcile_token(
     }
 
     // Names are unique per user: revoke before issuing. Also drops the
-    // previous user's token after a userRef change.
+    // previous user's token after a userRef change. A renamed user is
+    // addressed by its new login.
     if let Some(c) = &input.current
-        && let Err(e) = gone_ok(gateway.delete_access_token(&c.name, c.id).await)
+        && let Err(e) = gone_ok(
+            gateway
+                .delete_access_token(if same_user { &input.user } else { &c.name }, c.id)
+                .await,
+        )
     {
         return Outcome::failed(input.current.clone(), e);
     }
@@ -157,9 +190,16 @@ pub async fn reconcile_token(
         ("FORGEJO_URL".to_string(), gateway.web_url().to_string()),
     ]);
     if let Err(f) = emit::write_all(&targets, ns, &data, secrets).await {
-        return Outcome::failed(current, f);
+        // The value is lost and earlier targets may hold the revoked one:
+        // issue again next time, whether the targets exist or not.
+        let mut outcome = Outcome::failed(current, f);
+        outcome.secret_pending = Some(true);
+        outcome.owner_id = input.user_id;
+        return outcome;
     }
     let mut outcome = Outcome::synced(current, "token issued");
+    outcome.secret_pending = Some(false);
+    outcome.owner_id = input.user_id;
     outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
     outcome.due_in = spec
         .rotation_period
@@ -174,12 +214,13 @@ pub async fn cleanup_token(
     cr_name: &str,
     namespace: &str,
     current: Option<&ForgejoRef>,
-    gateway: &dyn ForgejoGateway,
+    gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
 ) -> Result<(), Failure> {
     if spec.deletion_policy == DeletionPolicy::Delete
         && let Some(c) = current
     {
+        let gateway = gateway.map_err(Clone::clone)?;
         gone_ok(gateway.delete_access_token(&c.name, c.id).await)?;
     }
     let targets = emit::targets(&spec.secret_targets, cr_name, secrets);
@@ -230,8 +271,11 @@ mod tests {
             cr_name: "ci",
             namespace: "team-a",
             user: "ci-bot".into(),
+            user_id: Some(1),
             repositories: vec![],
             current,
+            owner_id: Some(1),
+            secret_pending: false,
             rotate_nonce: None,
             last_rotation: None,
             allow_disruptive_update: false,
@@ -328,6 +372,94 @@ mod tests {
                 .0
                 .scopes
                 .contains(&"write:issue".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_write_over_an_existing_target_reissues() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let s = spec();
+        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
+            .await
+            .forgejo;
+
+        // A rotation whose write fails: the target still exists, holding
+        // the token that was just revoked.
+        secrets.fail_writes(true);
+        let mut rotate = input(&s, first.clone(), 0);
+        rotate.rotate_nonce = Some("1".into());
+        let failed = reconcile_token(rotate, &fj, &secrets).await;
+        assert_eq!(failed.reason(), ReasonCode::SecretTargetFailed);
+        assert_eq!(failed.secret_pending, Some(true));
+        let issued = failed.forgejo.unwrap();
+        assert_ne!(fj.token(issued.id).unwrap().1, value(&secrets), "stale");
+
+        secrets.fail_writes(false);
+        let mut retry = input(&s, Some(issued.clone()), 0);
+        retry.rotate_nonce = Some("1".into());
+        retry.last_rotation = Some("1".into());
+        retry.secret_pending = true;
+        let fixed = reconcile_token(retry, &fj, &secrets).await;
+        assert!(fixed.ready.is_ok(), "{fixed:?}");
+        assert_eq!(fixed.secret_pending, Some(false));
+        let current = fixed.forgejo.unwrap();
+        assert_ne!(current.id, issued.id);
+        assert_eq!(fj.token(current.id).unwrap().1, value(&secrets));
+    }
+
+    #[tokio::test]
+    async fn renamed_user_keeps_its_token() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let s = spec();
+        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        fj.rename_user("ci-bot", "ci-robot").await.unwrap();
+        fj.clear_calls();
+
+        let mut renamed = input(&s, Some(first.clone()), 0);
+        renamed.user = "ci-robot".into();
+        let outcome = reconcile_token(renamed, &fj, &secrets).await;
+        assert!(outcome.ready.is_ok(), "{outcome:?}");
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+        assert_eq!(
+            outcome.forgejo,
+            Some(ForgejoRef {
+                id: first.id,
+                name: "ci-robot".into()
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn user_ref_change_is_gated() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let other = fj.insert_user("deploy-bot");
+        let s = spec();
+        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        fj.clear_calls();
+
+        let mut moved = input(&s, Some(first.clone()), 0);
+        moved.user = "deploy-bot".into();
+        moved.user_id = Some(other);
+        let refused = reconcile_token(moved, &fj, &secrets).await;
+        assert_eq!(refused.reason(), ReasonCode::DisruptiveUpdateRefused);
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+
+        let mut allowed = input(&s, Some(first.clone()), 0);
+        allowed.user = "deploy-bot".into();
+        allowed.user_id = Some(other);
+        allowed.allow_disruptive_update = true;
+        let renewed = reconcile_token(allowed, &fj, &secrets).await;
+        assert_eq!(renewed.owner_id, Some(other));
+        assert!(fj.token(first.id).is_none(), "old user's token revoked");
+        assert_eq!(
+            fj.token(renewed.forgejo.unwrap().id).unwrap().0.name,
+            "team-a-ci"
         );
     }
 

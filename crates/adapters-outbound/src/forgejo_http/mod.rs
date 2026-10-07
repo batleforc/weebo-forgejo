@@ -373,29 +373,66 @@ impl ForgejoInventory for ForgejoHttpGateway {
     }
 }
 
-/// Maps a generated-client error onto the port's error classes.
+/// Maps a generated-client error onto the port's error classes. 408/429
+/// (timeout, rate limit) are transient, like a 5xx.
+pub(crate) fn classify<T: std::fmt::Debug>(err: Error<T>) -> GatewayError {
+    classify_as(err, false)
+}
+
+/// [`classify`] for calls that claim a name (create, rename, transfer).
 ///
 /// A name collision is 409 for some resources, 422 for others (users,
 /// organizations, teams) and 400 for access tokens ("has been used
 /// already") — but 400/422 are also Forgejo's generic validation errors, so
-/// they only count as "already exists" when the message says so.
-pub(crate) fn classify<T: std::fmt::Debug>(err: Error<T>) -> GatewayError {
+/// they only count as "already exists" when the message says so, and only
+/// on these calls: on an edit, "e-mail already in use" is no name collision.
+pub(crate) fn classify_create<T: std::fmt::Debug>(err: Error<T>) -> GatewayError {
+    classify_as(err, true)
+}
+
+fn classify_as<T: std::fmt::Debug>(err: Error<T>, claims_name: bool) -> GatewayError {
     match err {
         Error::ResponseError(resp) => {
             let body = resp.content;
             match resp.status.as_u16() {
                 409 => GatewayError::AlreadyExists(body),
-                400 | 422 if body.contains("already") || body.contains("is already taken") => {
+                400 | 422 if claims_name && body.contains("already") => {
                     GatewayError::AlreadyExists(body)
                 }
                 404 => GatewayError::NotFound(body),
+                s @ (408 | 429) => GatewayError::Unreachable(format!("{s}: {body}")),
                 s if s >= 500 => GatewayError::Unreachable(format!("{s}: {body}")),
+                s @ (401 | 403) => GatewayError::Api(format!(
+                    "{s}: the instance's admin token was refused (revoked, or missing a scope): {body}"
+                )),
                 s => GatewayError::Api(format!("{s}: {body}")),
             }
         }
         Error::Reqwest(e) => GatewayError::Unreachable(e.to_string()),
         other => GatewayError::Api(other.to_string()),
     }
+}
+
+/// Requested page size (Forgejo's `MAX_RESPONSE_ITEMS` default).
+pub(crate) const PAGE_SIZE: i32 = 50;
+
+/// Fetches pages until one comes back empty. Forgejo silently clamps
+/// `limit` to its `[api] MAX_RESPONSE_ITEMS`, so a page shorter than
+/// [`PAGE_SIZE`] is no proof it was the last one.
+pub(crate) async fn all_pages<T, F, Fut>(mut fetch: F) -> Result<Vec<T>, GatewayError>
+where
+    F: FnMut(i32) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>, GatewayError>>,
+{
+    let mut out = Vec::new();
+    for page in 1.. {
+        let batch = fetch(page).await?;
+        if batch.is_empty() {
+            break;
+        }
+        out.extend(batch);
+    }
+    Ok(out)
 }
 
 /// `Ok(None)` for a 404, so lookups read as "absent" rather than failures.

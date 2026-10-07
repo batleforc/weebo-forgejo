@@ -40,6 +40,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                     .collect::<Vec<_>>()
             },
         )
+        .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx)
         .for_each(|res| async move {
             if let Err(err) = res {
@@ -113,12 +114,8 @@ async fn owner(
 }
 
 async fn cleanup(org: &ForgejoOrganization, ctx: &Ctx) -> Result<Action, Error> {
-    let gateway = ctx
-        .gateways
-        .gateway_for(org.spec.instance_ref.as_deref())
-        .await
-        .map_err(|e| Error::Cleanup(e.to_string()))?;
-    cleanup_organization(&org.spec, current_ref(org).as_ref(), gateway.as_ref())
+    let gateway = super::cleanup_gateway(ctx, org.spec.instance_ref.as_deref()).await;
+    cleanup_organization(&org.spec, current_ref(org).as_ref(), gateway.as_deref())
         .await
         .map_err(|f| Error::Cleanup(f.message))?;
     Ok(Action::await_change())

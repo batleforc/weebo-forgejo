@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use adapters_inbound::controller::{self, Ctx};
+use adapters_inbound::controller::{self, Ctx, Shutdown};
 use adapters_outbound::K8sSecretStore;
 use api::{ForgejoDeployKey, ForgejoRepository, ForgejoTeam, ForgejoWebhook};
 use application::ports::{
@@ -16,8 +16,10 @@ use application::ports::{
 use application::test_support::FakeForgejo;
 use application::use_cases::import::{ImportOptions, import};
 use importer::{Summary, apply_all};
-use kube::api::Api;
+use kube::ResourceExt;
+use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::events::{Recorder, Reporter};
+use serde_json::json;
 use testkit::envtest::EnvTestCluster;
 use testkit::static_gateway_factory::StaticGatewayFactory;
 use testkit::static_secret_store_factory::StaticSecretStoreFactory;
@@ -155,6 +157,7 @@ async fn imported_objects_are_adopted_without_writes() {
                 instance: None,
             },
         ),
+        shutdown: Shutdown::never(),
     });
     tokio::spawn(controller::user::run(client.clone(), ctx.clone()));
     tokio::spawn(controller::organization::run(client.clone(), ctx.clone()));
@@ -176,10 +179,47 @@ async fn imported_objects_are_adopted_without_writes() {
 
     assert!(forgejo.calls().is_empty(), "{:?}", forgejo.calls());
 
+    // What a re-run names around: every adopted CR, with its Forgejo id.
+    let existing = importer::existing(&client, "default").await.unwrap();
+    let app_id = imported.repositories[0]
+        .status
+        .as_ref()
+        .unwrap()
+        .forgejo_id
+        .clone();
+    assert_eq!(existing.repositories.get("weebo-app"), Some(&app_id));
+    assert_eq!(existing.teams.len(), 1);
+    assert_eq!(existing.users.len(), 1);
+    assert_eq!(existing.organizations.len(), 1);
+
     // A re-run recognises what it already adopted.
     let again = apply_all(&client, &imported).await;
     assert_eq!(again.skipped, 6);
     assert_eq!(again.failed, 0);
+
+    // A run that seeded the status but failed to unpause is finished by the
+    // next one, not skipped with the CR left paused forever.
+    repos
+        .patch(
+            "weebo-app",
+            &PatchParams::default(),
+            &Patch::Merge(json!({ "metadata": { "annotations": {
+                api::IMPORT_PENDING_ANNOTATION: "true",
+            }}})),
+        )
+        .await
+        .unwrap();
+    let resumed = apply_all(&client, &imported).await;
+    assert_eq!(resumed.skipped, 6);
+    assert_eq!(resumed.failed, 0);
+    let unpaused = repos.get("weebo-app").await.unwrap();
+    assert!(
+        !unpaused
+            .annotations()
+            .contains_key(api::IMPORT_PENDING_ANNOTATION),
+        "{:?}",
+        unpaused.metadata.annotations
+    );
 
     // A CR owning another Forgejo object is reported, never overwritten.
     let mut other = imported.repositories[0].clone();

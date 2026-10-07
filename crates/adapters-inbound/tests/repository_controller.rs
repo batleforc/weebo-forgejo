@@ -288,3 +288,70 @@ async fn repository_waits_for_its_team() {
             .all(|c| !c.starts_with("create_repository"))
     );
 }
+
+/// A namespace deletion removes an `Orphan` repository CR and its deploy
+/// keys together: the repository survives in Forgejo, so the key's own
+/// finalizer must still delete the key there, without the repository CR.
+#[tokio::test]
+async fn deploy_key_outliving_its_repository_cr_is_still_deleted() {
+    let h = harness().await;
+    let (c, ctx) = (&h.client, &h.ctx);
+    tokio::spawn(controller::organization::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::team::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::repository::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::deploy_key::run(c.clone(), ctx.clone()));
+    org_and_team(&h.client).await;
+
+    let repos: Api<ForgejoRepository> = Api::namespaced(h.client.clone(), NS);
+    repos
+        .create(
+            &PostParams::default(),
+            &ForgejoRepository {
+                metadata: meta("app"),
+                spec: repo_spec(),
+                status: None,
+            },
+        )
+        .await
+        .unwrap();
+    let repo_id = wait_for(&repos, "app", |r| id_when_ready(r.status.as_ref())).await;
+
+    let keys: Api<ForgejoDeployKey> = Api::namespaced(h.client.clone(), NS);
+    keys.create(
+        &PostParams::default(),
+        &ForgejoDeployKey {
+            metadata: meta("ci-key"),
+            spec: ForgejoDeployKeySpec {
+                instance_ref: None,
+                repository_ref: ObjectRef { name: "app".into() },
+                title: None,
+                read_only: true,
+                key: KeySource {
+                    public_key: Some("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGb5yJ0ib7G0kO7HW2zVhgEqv9n0LjQeYv3tG9Z4yW7r ci".into()),
+                    secret_targets: vec![],
+                },
+                deletion_policy: DeletionPolicy::Delete,
+            },
+            status: None,
+        },
+    )
+    .await
+    .unwrap();
+    let key_id = wait_for(&keys, "ci-key", |k| {
+        let owner = k
+            .metadata
+            .annotations
+            .as_ref()?
+            .get(controller::KEY_OWNER_ANNOTATION)?;
+        (owner == "weebo/app").then_some(())?;
+        id_when_ready(k.status.as_ref())
+    })
+    .await;
+
+    repos.delete("app", &Default::default()).await.unwrap();
+    wait_for_absence(&repos, "app").await;
+    keys.delete("ci-key", &Default::default()).await.unwrap();
+    wait_for_absence(&keys, "ci-key").await;
+    assert!(h.forgejo.repo(repo_id).is_some(), "repository orphaned");
+    assert!(h.forgejo.key(key_id).is_none(), "key left in Forgejo");
+}

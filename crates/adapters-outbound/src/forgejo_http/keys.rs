@@ -3,7 +3,7 @@ use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{admin_api, repository_api, user_api};
 use forgejo_client::models;
 
-use super::{classify, found, missing_id};
+use super::{PAGE_SIZE, all_pages, classify, classify_create, found, missing_id};
 
 pub(super) fn split(full_name: &str) -> Result<(String, String), GatewayError> {
     full_name
@@ -11,9 +11,6 @@ pub(super) fn split(full_name: &str) -> Result<(String, String), GatewayError> {
         .map(|(o, n)| (o.to_string(), n.to_string()))
         .ok_or_else(|| GatewayError::Api(format!("{full_name:?} is not owner/name")))
 }
-
-/// Forgejo's maximum page size (`MAX_RESPONSE_ITEMS` default).
-const PAGE_SIZE: i32 = 50;
 
 pub(super) async fn get_deploy(
     config: &Configuration,
@@ -58,7 +55,7 @@ pub(super) async fn create_deploy(
     };
     let created = repository_api::repo_create_key(config, params)
         .await
-        .map_err(classify)?;
+        .map_err(classify_create)?;
     Ok(ForgejoRef {
         id: created.id.ok_or_else(|| missing_id("deploy key"))?,
         name: title.to_string(),
@@ -84,30 +81,26 @@ pub(super) async fn get_user(
     username: &str,
     id: i64,
 ) -> Result<Option<RemoteKey>, GatewayError> {
-    for page in 1.. {
+    // A missing user reads as an empty list: the key is just as absent.
+    let keys = all_pages(|page| async move {
         let params = user_api::UserListKeysParams {
             username: username.to_string(),
             fingerprint: None,
             page: Some(page),
             limit: Some(PAGE_SIZE),
         };
-        let Some(keys) = found(user_api::user_list_keys(config, params).await)? else {
-            return Ok(None);
-        };
-        let len = keys.len();
-        if let Some(k) = keys.into_iter().find(|k| k.id == Some(id)) {
-            return Ok(Some(RemoteKey {
-                id,
-                title: k.title.unwrap_or_default(),
-                key: k.key.unwrap_or_default(),
-                read_only: k.read_only.unwrap_or_default(),
-            }));
-        }
-        if len < PAGE_SIZE as usize {
-            break;
-        }
-    }
-    Ok(None)
+        Ok(found(user_api::user_list_keys(config, params).await)?.unwrap_or_default())
+    })
+    .await?;
+    Ok(keys
+        .into_iter()
+        .find(|k| k.id == Some(id))
+        .map(|k| RemoteKey {
+            id,
+            title: k.title.unwrap_or_default(),
+            key: k.key.unwrap_or_default(),
+            read_only: k.read_only.unwrap_or_default(),
+        }))
 }
 
 pub(super) async fn create_user(
@@ -125,7 +118,7 @@ pub(super) async fn create_user(
     };
     let created = admin_api::admin_create_public_key(config, params)
         .await
-        .map_err(classify)?;
+        .map_err(classify_create)?;
     Ok(ForgejoRef {
         id: created.id.ok_or_else(|| missing_id("public key"))?,
         name: title.to_string(),

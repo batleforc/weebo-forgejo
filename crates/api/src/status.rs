@@ -51,6 +51,16 @@ pub struct ForgejoStatus {
     /// re-applied even though Forgejo never returns it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_secret_hash: Option<String>,
+    /// A secret (token, client secret, password) was issued in Forgejo but
+    /// not written to every target: the targets may hold a revoked value,
+    /// so the next reconcile issues a new one instead of trusting them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_pending: Option<bool>,
+    /// Forgejo id of the account owning the object (an access token's
+    /// user, an OAuth2 application's owner), so a renamed owner isn't
+    /// mistaken for a different one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }

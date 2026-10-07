@@ -9,6 +9,7 @@ dependencies = [
  "adapters-outbound",
  "api",
  "application",
+ "async-trait",
  "axum",
  "axum-server",
  "base64 0.22.1",

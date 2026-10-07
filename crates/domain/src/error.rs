@@ -52,6 +52,10 @@ reason_codes! {
     InstanceUnreachable,
     /// The `ForgejoInstance` token `Secret` (or the key in it) is missing.
     TokenSecretNotFound,
+    /// A Kubernetes API call made while resolving the `ForgejoInstance`
+    /// (listing instances, reading its token or CA `Secret`) failed.
+    /// Usually transient (apiserver hiccup); retried like any error.
+    KubernetesApiError,
     /// Create was rejected because an object with the same name already
     /// exists in Forgejo and isn't tracked by this CR. Never adopted
     /// implicitly — only the `importer` binds a CR to an existing object.

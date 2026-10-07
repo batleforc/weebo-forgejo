@@ -3,7 +3,7 @@ use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{admin_api, organization_api};
 use forgejo_client::models;
 
-use super::{classify, found, missing_id, wire_enum};
+use super::{classify, classify_create, found, missing_id, wire_enum};
 
 pub(super) async fn get(
     config: &Configuration,
@@ -60,13 +60,13 @@ pub(super) async fn create(
             };
             admin_api::admin_create_org(config, params)
                 .await
-                .map_err(classify)
+                .map_err(classify_create)
         }
         None => {
             let params = organization_api::OrgCreateParams { organization: body };
             organization_api::org_create(config, params)
                 .await
-                .map_err(classify)
+                .map_err(classify_create)
         }
     }?;
     Ok(ForgejoRef {
@@ -110,7 +110,7 @@ pub(super) async fn rename(
     };
     organization_api::rename_org(config, params)
         .await
-        .map_err(classify)
+        .map_err(classify_create)
 }
 
 pub(super) async fn delete(config: &Configuration, name: &str) -> Result<(), GatewayError> {

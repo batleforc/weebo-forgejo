@@ -3,9 +3,10 @@ use std::time::Instant;
 
 use api::repository::ForgejoRepositorySpec;
 use api::{ForgejoOrganization, ForgejoRepository, ForgejoTeam, ForgejoUser};
-use application::ports::{GenerateOptions, MigrateOptions, RepositoryInitOptions};
+use application::ports::{GenerateOptions, MigrateOptions};
 use application::use_cases::reconcile_repository::{
-    Owner, RepositoryInput, Source, cleanup_repository, reconcile_repository, validate,
+    Owner, RepositoryInput, Source, cleanup_repository, init_options, reconcile_repository,
+    validate,
 };
 use application::use_cases::{Failure, Outcome};
 use domain::error::ReasonCode;
@@ -112,6 +113,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                     .collect::<Vec<_>>()
             },
         )
+        .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx)
         .for_each(|res| async move {
             if let Err(err) = res {
@@ -220,13 +222,12 @@ async fn resolve_inputs(
         }
     };
 
-    let source = if creating {
-        match source(spec, &ns, ctx).await? {
-            Ok(s) => Some(s),
-            Err(f) => return Ok(Err(f)),
-        }
-    } else {
-        None
+    // Resolved even when a repository is owned, in case it was deleted out
+    // of band; only a create needs it to succeed.
+    let source = match source(spec, &ns, ctx).await? {
+        Ok(s) => Some(s),
+        Err(f) if creating => return Ok(Err(f)),
+        Err(_) => None,
     };
 
     let mut teams = Vec::with_capacity(spec.team_refs.len());
@@ -310,23 +311,12 @@ async fn source(
         }
         return Ok(Ok(Source::Migrate(options)));
     }
-    let init = spec.init.clone().unwrap_or_default();
-    Ok(Ok(Source::Empty(RepositoryInitOptions {
-        auto_init: spec.init.is_some() && init.auto_init,
-        gitignores: init.gitignores,
-        license: init.license,
-        readme: init.readme,
-        object_format: init.object_format,
-    })))
+    Ok(Ok(Source::Empty(init_options(spec))))
 }
 
 async fn cleanup(repo: &ForgejoRepository, ctx: &Ctx) -> Result<Action, Error> {
-    let gateway = ctx
-        .gateways
-        .gateway_for(repo.spec.instance_ref.as_deref())
-        .await
-        .map_err(|e| Error::Cleanup(e.to_string()))?;
-    cleanup_repository(&repo.spec, current_ref(repo).as_ref(), gateway.as_ref())
+    let gateway = super::cleanup_gateway(ctx, repo.spec.instance_ref.as_deref()).await;
+    cleanup_repository(&repo.spec, current_ref(repo).as_ref(), gateway.as_deref())
         .await
         .map_err(|f| Error::Cleanup(f.message))?;
     Ok(Action::await_change())

@@ -9,7 +9,7 @@ use api::team::{ForgejoTeamSpec, TeamPermission};
 use domain::error::ReasonCode;
 
 use crate::ports::{DesiredTeam, ForgejoGateway, ForgejoRef, GatewayError, RemoteTeam};
-use crate::use_cases::{Advisory, Failure, Outcome, differs};
+use crate::use_cases::{Advisory, CleanupGateway, Failure, Outcome, differs};
 
 /// A `spec.memberRefs` entry, resolved by the controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +33,8 @@ pub struct TeamInput<'a> {
     pub current: Option<ForgejoRef>,
     /// Name of the resolved `spec.organizationRef`, already `Ready`.
     pub organization: String,
+    /// Its Forgejo id: a renamed organization is still the same one.
+    pub organization_id: Option<i64>,
     pub members: Vec<Member>,
     /// The `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
     pub allow_disruptive_update: bool,
@@ -49,8 +51,12 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
         None => None,
     };
 
+    let moved = |remote: &RemoteTeam| match (input.organization_id, remote.organization_id) {
+        (Some(want), Some(have)) => want != have,
+        _ => remote.organization != input.organization,
+    };
     let team = match remote {
-        Some(remote) if remote.organization != input.organization => {
+        Some(remote) if moved(&remote) => {
             if !input.allow_disruptive_update {
                 return Outcome::failed(
                     input.current.clone(),
@@ -120,7 +126,7 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
 pub async fn cleanup_team(
     spec: &ForgejoTeamSpec,
     current: Option<&ForgejoRef>,
-    gateway: &dyn ForgejoGateway,
+    gateway: CleanupGateway<'_>,
 ) -> Result<(), Failure> {
     if spec.deletion_policy != DeletionPolicy::Delete {
         return Ok(());
@@ -128,7 +134,7 @@ pub async fn cleanup_team(
     let Some(current) = current else {
         return Ok(());
     };
-    match gateway.delete_team(current.id).await {
+    match gateway.map_err(Clone::clone)?.delete_team(current.id).await {
         Ok(()) | Err(GatewayError::NotFound(_)) => Ok(()),
         Err(e) => Err(e.into()),
     }
@@ -276,6 +282,7 @@ mod tests {
             spec,
             current,
             organization: org.into(),
+            organization_id: fj.org(org).map(|o| o.remote.id),
             members,
             allow_disruptive_update,
         };
@@ -397,5 +404,30 @@ mod tests {
         let new = moved.forgejo.unwrap();
         assert_ne!(Some(new.clone()), created);
         assert_eq!(fj.team(new.id).unwrap().remote.organization, "labs");
+    }
+
+    /// The organization's CR may still carry the old name in its status
+    /// while Forgejo already renamed it: same id, so no move.
+    #[tokio::test]
+    async fn renamed_organization_is_not_a_move() {
+        let fj = forgejo_with_orgs(&["weebo"]).await;
+        let s = spec("devs");
+        let org_id = fj.org("weebo").unwrap().remote.id;
+        let created = run(&s, None, "weebo", vec![], true, &fj).await.forgejo;
+        fj.rename_organization("weebo", "weebo-labs").await.unwrap();
+        fj.clear_calls();
+
+        let input = TeamInput {
+            spec: &s,
+            current: created.clone(),
+            organization: "weebo".into(),
+            organization_id: Some(org_id),
+            members: vec![],
+            allow_disruptive_update: true,
+        };
+        let outcome = reconcile_team(input, &fj).await;
+        assert!(outcome.ready.is_ok(), "{outcome:?}");
+        assert_eq!(outcome.forgejo.map(|f| f.id), created.map(|c| c.id));
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
     }
 }

@@ -40,7 +40,7 @@ install, never removed by `helm uninstall`).
 | Value | Default | |
 | --- | --- | --- |
 | `replicaCount` | `2` | |
-| `image.tag` | chart `appVersion` | append `-hardened` for the Red Hat hardened image |
+| `image.tag` | `v` + chart `appVersion` | e.g. `v0.1.0-hardened` for the Red Hat hardened image |
 | `webhook.failurePolicy` | `Fail` | the allow-list is a security boundary |
 | `certManager.createIssuer` | `true` | |
 | `rbac.namespacedExample.*` | disabled | a Role letting a team manage the namespaced kinds in its namespace |

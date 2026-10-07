@@ -14,6 +14,9 @@ use vaultrs::client::{Client as _, VaultClient, VaultClientSettingsBuilder};
 use vaultrs::error::ClientError;
 use vaultrs::{auth::kubernetes, kv2};
 
+/// Per-request budget for every Vault call, login included.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct VaultSecretStore {
     /// Write-locked only to swap in a re-logged-in token.
     client: RwLock<VaultClient>,
@@ -34,6 +37,9 @@ impl VaultSecretStore {
     ) -> Result<Self, SecretStoreError> {
         let mut builder = VaultClientSettingsBuilder::default();
         builder.address(&spec.address);
+        // vaultrs has no default timeout: a black-holed Vault would hang
+        // every secret write sharing this (cached) store.
+        builder.timeout(Some(REQUEST_TIMEOUT));
         // vaultrs only reads CA certs from file paths: the PEM lives in a
         // temp file just long enough for `VaultClient::new` to load it.
         let _ca_file = match ca_pem {
@@ -87,17 +93,21 @@ impl VaultSecretStore {
         format!("{}/{namespace}/{name}", self.path_prefix)
     }
 
+    /// The login runs under a read guard (it doesn't use the token); the
+    /// write lock is only held for the swap, never across a network call.
     async fn relogin(&self) -> Result<(), SecretStoreError> {
-        let mut client = self.client.write().await;
-        let auth = kubernetes::login(
-            &*client,
-            &self.kubernetes_auth_mount,
-            &self.kubernetes_auth_role,
-            &self.jwt,
-        )
-        .await
-        .map_err(|e| SecretStoreError(format!("Vault re-login: {e}")))?;
-        client.set_token(&auth.client_token);
+        let auth = {
+            let client = self.client.read().await;
+            kubernetes::login(
+                &*client,
+                &self.kubernetes_auth_mount,
+                &self.kubernetes_auth_role,
+                &self.jwt,
+            )
+            .await
+            .map_err(|e| SecretStoreError(format!("Vault re-login: {e}")))?
+        };
+        self.client.write().await.set_token(&auth.client_token);
         Ok(())
     }
 

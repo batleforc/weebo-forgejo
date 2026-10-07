@@ -7,7 +7,7 @@ use api::organization::ForgejoOrganizationSpec;
 use crate::ports::{
     DesiredOrganization, ForgejoGateway, ForgejoRef, GatewayError, RemoteOrganization,
 };
-use crate::use_cases::{Failure, Outcome, differs};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, differs};
 
 pub struct OrganizationInput<'a> {
     pub spec: &'a ForgejoOrganizationSpec,
@@ -54,7 +54,7 @@ pub async fn reconcile_organization(
 pub async fn cleanup_organization(
     spec: &ForgejoOrganizationSpec,
     current: Option<&ForgejoRef>,
-    gateway: &dyn ForgejoGateway,
+    gateway: CleanupGateway<'_>,
 ) -> Result<(), Failure> {
     if spec.deletion_policy != DeletionPolicy::Delete {
         return Ok(());
@@ -62,7 +62,11 @@ pub async fn cleanup_organization(
     let Some(current) = current else {
         return Ok(());
     };
-    match gateway.delete_organization(&current.name).await {
+    match gateway
+        .map_err(Clone::clone)?
+        .delete_organization(&current.name)
+        .await
+    {
         Ok(()) | Err(GatewayError::NotFound(_)) => Ok(()),
         Err(e) => Err(e.into()),
     }
@@ -197,7 +201,7 @@ mod tests {
         let fj = FakeForgejo::default();
         let s = spec("weebo");
         let created = run(&s, None, None, &fj).await.forgejo;
-        cleanup_organization(&s, created.as_ref(), &fj)
+        cleanup_organization(&s, created.as_ref(), Ok(&fj))
             .await
             .unwrap();
         assert!(fj.org("weebo").is_some());
@@ -206,7 +210,7 @@ mod tests {
             deletion_policy: DeletionPolicy::Delete,
             ..s
         };
-        cleanup_organization(&s, created.as_ref(), &fj)
+        cleanup_organization(&s, created.as_ref(), Ok(&fj))
             .await
             .unwrap();
         assert!(fj.org("weebo").is_none());

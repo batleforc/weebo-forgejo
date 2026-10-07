@@ -76,6 +76,16 @@ async fn decide(client: &Client, req: &AdmissionRequest<DynamicObject>) -> Resul
     let Some(object) = req.object.as_ref() else {
         return Err("request carries no object".into());
     };
+    // What the allow-list governs is in `spec`. An UPDATE that leaves it
+    // alone — the operator removing its finalizer from a CR being deleted,
+    // a label edit — references nothing new, and blocking it would leave
+    // a CR whose namespace lost its policy stuck in Terminating. The
+    // reconcilers still re-check the policy before any Forgejo call.
+    if let Some(old) = req.old_object.as_ref()
+        && old.data.get("spec") == object.data.get("spec")
+    {
+        return Ok(());
+    }
     let refs = match req.kind.kind.as_str() {
         "ForgejoRepository" => references::<ForgejoRepository>(object),
         "ForgejoWebhook" => references::<ForgejoWebhook>(object),
@@ -147,6 +157,58 @@ mod tests {
             .0
             .response
             .unwrap()
+    }
+
+    fn update(
+        kind: &str,
+        old: serde_json::Value,
+        new: serde_json::Value,
+    ) -> AdmissionReview<DynamicObject> {
+        let mut review = serde_json::to_value(review(kind, new)).unwrap();
+        review["request"]["operation"] = "UPDATE".into();
+        review["request"]["oldObject"] = old;
+        serde_json::from_value(review).unwrap()
+    }
+
+    fn token(user: &str, extra_meta: serde_json::Value) -> serde_json::Value {
+        let mut obj = serde_json::json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoAccessToken",
+            "metadata": {"name": "x", "finalizers": ["forgejo.weebo.io/finalizer"]},
+            "spec": {"userRef": {"name": user}, "scopes": ["read:user"]},
+        });
+        for (k, v) in extra_meta.as_object().unwrap() {
+            obj["metadata"][k] = v.clone();
+        }
+        obj
+    }
+
+    /// The finalizer removal on a CR being deleted is an UPDATE: it must go
+    /// through even when no policy lookup is possible (here, an unreachable
+    /// apiserver — the same holds for a namespace that lost its policy).
+    #[tokio::test]
+    async fn updates_leaving_the_spec_alone_are_allowed() {
+        let deleting = serde_json::json!({"deletionTimestamp": "2026-01-01T00:00:00Z"});
+        let mut released = token("ci-bot", deleting.clone());
+        released["metadata"]["finalizers"] = serde_json::json!([]);
+        let response = run(update(
+            "ForgejoAccessToken",
+            token("ci-bot", deleting),
+            released,
+        ))
+        .await;
+        assert!(response.allowed, "{:?}", response.result);
+    }
+
+    #[tokio::test]
+    async fn updates_changing_the_spec_are_still_checked() {
+        let response = run(update(
+            "ForgejoAccessToken",
+            token("ci-bot", serde_json::json!({})),
+            token("site-admin", serde_json::json!({})),
+        ))
+        .await;
+        assert!(!response.allowed);
+        assert!(response.result.message.contains("lookup failed"));
     }
 
     #[tokio::test]

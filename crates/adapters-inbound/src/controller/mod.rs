@@ -20,13 +20,24 @@ pub mod webhook;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt;
+use futures::future::{BoxFuture, Shared};
+
 use application::ports::{GatewayFactory, SecretStoreFactory};
 use application::use_cases::Outcome;
 use kube::Client;
+use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::events::Recorder;
 
 pub use api::FINALIZER;
+
+/// Set by the operator on `ForgejoDeployKey`/`ForgejoUserKey`: the
+/// Forgejo-side owner (`owner/repo` or login) the key was created on.
+/// Forgejo only addresses a key through its owner, and the owner's CR may
+/// be gone by the time the key's finalizer runs (a namespace deletion, an
+/// `Orphan` repository or user).
+pub const KEY_OWNER_ANNOTATION: &str = "forgejo.weebo.io/key-owner";
 
 /// Shared by every controller. Concrete adapters are built and injected
 /// once in `operator::main` (or by a test) — no controller names
@@ -36,6 +47,28 @@ pub struct Ctx {
     pub gateways: Arc<dyn GatewayFactory>,
     pub secrets: Arc<dyn SecretStoreFactory>,
     pub recorder: Recorder,
+    pub shutdown: Shutdown,
+}
+
+/// Resolves once the process is asked to stop: every controller then stops
+/// taking new work, lets its in-flight reconciles finish, and its `run`
+/// returns (`Controller::graceful_shutdown_on`).
+#[derive(Clone)]
+pub struct Shutdown(Shared<BoxFuture<'static, ()>>);
+
+impl Shutdown {
+    pub fn new(trigger: impl Future<Output = ()> + Send + 'static) -> Self {
+        Self(trigger.boxed().shared())
+    }
+
+    /// For tests and tools whose controllers run until dropped.
+    pub fn never() -> Self {
+        Self::new(futures::future::pending())
+    }
+
+    pub fn wait(&self) -> impl Future<Output = ()> + Send + Sync + 'static {
+        self.0.clone()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -77,6 +110,63 @@ pub async fn backends(
     Ok((gateway, secrets))
 }
 
+/// The gateway for a finalizer cleanup. A resolution failure is handed to
+/// the cleanup use-case rather than returned: it only matters if the
+/// cleanup has to call Forgejo (`application::use_cases::CleanupGateway`).
+pub async fn cleanup_gateway(
+    ctx: &Ctx,
+    instance_ref: Option<&str>,
+) -> Result<Arc<dyn application::ports::ForgejoGateway>, application::use_cases::Failure> {
+    ctx.gateways
+        .gateway_for(instance_ref)
+        .await
+        .map_err(|e| application::use_cases::Failure::new(e.reason(), e.to_string()))
+}
+
+/// The secret store for a finalizer cleanup. Like [`cleanup_gateway`], a
+/// resolution failure only surfaces if the cleanup has secrets to delete.
+pub async fn cleanup_secrets(
+    ctx: &Ctx,
+    instance_ref: Option<&str>,
+) -> Arc<dyn application::ports::SecretStore> {
+    match ctx.secrets.store_for(instance_ref).await {
+        Ok(store) => store,
+        Err(e) => Arc::new(UnresolvedSecretStore(e)),
+    }
+}
+
+/// Fails every call with the error the store couldn't be resolved with.
+struct UnresolvedSecretStore(application::ports::SecretStoreError);
+
+#[async_trait::async_trait]
+impl application::ports::SecretStore for UnresolvedSecretStore {
+    fn default_backend(&self) -> api::instance::SecretStoreBackend {
+        api::instance::SecretStoreBackend::default()
+    }
+    async fn write(
+        &self,
+        _: &api::common::SecretTarget,
+        _: Option<&str>,
+        _: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), application::ports::SecretStoreError> {
+        Err(self.0.clone())
+    }
+    async fn exists(
+        &self,
+        _: &api::common::SecretTarget,
+        _: Option<&str>,
+    ) -> Result<bool, application::ports::SecretStoreError> {
+        Err(self.0.clone())
+    }
+    async fn delete(
+        &self,
+        _: &api::common::SecretTarget,
+        _: Option<&str>,
+    ) -> Result<(), application::ports::SecretStoreError> {
+        Err(self.0.clone())
+    }
+}
+
 /// Hard errors (kube API, finalizer, cleanup) retry on the short cadence.
 pub fn error_policy<K>(_obj: Arc<K>, err: &Error, _ctx: Arc<Ctx>) -> Action {
     tracing::warn!(error = %err, "reconcile error, retrying in 30s");
@@ -89,6 +179,33 @@ pub fn requeue_after(outcome: &Outcome) -> Action {
     let base = if outcome.ready.is_ok() { 300 } else { 30 };
     let secs = outcome.due_in.map_or(base, |due| due.min(base));
     Action::requeue(Duration::from_secs(secs))
+}
+
+/// Records `owner` in [`KEY_OWNER_ANNOTATION`] when it isn't there yet.
+pub async fn record_key_owner<K>(api: &Api<K>, obj: &K, owner: &str) -> Result<(), kube::Error>
+where
+    K: kube::Resource<DynamicType = ()> + Clone + std::fmt::Debug + serde::de::DeserializeOwned,
+{
+    if key_owner(obj.meta()) == Some(owner) {
+        return Ok(());
+    }
+    let patch = serde_json::json!({
+        "metadata": { "annotations": { KEY_OWNER_ANNOTATION: owner } }
+    });
+    api.patch(
+        &kube::ResourceExt::name_any(obj),
+        &PatchParams::apply(status::FIELD_MANAGER),
+        &Patch::Merge(patch),
+    )
+    .await?;
+    Ok(())
+}
+
+pub fn key_owner(meta: &kube::api::ObjectMeta) -> Option<&str> {
+    meta.annotations
+        .as_ref()
+        .and_then(|a| a.get(KEY_OWNER_ANNOTATION))
+        .map(String::as_str)
 }
 
 /// Value of the `forgejo.weebo.io/rotate-secret` annotation.

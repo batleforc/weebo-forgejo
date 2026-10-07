@@ -2,12 +2,13 @@
 //! (`.prompt/plan.md`, "Seul chemin d'adoption"). Each CR is created
 //! paused, its `status.forgejoId`/`forgejoName` seeded, then unpaused.
 
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 use anyhow::Context;
 use api::status::ForgejoStatus;
-use application::use_cases::import::Import;
-use kube::api::{Api, Patch, PatchParams};
+use application::use_cases::import::{Existing, Import};
+use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::{Client, Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -47,6 +48,34 @@ pub fn to_yaml(i: &Import) -> anyhow::Result<String> {
     let mut docs = Vec::new();
     for_each!(i, |cr| docs.push(serde_norway::to_string(cr)?));
     Ok(docs.iter().map(|d| format!("---\n{d}")).collect::<String>())
+}
+
+/// The CRs `--apply` would collide with, so the import names around them
+/// (and an object adopted by an earlier run keeps its CR).
+pub async fn existing(client: &Client, namespace: &str) -> anyhow::Result<Existing> {
+    async fn owners<K>(api: Api<K>) -> anyhow::Result<BTreeMap<String, Option<String>>>
+    where
+        K: Resource<DynamicType = ()> + Seeded + Clone + Debug + DeserializeOwned,
+    {
+        let list = api
+            .list(&ListParams::default())
+            .await
+            .with_context(|| format!("listing {}", K::plural(&())))?;
+        Ok(list
+            .into_iter()
+            .map(|cr| {
+                let id = cr.seeded().and_then(|s| s.forgejo_id.clone());
+                (cr.name_any(), id)
+            })
+            .collect())
+    }
+    Ok(Existing {
+        users: owners::<api::ForgejoUser>(Api::all(client.clone())).await?,
+        organizations: owners::<api::ForgejoOrganization>(Api::all(client.clone())).await?,
+        teams: owners::<api::ForgejoTeam>(Api::all(client.clone())).await?,
+        repositories: owners::<api::ForgejoRepository>(Api::namespaced(client.clone(), namespace))
+            .await?,
+    })
 }
 
 /// What `--apply` did, per CR.
@@ -113,7 +142,8 @@ fn describe<K: Resource<DynamicType = ()>>(cr: &K) -> String {
 /// Creates (or takes over) the CR paused, seeds its status, then unpauses
 /// it — the operator never sees it without its `forgejoId`, so it can't
 /// create a duplicate (webhooks have no name to collide on). `Ok(false)`:
-/// the CR already owns this object. A CR owning another one is an error.
+/// the CR already owns this object (still paused from a run that failed
+/// after seeding: unpaused now). A CR owning another one is an error.
 async fn adopt<K>(client: &Client, cr: &K) -> anyhow::Result<bool>
 where
     K: Resource<DynamicType = ()> + Seeded + Clone + Debug + Serialize + DeserializeOwned,
@@ -125,7 +155,16 @@ where
 
     if let Some(existing) = api.get_opt(&name).await? {
         match existing.seeded().and_then(|s| s.forgejo_id.as_deref()) {
-            Some(owned) if Some(owned) == id => return Ok(false),
+            Some(owned) if Some(owned) == id => {
+                // A run that seeded the status but failed to unpause: finish it.
+                if existing
+                    .annotations()
+                    .contains_key(api::IMPORT_PENDING_ANNOTATION)
+                {
+                    unpause(&api, &name).await?;
+                }
+                return Ok(false);
+            }
             Some(owned) => anyhow::bail!(
                 "already owns Forgejo id {owned}, not {}",
                 id.unwrap_or_default()
@@ -158,8 +197,16 @@ where
     .await
     .context("seeding status (the CR stays paused until a re-run succeeds)")?;
 
+    unpause(&api, &name).await?;
+    Ok(true)
+}
+
+async fn unpause<K>(api: &Api<K>, name: &str) -> anyhow::Result<()>
+where
+    K: Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned,
+{
     api.patch(
-        &name,
+        name,
         &PatchParams::default(),
         &Patch::Merge(json!({ "metadata": { "annotations": {
             api::IMPORT_PENDING_ANNOTATION: null,
@@ -167,5 +214,5 @@ where
     )
     .await
     .context("removing the import-pending annotation")?;
-    Ok(true)
+    Ok(())
 }

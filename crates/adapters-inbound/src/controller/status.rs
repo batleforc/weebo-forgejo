@@ -58,6 +58,16 @@ pub fn current_ref<K: HasStatus>(obj: &K) -> Option<ForgejoRef> {
     })
 }
 
+/// `status.secretPending`: a secret was issued but not written everywhere.
+pub fn secret_pending(status: &Option<ForgejoStatus>) -> bool {
+    status.as_ref().and_then(|s| s.secret_pending) == Some(true)
+}
+
+/// `status.ownerId`, the Forgejo id of the owning account.
+pub fn owner_id(status: &Option<ForgejoStatus>) -> Option<i64> {
+    status.as_ref()?.owner_id.as_deref()?.parse().ok()
+}
+
 /// Whether `spec` changed since the last reconcile that reached the end.
 pub fn spec_changed<K: HasStatus + Resource>(obj: &K) -> bool {
     let observed = obj.forgejo_status().and_then(|s| s.observed_generation);
@@ -109,7 +119,8 @@ pub fn conditions(
 }
 
 /// Patches the outcome onto `obj` (freshly read from the API server) and
-/// emits an Event if `Ready`'s status or reason changed. A failed outcome
+/// emits an Event if `Ready`'s status or reason changed. `observedGeneration`
+/// only advances on success. A failed outcome
 /// without a `forgejo` ref keeps whatever id the status already had.
 pub async fn publish<K>(
     api: &Api<K>,
@@ -132,10 +143,12 @@ where
         &now,
     );
 
-    let mut status = serde_json::json!({
-        "observedGeneration": generation,
-        "conditions": conds,
-    });
+    let mut status = serde_json::json!({ "conditions": conds });
+    // Only a reconcile that reached the end has observed this generation:
+    // `spec_changed` must keep re-sending a change that failed to apply.
+    if outcome.ready.is_ok() {
+        status["observedGeneration"] = generation.into();
+    }
     if let Some(r) = &outcome.forgejo {
         status["forgejoId"] = r.id.to_string().into();
         status["forgejoName"] = r.name.clone().into();
@@ -145,6 +158,17 @@ where
     }
     if let Some(rotation) = &outcome.last_rotation {
         status["lastRotation"] = rotation.clone().into();
+    }
+    // `null` drops the field from the status (merge patch).
+    if let Some(pending) = outcome.secret_pending {
+        status["secretPending"] = if pending {
+            true.into()
+        } else {
+            serde_json::Value::Null
+        };
+    }
+    if let Some(owner) = outcome.owner_id {
+        status["ownerId"] = owner.to_string().into();
     }
     api.patch_status(
         &obj.name_any(),

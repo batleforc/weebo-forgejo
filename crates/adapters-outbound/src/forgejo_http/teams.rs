@@ -1,14 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use application::ports::{DesiredTeam, ForgejoRef, GatewayError, RemoteTeam};
 use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::organization_api as api;
 use forgejo_client::models;
 
-use super::{classify, found, missing_id, wire_enum, wire_string};
-
-/// Forgejo's maximum page size (`MAX_RESPONSE_ITEMS` default).
-pub(super) const PAGE_SIZE: i32 = 50;
+use super::{
+    PAGE_SIZE, all_pages, classify, classify_create, found, missing_id, wire_enum, wire_string,
+};
 
 pub(super) async fn get(
     config: &Configuration,
@@ -25,6 +24,7 @@ pub(super) fn remote(t: models::Team) -> RemoteTeam {
     RemoteTeam {
         id: t.id.unwrap_or_default(),
         name: t.name.unwrap_or_default(),
+        organization_id: t.organization.as_ref().and_then(|o| o.id),
         organization: t
             .organization
             .and_then(|o| o.name.or(o.username))
@@ -60,7 +60,7 @@ pub(super) async fn create(
     };
     let created = api::org_create_team(config, params)
         .await
-        .map_err(classify)?;
+        .map_err(classify_create)?;
     Ok(ForgejoRef {
         id: created.id.ok_or_else(|| missing_id("team"))?,
         name: created.name.unwrap_or_else(|| team.name.clone()),
@@ -100,27 +100,19 @@ pub(super) async fn list_members(
     config: &Configuration,
     id: i64,
 ) -> Result<Vec<String>, GatewayError> {
-    let mut logins = BTreeMap::new();
-    for page in 1.. {
+    let members = all_pages(|page| async move {
         let params = api::OrgListTeamMembersParams {
             id,
             page: Some(page),
             limit: Some(PAGE_SIZE),
         };
-        let batch = api::org_list_team_members(config, params)
+        api::org_list_team_members(config, params)
             .await
-            .map_err(classify)?;
-        let len = batch.len();
-        for user in batch {
-            if let Some(login) = user.login {
-                logins.insert(login, ());
-            }
-        }
-        if len < PAGE_SIZE as usize {
-            break;
-        }
-    }
-    Ok(logins.into_keys().collect())
+            .map_err(classify)
+    })
+    .await?;
+    let logins: BTreeSet<String> = members.into_iter().filter_map(|u| u.login).collect();
+    Ok(logins.into_iter().collect())
 }
 
 pub(super) async fn add_member(

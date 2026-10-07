@@ -3,7 +3,7 @@ use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::user_api as api;
 use forgejo_client::models;
 
-use super::{classify, found, missing_id};
+use super::{classify, classify_create, found, missing_id};
 
 fn remote(app: models::OAuth2Application, id: i64) -> RemoteOAuth2App {
     RemoteOAuth2App {
@@ -46,9 +46,17 @@ pub(super) async fn create(
     };
     let mut created = api::user_create_o_auth2_application(config, params)
         .await
-        .map_err(classify)?;
-    let secret = created.client_secret.take().unwrap_or_default();
+        .map_err(classify_create)?;
     let id = created.id.ok_or_else(|| missing_id("OAuth2 application"))?;
+    // Only ever returned here: an app kept without one would be Ready with an
+    // unusable, unrecoverable credential. It is removed (best effort, app
+    // names aren't unique) so the retry starts clean instead of piling up.
+    let Some(secret) = created.client_secret.take().filter(|s| !s.is_empty()) else {
+        let _ = delete(config, sudo, id).await;
+        return Err(GatewayError::Api(format!(
+            "OAuth2 application {id} was created without a client secret"
+        )));
+    };
     Ok((remote(created, id), secret))
 }
 

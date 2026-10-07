@@ -7,8 +7,8 @@ replicaCount: 2
 
 image:
   repository: ghcr.io/batleforc/weebo-forgejo-operator
-  # -- Defaults to .Chart.AppVersion when empty; append `-hardened` for
-  # the Red Hat hardened image.
+  # -- Defaults to `v` + .Chart.AppVersion (the release image tag) when
+  # empty; e.g. `v0.1.0-hardened` for the Red Hat hardened image.
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -16,6 +16,7 @@ imagePullSecrets: []
 
 serviceAccount:
   create: true
+  # -- Required when create is false: the ClusterRole is bound to it.
   name: ""
   # -- e.g. nothing for Vault: the operator logs in with this
   # ServiceAccount's own projected token (Kubernetes auth).
@@ -42,6 +43,8 @@ certManager:
     name: ""
     kind: ClusterIssuer
 
+# -- Only rendered when replicaCount > 1: with a single replica,
+# minAvailable 1 would block every node drain.
 podDisruptionBudget:
   enabled: true
   minAvailable: 1

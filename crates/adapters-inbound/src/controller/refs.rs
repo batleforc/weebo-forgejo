@@ -72,6 +72,24 @@ where
     }
 }
 
+/// `status.forgejoName` of the referenced CR whatever its readiness, for a
+/// finalizer cleanup: it must still address what was created while the
+/// referenced CR is itself not ready or being deleted.
+pub async fn recorded_name<K>(
+    api: &Api<K>,
+    name: &str,
+    our_instance: Option<&str>,
+) -> Result<Option<String>, kube::Error>
+where
+    K: Resource + HasStatus + InstanceScoped + Clone + Debug + DeserializeOwned,
+{
+    Ok(api
+        .get_opt(name)
+        .await?
+        .filter(|obj| obj.instance_ref() == our_instance)
+        .and_then(|obj| obj.forgejo_status()?.forgejo_name.clone()))
+}
+
 /// A single required ref: anything but `Ready` fails the reconcile.
 pub fn require(kind: &str, name: &str, state: RefState) -> Result<ForgejoRef, Failure> {
     match state {

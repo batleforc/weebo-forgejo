@@ -217,3 +217,7 @@ provenance = "github-attestations"
 [[tools.vault]]
 version = "2.1.1"
 backend = "aqua:hashicorp/vault"
+
+[tools.vault."platforms.linux-x64"]
+checksum = "sha256:8aa90f9cea46f541fc7baa3d0ec692fc06afde9a248cc1f2dcac46a567c6f56b"
+url = "https://releases.hashicorp.com/vault/2.1.1/vault_2.1.1_linux_amd64.zip"

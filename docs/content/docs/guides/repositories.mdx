@@ -83,7 +83,10 @@ spec:
 ```
 
 The HMAC secret is write-only in Forgejo; changing the Secret's value is
-detected (through `status.appliedSecretHash`) and pushed.
+detected through `status.appliedSecretHash`. Forgejo's hook edit ignores
+the secret (and `httpMethod` or any config key it doesn't read back), so
+changing, adding or removing one of those **recreates the hook** (new id,
+delivery history lost). The authorization header is edited in place.
 
 ## Deploy keys
 

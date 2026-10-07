@@ -9,7 +9,7 @@ pub mod live;
 use std::sync::Arc;
 use std::time::Duration;
 
-use adapters_inbound::controller::Ctx;
+use adapters_inbound::controller::{Ctx, Shutdown};
 use adapters_outbound::K8sSecretStore;
 use application::test_support::FakeForgejo;
 use kube::Client;
@@ -44,6 +44,7 @@ pub async fn harness() -> Harness {
                 instance: None,
             },
         ),
+        shutdown: Shutdown::never(),
     });
     Harness {
         cluster,

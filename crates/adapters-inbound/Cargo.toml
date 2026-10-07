@@ -9,6 +9,7 @@ publish.workspace = true
 domain = { workspace = true }
 api = { workspace = true }
 application = { workspace = true }
+async-trait = { workspace = true }
 kube = { workspace = true, features = ["admission"] }
 axum = { workspace = true }
 k8s-openapi = { workspace = true }

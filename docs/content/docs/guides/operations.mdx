@@ -28,7 +28,8 @@ glance. A Kubernetes **Event** is recorded on every `Ready` transition.
 | --- | --- |
 | `Reconciled` | All good |
 | `InstanceNotFound` / `AmbiguousDefaultInstance` | No (unique) `ForgejoInstance` to use |
-| `InstanceUnreachable` / `TokenSecretNotFound` | Network, TLS, 5xx / missing admin token |
+| `InstanceUnreachable` / `TokenSecretNotFound` | Network, TLS, 5xx, timeout or rate limit (408/429) / missing admin token |
+| `KubernetesApiError` | The apiserver failed while resolving the `ForgejoInstance` (transient) |
 | `UnsupportedForgejoVersion` | Forgejo older than v16 |
 | `ForgejoObjectAlreadyExists` | The name is taken by something this CR doesn't own — never adopted |
 | `ReferenceNotFound` / `ReferenceNotReady` | A `*Ref` is missing or not ready (re-checked as soon as it changes) |

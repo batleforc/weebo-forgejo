@@ -34,13 +34,18 @@ spec:
 
 What each kind references: a repository its owning organization or user;
 an organization webhook its organization; an OAuth2 application its owner;
-a token its user. Deploy keys and repository webhooks only reference a
-repository of their own namespace, itself checked.
+a token its user. An OAuth2 application without `ownerRef` belongs to the
+operator's admin account and references the user `@instance-admin`: a rule
+restricting `allowedUsers` only covers it if it lists that value. Deploy
+keys and repository webhooks only reference a repository of their own
+namespace, itself checked.
 
 ## Where it's enforced
 
-- **Admission webhook** on CREATE/UPDATE — never DELETE, so revoking a
-  namespace's access never strands the cleanup of what it already made.
+- **Admission webhook** on CREATE/UPDATE — never DELETE, and an UPDATE
+  that leaves `spec` alone (the operator removing its finalizer, a label
+  edit) is always allowed, so revoking a namespace's access never strands
+  the cleanup of what it already made.
   `failurePolicy: Fail`: if the webhook is down, these kinds can't be
   written.
 - **Every reconciler** re-checks before touching Forgejo, so tightening a

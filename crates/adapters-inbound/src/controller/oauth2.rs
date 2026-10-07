@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoOAuth2Application, ForgejoUser};
+use application::ports::ForgejoRef;
 use application::use_cases::reconcile_oauth2::{OAuth2Input, cleanup_oauth2, reconcile_oauth2};
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
@@ -13,7 +14,7 @@ use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
 use super::refs::{require, resolve};
-use super::status::current_ref;
+use super::status::{current_ref, owner_id, secret_pending};
 use super::{
     Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, rotate_nonce,
     status,
@@ -54,6 +55,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                     .collect::<Vec<_>>()
             },
         )
+        .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx)
         .for_each(|res| async move {
             if let Err(err) = res {
@@ -76,17 +78,17 @@ async fn reconcile(obj: Arc<ForgejoOAuth2Application>, ctx: Arc<Ctx>) -> Result<
     .map_err(|e| Error::Finalizer(e.to_string()))
 }
 
-/// The owner's login, or `None` for the admin account.
+/// The owner, or `None` for the admin account.
 async fn owner(
     app: &ForgejoOAuth2Application,
     ctx: &Ctx,
-) -> Result<Result<Option<String>, Failure>, Error> {
+) -> Result<Result<Option<ForgejoRef>, Failure>, Error> {
     let Some(owner_ref) = &app.spec.owner_ref else {
         return Ok(Ok(None));
     };
     let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
     let state = resolve(&users, &owner_ref.name, app.spec.instance_ref.as_deref()).await?;
-    Ok(require("ForgejoUser", &owner_ref.name, state).map(|r| Some(r.name)))
+    Ok(require("ForgejoUser", &owner_ref.name, state).map(Some))
 }
 
 async fn apply(
@@ -111,8 +113,11 @@ async fn apply(
                         spec: &current.spec,
                         cr_name: &name,
                         namespace: &ns,
-                        owner,
+                        owner_id: owner.as_ref().map(|o| o.id),
+                        owner: owner.map(|o| o.name),
                         current: owned,
+                        current_owner_id: owner_id(&current.status),
+                        secret_pending: secret_pending(&current.status),
                         rotate_nonce: rotate_nonce(&current.metadata),
                         last_rotation: current
                             .status
@@ -137,15 +142,15 @@ async fn apply(
 }
 
 async fn cleanup(app: &ForgejoOAuth2Application, ctx: &Ctx) -> Result<Action, Error> {
-    let (gateway, secrets) = super::backends(ctx, app.spec.instance_ref.as_deref())
-        .await
-        .map_err(|f| Error::Cleanup(f.message))?;
+    let instance = app.spec.instance_ref.as_deref();
+    let gateway = super::cleanup_gateway(ctx, instance).await;
+    let secrets = super::cleanup_secrets(ctx, instance).await;
     cleanup_oauth2(
         &app.spec,
         &app.name_any(),
         &app.namespace().unwrap_or_default(),
         current_ref(app).as_ref(),
-        gateway.as_ref(),
+        gateway.as_deref(),
         secrets.as_ref(),
     )
     .await

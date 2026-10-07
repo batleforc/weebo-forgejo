@@ -3,7 +3,7 @@ use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{admin_api, user_api};
 use forgejo_client::models;
 
-use super::{classify, found, missing_id};
+use super::{classify, classify_create, found, missing_id, organizations};
 
 pub(super) async fn get(
     config: &Configuration,
@@ -20,7 +20,15 @@ pub(super) async fn get(
                 .as_deref()
                 .is_some_and(|l| l.eq_ignore_ascii_case(username))
         });
-    Ok(user.map(remote))
+    let Some(user) = user else {
+        return Ok(None);
+    };
+    // `GET /users/{name}` also answers for organizations, and `User` carries
+    // no account type: an org of that name is not a user.
+    if organizations::get(config, username).await?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(remote(user)))
 }
 
 pub(super) fn remote(u: models::User) -> RemoteUser {
@@ -57,7 +65,7 @@ pub(super) async fn create(
     let params = admin_api::AdminCreateUserParams { body: Some(body) };
     let created = admin_api::admin_create_user(config, params)
         .await
-        .map_err(classify)?;
+        .map_err(classify_create)?;
     Ok(ForgejoRef {
         id: created.id.ok_or_else(|| missing_id("user"))?,
         name: created.login.unwrap_or_else(|| user.username.clone()),
@@ -84,13 +92,11 @@ pub(super) async fn edit(
         restricted: Some(user.restricted),
         visibility: Some(user.visibility.to_string()),
         // Forgejo requires both or neither; `0` switches back to a local
-        // (password) login.
+        // (password) login. Forgejo stores `login_name` verbatim, so a
+        // local account gets "" — what a freshly created one has, and what
+        // the diff expects (anything else would re-PATCH forever).
         source_id: Some(user.source_id.unwrap_or(0)),
-        login_name: Some(
-            user.login_name
-                .clone()
-                .unwrap_or_else(|| username.to_string()),
-        ),
+        login_name: Some(user.login_name.clone().unwrap_or_default()),
         ..Default::default()
     };
     let params = admin_api::AdminEditUserParams {
@@ -114,7 +120,7 @@ pub(super) async fn rename(
     };
     admin_api::admin_rename_user(config, params)
         .await
-        .map_err(classify)
+        .map_err(classify_create)
 }
 
 pub(super) async fn delete(config: &Configuration, username: &str) -> Result<(), GatewayError> {

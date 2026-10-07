@@ -13,7 +13,7 @@ use crate::ports::{
     DesiredRepository, ForgejoGateway, ForgejoRef, GatewayError, GenerateOptions, MigrateOptions,
     ProtectionRule, RemoteRepository, RepositoryInitOptions,
 };
-use crate::use_cases::{Failure, Outcome, differs, differs_flag, gone_ok};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, differs, differs_flag, gone_ok};
 
 /// The resolved owner (`spec.organizationRef` / `spec.userRef`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,9 +30,9 @@ impl Owner {
     }
 }
 
-/// How a missing repository gets created. Only resolved by the controller
-/// when nothing is owned yet (a template that disappeared later must not
-/// block an existing repository).
+/// How a missing repository gets created: when nothing is owned yet, or
+/// when the owned one was deleted out of band and must come back the way
+/// the spec describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     Empty(RepositoryInitOptions),
@@ -46,7 +46,10 @@ pub struct RepositoryInput<'a> {
     /// `status.forgejoId` (id) / `status.forgejoName` (`owner/name`).
     pub current: Option<ForgejoRef>,
     pub owner: Owner,
-    /// `Some` whenever `current` is `None`.
+    /// `Some` whenever the controller could resolve it. Required when
+    /// nothing is owned yet; when something is, an unresolvable source (a
+    /// template deleted since) must not block the existing repository — it
+    /// only blocks recreating one that vanished.
     pub source: Option<Source>,
     /// Names of the resolved `spec.teamRefs`, all `Ready`.
     pub teams: Vec<String>,
@@ -190,7 +193,7 @@ pub async fn reconcile_repository(
 pub async fn cleanup_repository(
     spec: &ForgejoRepositorySpec,
     current: Option<&ForgejoRef>,
-    gateway: &dyn ForgejoGateway,
+    gateway: CleanupGateway<'_>,
 ) -> Result<(), Failure> {
     if spec.deletion_policy != DeletionPolicy::Delete {
         return Ok(());
@@ -198,6 +201,7 @@ pub async fn cleanup_repository(
     let Some(current) = current else {
         return Ok(());
     };
+    let gateway = gateway.map_err(Clone::clone)?;
     // Resolve by id: the stored name may predate a rename or transfer.
     let Some(remote) = gateway.get_repository(current.id).await? else {
         return Ok(());
@@ -213,10 +217,24 @@ async fn create(
     gateway: &dyn ForgejoGateway,
 ) -> Result<RemoteRepository, (Option<ForgejoRef>, Failure)> {
     let owner = input.owner.name();
-    let source = input
-        .source
-        .clone()
-        .unwrap_or(Source::Empty(Default::default()));
+    let source = match input.source.clone() {
+        Some(s) => s,
+        None if input.spec.from_template.is_none() && input.spec.migrate.is_none() => {
+            Source::Empty(init_options(input.spec))
+        }
+        // Never fall back to an empty repository for a mirror or a
+        // template-generated one.
+        None => {
+            return Err((
+                None,
+                Failure::new(
+                    ReasonCode::ReferenceNotReady,
+                    "the repository is gone from Forgejo and spec.fromTemplate/spec.migrate \
+                     can't be resolved to recreate it",
+                ),
+            ));
+        }
+    };
     let created = match &source {
         Source::Empty(init) => {
             let is_org = matches!(input.owner, Owner::Organization(_));
@@ -305,6 +323,19 @@ async fn sync_teams(
     Ok(())
 }
 
+/// `spec.init` as creation options (an absent `init` creates a bare
+/// repository).
+pub fn init_options(spec: &ForgejoRepositorySpec) -> RepositoryInitOptions {
+    let init = spec.init.clone().unwrap_or_default();
+    RepositoryInitOptions {
+        auto_init: spec.init.is_some() && init.auto_init,
+        gitignores: init.gitignores,
+        license: init.license,
+        readme: init.readme,
+        object_format: init.object_format,
+    }
+}
+
 fn desired_repository(spec: &ForgejoRepositorySpec) -> DesiredRepository {
     DesiredRepository {
         name: spec.name.clone(),
@@ -386,15 +417,20 @@ fn sorted(v: &[String]) -> Vec<String> {
 }
 
 pub fn protection_rule(p: &BranchProtection) -> ProtectionRule {
+    let push_whitelist = p.enable_push
+        && (!p.push_whitelist_usernames.is_empty()
+            || !p.push_whitelist_teams.is_empty()
+            || p.push_whitelist_deploy_keys);
     ProtectionRule {
         rule_name: p.rule_name.clone(),
         enable_push: p.enable_push,
-        enable_push_whitelist: !p.push_whitelist_usernames.is_empty()
-            || !p.push_whitelist_teams.is_empty()
-            || p.push_whitelist_deploy_keys,
+        // Forgejo only keeps the push allow-list switches while pushing is
+        // enabled (EnableWhitelist = EnablePush && EnablePushWhitelist):
+        // ask for what it will store, or the rule reads back as a diff.
+        enable_push_whitelist: push_whitelist,
         push_whitelist_usernames: sorted(&p.push_whitelist_usernames),
         push_whitelist_teams: sorted(&p.push_whitelist_teams),
-        push_whitelist_deploy_keys: p.push_whitelist_deploy_keys,
+        push_whitelist_deploy_keys: push_whitelist && p.push_whitelist_deploy_keys,
         enable_merge_whitelist: !p.merge_whitelist_usernames.is_empty()
             || !p.merge_whitelist_teams.is_empty(),
         merge_whitelist_usernames: sorted(&p.merge_whitelist_usernames),
@@ -589,6 +625,27 @@ mod tests {
         assert_eq!(names, vec!["release/*"]);
     }
 
+    /// Forgejo drops the push allow-list switches while pushing is off.
+    #[tokio::test]
+    async fn push_allow_list_without_push_does_not_drift() {
+        let fj = forgejo().await;
+        let mut s = spec("app");
+        s.branch_protections = vec![BranchProtection {
+            rule_name: "main".into(),
+            push_whitelist_usernames: vec!["alice".into()],
+            push_whitelist_deploy_keys: true,
+            enable_push: false,
+            ..Default::default()
+        }];
+        let current = reconcile_repository(input(&s, None, "weebo"), &fj)
+            .await
+            .forgejo
+            .unwrap();
+        fj.clear_calls();
+        reconcile_repository(input(&s, Some(current), "weebo"), &fj).await;
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+    }
+
     #[tokio::test]
     async fn teams_are_synced_except_the_ones_forgejo_grants() {
         let fj = forgejo().await;
@@ -675,6 +732,49 @@ mod tests {
         fj.clear_calls();
         reconcile_repository(input(&s, Some(current), "weebo"), &fj).await;
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+    }
+
+    /// A mirror deleted out of band comes back as a mirror, never as an
+    /// empty repository.
+    #[tokio::test]
+    async fn vanished_mirror_is_recreated_from_its_source() {
+        let fj = forgejo().await;
+        let mut s = spec("mirror");
+        s.migrate = Some(MigrateSource {
+            clone_addr: "https://example.com/x.git".into(),
+            service: "git".into(),
+            mirror: true,
+            mirror_interval: None,
+            lfs: false,
+            wiki: false,
+            issues: false,
+            pull_requests: false,
+            releases: false,
+            labels: false,
+            milestones: false,
+            auth_secret_ref: None,
+        });
+        let migrate = Source::Migrate(MigrateOptions {
+            clone_addr: "https://example.com/x.git".into(),
+            mirror: true,
+            ..Default::default()
+        });
+        let mut first = input(&s, None, "weebo");
+        first.source = Some(migrate.clone());
+        let current = reconcile_repository(first, &fj).await.forgejo.unwrap();
+        fj.delete_repository("weebo/mirror").await.unwrap();
+
+        // The source couldn't be resolved: wait, don't create an empty one.
+        let mut unresolved = input(&s, Some(current.clone()), "weebo");
+        unresolved.source = None;
+        let waiting = reconcile_repository(unresolved, &fj).await;
+        assert_eq!(waiting.reason(), ReasonCode::ReferenceNotReady);
+        assert!(waiting.forgejo.is_none());
+
+        let mut resolved = input(&s, Some(current), "weebo");
+        resolved.source = Some(migrate);
+        let recreated = reconcile_repository(resolved, &fj).await.forgejo.unwrap();
+        assert!(fj.repo(recreated.id).unwrap().mirror);
     }
 
     #[test]

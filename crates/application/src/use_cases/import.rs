@@ -46,6 +46,21 @@ pub struct ImportOptions {
     /// local account becomes `bot: true` so its password is never reset
     /// (the operator can't know it).
     pub manage_users: bool,
+    /// The CRs already in the cluster: an object adopted by an earlier run
+    /// keeps its CR name, and a name owned by another object is never
+    /// reused — so names don't depend on this run's `owners` selection.
+    pub existing: Existing,
+}
+
+/// CRs already in the cluster, per kind: CR name → `status.forgejoId`
+/// (`None` for a CR whose import was interrupted before seeding, which the
+/// importer takes over). Repositories: those of `namespace` only.
+#[derive(Debug, Clone, Default)]
+pub struct Existing {
+    pub users: BTreeMap<String, Option<String>>,
+    pub organizations: BTreeMap<String, Option<String>>,
+    pub teams: BTreeMap<String, Option<String>>,
+    pub repositories: BTreeMap<String, Option<String>>,
 }
 
 /// The CRs describing an instance, in dependency order.
@@ -70,7 +85,7 @@ pub async fn import(
     };
     let mut out = Import::default();
     let all_users = inventory.list_users().await?;
-    let mut user_names = Names::default();
+    let mut user_names = Names::new(&options.existing.users);
     let mut users: BTreeMap<String, (String, RemoteUser)> = BTreeMap::new();
     for u in all_users {
         let name = user_names.claim(&u.login, u.id);
@@ -83,7 +98,7 @@ pub async fn import(
         .cloned()
         .collect();
 
-    let mut org_names = Names::default();
+    let mut org_names = Names::new(&options.existing.organizations);
     let mut orgs = Vec::new();
     for org in inventory.list_organizations().await? {
         if !wanted(&org.name) {
@@ -110,7 +125,7 @@ pub async fn import(
     }
 
     // Teams, keyed by (org, team name) for the repositories' `teamRefs`.
-    let mut team_names = Names::default();
+    let mut team_names = Names::new(&options.existing.teams);
     let mut teams: BTreeMap<(String, String), String> = BTreeMap::new();
     for (org_cr, org) in &orgs {
         for team in inventory.list_teams(org).await? {
@@ -159,7 +174,7 @@ pub async fn import(
             owners.push((Owner::User(cr.clone()), login.clone()));
         }
     }
-    let mut repo_names = Names::default();
+    let mut repo_names = Names::new(&options.existing.repositories);
     let mut hook_owners: Vec<(HookOwner, HookTarget)> = orgs
         .iter()
         .map(|(cr, org)| {
@@ -208,7 +223,7 @@ pub async fn import(
                     .push(format!("hook {} on {target}: no url, skipped", hook.id));
                 continue;
             };
-            let name = format!("{}-hook-{}", owner.cr_name(), hook.id);
+            let name = suffixed(owner.cr_name(), &format!("hook-{}", hook.id));
             let spec = webhook_spec(hook.clone(), url, owner, options);
             let mut cr = ForgejoWebhook::new(&name, spec);
             cr.metadata.namespace = Some(options.namespace.clone());
@@ -232,7 +247,8 @@ pub async fn import(
                 },
                 deletion_policy: DeletionPolicy::Orphan,
             };
-            let mut cr = ForgejoDeployKey::new(&format!("{repo_cr}-key-{}", key.id), spec);
+            let mut cr =
+                ForgejoDeployKey::new(&suffixed(repo_cr, &format!("key-{}", key.id)), spec);
             cr.metadata.namespace = Some(options.namespace.clone());
             cr.status = seeded(key.id, &key.title);
             out.deploy_keys.push(cr);
@@ -491,22 +507,70 @@ fn team_permission(s: &str) -> Option<TeamPermission> {
     }
 }
 
+/// Longest Kubernetes object name (RFC 1123 subdomain).
+const MAX_NAME: usize = 253;
+
 /// Kubernetes names (RFC 1123 subdomain) derived from Forgejo names,
-/// unique per kind: a clash (`Foo_Bar` vs `foo-bar`) gets the id appended.
-#[derive(Default)]
-struct Names(BTreeSet<String>);
+/// unique per kind. An object already adopted in the cluster keeps its CR
+/// name; otherwise a clash (`Foo_Bar` vs `foo-bar`, or a name a CR already
+/// owns for another object) gets the id appended.
+struct Names {
+    taken: BTreeSet<String>,
+    /// Forgejo id → name of the CR already owning it.
+    adopted: BTreeMap<String, String>,
+}
 
 impl Names {
-    fn claim(&mut self, forgejo_name: &str, id: i64) -> String {
-        let mut name = dns_name(forgejo_name);
-        if name.is_empty() || self.0.contains(&name) {
-            name = dns_name(&format!("{name}-{id}"));
+    fn new(existing: &BTreeMap<String, Option<String>>) -> Self {
+        let mut names = Names {
+            taken: BTreeSet::new(),
+            adopted: BTreeMap::new(),
+        };
+        for (name, id) in existing {
+            if let Some(id) = id {
+                names.taken.insert(name.clone());
+                names.adopted.insert(id.clone(), name.clone());
+            }
         }
-        self.0.insert(name.clone());
+        names
+    }
+
+    fn claim(&mut self, forgejo_name: &str, id: i64) -> String {
+        if let Some(name) = self.adopted.get(&id.to_string()) {
+            return name.clone();
+        }
+        let base = dns_name(forgejo_name);
+        let mut name = base.clone();
+        let mut n = 1;
+        while name.is_empty() || self.taken.contains(&name) {
+            // The id is unique per kind, but `{base}-{id}` may still be some
+            // other object's natural name: count until free.
+            name = match n {
+                1 => suffixed(&base, &id.to_string()),
+                _ => suffixed(&base, &format!("{id}-{n}")),
+            };
+            n += 1;
+        }
+        self.taken.insert(name.clone());
         name
     }
 }
 
+/// `{base}-{suffix}`, `base` shortened so the whole stays a valid name —
+/// the suffix carries the id that keeps it unique, so it's never cut.
+fn suffixed(base: &str, suffix: &str) -> String {
+    let room = MAX_NAME.saturating_sub(suffix.len() + 1);
+    let base = base[..base.len().min(room)].trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+    if base.is_empty() {
+        suffix.to_string()
+    } else {
+        format!("{base}-{suffix}")
+    }
+}
+
+/// An RFC 1123 subdomain: lowercase alphanumerics and `-`, in labels that
+/// start and end alphanumeric, joined by `.` (`weebo-.profile` →
+/// `weebo.profile`). Names that were already valid are unchanged.
 fn dns_name(s: &str) -> String {
     let mapped: String = s
         .chars()
@@ -515,11 +579,13 @@ fn dns_name(s: &str) -> String {
             _ => '-',
         })
         .collect();
-    let trimmed = mapped.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-    trimmed
-        .chars()
-        .take(253)
-        .collect::<String>()
+    let joined = mapped
+        .split('.')
+        .map(|label| label.trim_matches('-'))
+        .filter(|label| !label.is_empty())
+        .collect::<Vec<_>>()
+        .join(".");
+    joined[..joined.len().min(MAX_NAME)]
         .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
         .to_string()
 }
@@ -797,6 +863,7 @@ mod tests {
                 spec: &t.spec,
                 current: current(&t.status, t),
                 organization: "weebo".into(),
+                organization_id: None,
                 members: vec![team::Member::Ready("Alice_X".into())],
                 allow_disruptive_update: false,
             },
@@ -845,13 +912,130 @@ mod tests {
         assert!(f.calls().is_empty(), "{:?}", f.calls());
     }
 
+    /// Valid as a Kubernetes object name (RFC 1123 subdomain).
+    fn is_subdomain(name: &str) -> bool {
+        name.len() <= MAX_NAME
+            && name.split('.').all(|label| {
+                label.starts_with(|c: char| c.is_ascii_alphanumeric())
+                    && label.ends_with(|c: char| c.is_ascii_alphanumeric())
+                    && label
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            })
+    }
+
     #[test]
     fn dns_names() {
         assert_eq!(dns_name("Alice_X"), "alice-x");
         assert_eq!(dns_name("_team.."), "team");
-        let mut names = Names::default();
+        let mut names = Names::new(&BTreeMap::new());
         assert_eq!(names.claim("Foo_Bar", 1), "foo-bar");
         assert_eq!(names.claim("foo-bar", 2), "foo-bar-2");
         assert_eq!(names.claim("___", 3), "3");
+    }
+
+    #[test]
+    fn dns_names_are_valid_subdomains() {
+        // Forgejo's profile README repository, and other dot/underscore mixes
+        // that used to join into `-.` / `.-`.
+        assert_eq!(dns_name("weebo-.profile"), "weebo.profile");
+        assert_eq!(dns_name("foo._bar"), "foo.bar");
+        assert_eq!(dns_name(".x"), "x");
+        assert_eq!(dns_name("a..b"), "a.b");
+        // Already valid names are unchanged.
+        assert_eq!(dns_name("weebo-app.v2"), "weebo-app.v2");
+        let long_dots = "x.".repeat(200);
+        let long_accents = "é".repeat(300);
+        for s in ["weebo-.profile", "-.-", "a_.b", &long_dots, &long_accents] {
+            let name = dns_name(s);
+            assert!(name.is_empty() || is_subdomain(&name), "{s:?} -> {name:?}");
+        }
+    }
+
+    #[test]
+    fn suffixed_names_keep_the_id() {
+        let name = suffixed(&dns_name(&"a".repeat(300)), "hook-42");
+        assert!(name.ends_with("-hook-42") && is_subdomain(&name), "{name}");
+        // A cut landing right after a `.` never leaves `.-` behind.
+        let dotted = format!("{}.b", "a".repeat(246));
+        let name = suffixed(&dotted, "key-7");
+        assert!(is_subdomain(&name), "{name}");
+        assert_eq!(suffixed("", "key-7"), "key-7");
+    }
+
+    #[test]
+    fn fallback_names_never_collide() {
+        let mut names = Names::new(&BTreeMap::new());
+        assert_eq!(names.claim("foo-bar", 1), "foo-bar");
+        assert_eq!(names.claim("foo-bar-7", 2), "foo-bar-7");
+        // `foo-bar-7` is already another object's natural name.
+        assert_eq!(names.claim("foo_bar", 7), "foo-bar-7-2");
+        // Two long names sharing their first 253 characters stay apart, the
+        // id intact.
+        let prefix = "t".repeat(260);
+        let a = names.claim(&format!("{prefix}a"), 10);
+        let b = names.claim(&format!("{prefix}b"), 11);
+        assert_ne!(a, b);
+        assert!(b.ends_with("-11") && is_subdomain(&b), "{b}");
+    }
+
+    #[test]
+    fn existing_crs_keep_their_names() {
+        let existing = BTreeMap::from([
+            // Adopted by an earlier run (say `--owner a-b`) under the natural
+            // name another object would get now.
+            ("a-b-c".to_string(), Some("1".to_string())),
+            // Adopted by an earlier run under a fallback name.
+            ("x-y-5".to_string(), Some("5".to_string())),
+            // An interrupted import, taken over by whoever claims it.
+            ("pending".to_string(), None),
+        ]);
+        let mut names = Names::new(&existing);
+        assert_eq!(names.claim("a-b-c", 2), "a-b-c-2");
+        assert_eq!(names.claim("a-b-c", 1), "a-b-c");
+        assert_eq!(names.claim("x_y", 5), "x-y-5");
+        assert_eq!(names.claim("pending", 9), "pending");
+    }
+
+    #[tokio::test]
+    async fn existing_crs_keep_their_names_across_runs() {
+        let f = fixture().await;
+        let first = import(&f, &options()).await.unwrap();
+        let repo = &first.repositories[0];
+        let natural = repo.metadata.name.clone().unwrap();
+        // The cluster holds the repository under another name, and its
+        // natural name belongs to another object.
+        let existing = Existing {
+            repositories: BTreeMap::from([
+                (
+                    "adopted".to_string(),
+                    repo.status.as_ref().unwrap().forgejo_id.clone(),
+                ),
+                (natural.clone(), Some("999999".to_string())),
+            ]),
+            ..Default::default()
+        };
+        let again = import(
+            &f,
+            &ImportOptions {
+                existing,
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+        let id = |r: &ForgejoRepository| r.status.as_ref().unwrap().forgejo_id.clone();
+        let same = again
+            .repositories
+            .iter()
+            .find(|r| id(r) == id(repo))
+            .unwrap();
+        assert_eq!(same.metadata.name.as_deref(), Some("adopted"));
+        assert!(
+            again
+                .repositories
+                .iter()
+                .all(|r| r.metadata.name.as_deref() != Some(natural.as_str()))
+        );
     }
 }

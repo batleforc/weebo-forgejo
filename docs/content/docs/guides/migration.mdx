@@ -77,9 +77,20 @@ it. The adoption therefore happens in the cluster, once:
    blocks are ignored when applied; the CRs already exist with their ids.
 
 Re-running `--apply` is safe: a CR that already owns the same object is
-skipped; one owning a different object is reported as an error and left
-untouched. A CR that existed *without* an id (e.g. one stuck on
+skipped (and unpaused, if an earlier run stopped before removing the
+annotation); one owning a different object is reported as an error and
+left untouched. A CR that existed *without* an id (e.g. one stuck on
 `ForgejoObjectAlreadyExists`) is taken over and adopted.
+
+CR names are the Forgejo names made valid for Kubernetes (lowercase,
+`_` → `-`, repository `weebo/.profile` → `weebo.profile`), with the
+Forgejo id appended on a clash. `--apply`
+first reads the CRs already in the cluster: an object adopted by an
+earlier run keeps its CR name, and a name already owned by another object
+is never reused — so runs with different `--owner` selections don't
+collide. Without `--apply` the cluster isn't read, so on a cluster that
+already holds imported CRs, export the manifests (step 3) from the
+cluster rather than from a fresh print.
 
 The first reconcile of an adopted CR sends nothing to Forgejo when the
 imported spec matches — verified against Forgejo 16 by the importer's
@@ -93,9 +104,9 @@ tests.
   its password can't be known — the operator never resets it. Turning
   such a user into a regular local user (`bot: false` + `secretTargets`)
   **resets its password** into the targets.
-- **Webhook secrets** are write-only in Forgejo. An imported hook keeps
-  its current secret until you add a `secretRef`; add it before changing
-  anything else on the hook, so every update carries the secret.
+- **Webhook secrets** are write-only in Forgejo, and its hook edit never
+  changes them. An imported hook keeps its current secret (edits leave it
+  alone); adding a `secretRef` recreates the hook with that secret.
 - **Organization owners** (`ownerRef`) only matter at creation and are
   left unset.
 - **Allow-list**: once a `ForgejoNamespacePolicy` exists, the import

@@ -136,6 +136,8 @@ pub struct RemoteTeam {
     pub name: String,
     /// Name of the organization the team belongs to.
     pub organization: String,
+    /// Its id, when Forgejo returned the embedded organization.
+    pub organization_id: Option<i64>,
     pub description: String,
     pub permission: String,
     pub units_map: BTreeMap<String, String>,
@@ -587,7 +589,12 @@ pub enum GatewayFactoryError {
     /// The token `Secret` or its key is missing / not UTF-8.
     #[error("ForgejoInstance token secret: {0}")]
     TokenSecret(String),
-    /// Any other Kubernetes-side or client-building failure.
+    /// A Kubernetes API call (listing instances, reading a `Secret`)
+    /// failed — usually transient, never a spec problem.
+    #[error("Kubernetes API error resolving ForgejoInstance: {0}")]
+    Kubernetes(String),
+    /// The instance's settings can't produce a client (e.g. a CA bundle
+    /// with no certificate).
     #[error("failed resolving ForgejoInstance: {0}")]
     ResolutionFailed(String),
 }
@@ -598,6 +605,7 @@ impl GatewayFactoryError {
             GatewayFactoryError::InstanceNotFound(_) => ReasonCode::InstanceNotFound,
             GatewayFactoryError::AmbiguousDefault(_) => ReasonCode::AmbiguousDefaultInstance,
             GatewayFactoryError::TokenSecret(_) => ReasonCode::TokenSecretNotFound,
+            GatewayFactoryError::Kubernetes(_) => ReasonCode::KubernetesApiError,
             GatewayFactoryError::ResolutionFailed(_) => ReasonCode::InvalidSpec,
         }
     }

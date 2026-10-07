@@ -23,7 +23,7 @@ async fn one_leader_loss_is_reported_and_the_other_takes_over() {
     let b = leader::lease(client.clone(), "default", NAME, "b".into(), TTL);
 
     leader::acquire(&a, RENEW).await;
-    let held = tokio::spawn(async move { leader::hold(&a, RENEW).await });
+    let held = tokio::spawn(async move { leader::hold(&a, RENEW, TTL).await });
 
     // While `a` renews, `b` never gets in — even well past the TTL.
     let blocked = tokio::time::timeout(TTL * 2, leader::acquire(&b, RENEW)).await;

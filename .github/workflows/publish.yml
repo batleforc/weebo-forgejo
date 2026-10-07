@@ -1,6 +1,6 @@
 name: Publish
 
-# Builds, pushes, scans and smoke-runs both operator images (`vX.Y.Z`
+# Builds, scans, smoke-runs and then pushes both operator images (`vX.Y.Z`
 # distroless, `vX.Y.Z-hardened` Red Hat hardened; both ship the importer)
 # and pushes the Helm chart (OCI, ghcr.io/batleforc/charts).
 #
@@ -42,7 +42,7 @@ jobs:
           - file: Containerfile.hardened
             suffix: "-hardened"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.TAG }}
       - uses: ./.github/actions/setup-mise
@@ -71,39 +71,56 @@ jobs:
             echo "scan=${IMAGE}:${REF_NAME}${SUFFIX}"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@v3
+      # Built into the local daemon only: nothing reaches the registry
+      # until the scan and the smoke run below pass.
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: false
+          load: true
+          tags: ${{ steps.tags.outputs.scan }}
+
+      # `task audit` only sees the build files; this scans what ships.
+      - name: Scan the image
+        env:
+          SCAN: ${{ steps.tags.outputs.scan }}
+        run: mise exec -- trivy image --exit-code 1 --severity HIGH,CRITICAL "$SCAN"
+
+      # Proves the image actually runs (glibc ABI of each base): the
+      # importer answers --version without needing a cluster.
+      - name: Smoke-run the image
+        env:
+          SCAN: ${{ steps.tags.outputs.scan }}
+        run: docker run --rm --entrypoint /usr/local/bin/weebo-forgejo-importer "$SCAN" --version
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.file }}
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-
-      # `task audit` only sees the build files; this scans what shipped.
-      - name: Scan the pushed image
+      # Pushes exactly the image that was scanned, under every computed tag.
+      - name: Push the scanned image
         env:
           SCAN: ${{ steps.tags.outputs.scan }}
-        run: mise exec -- trivy image --exit-code 1 --severity HIGH,CRITICAL "$SCAN"
-
-      # Proves the pushed image actually runs (glibc ABI of each base): the
-      # importer answers --version without needing a cluster.
-      - name: Smoke-run the pushed image
-        env:
-          SCAN: ${{ steps.tags.outputs.scan }}
-        run: docker run --rm --entrypoint /usr/local/bin/weebo-forgejo-importer "$SCAN" --version
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          printf '%s\n' "$TAGS" | while read -r tag; do
+            [ -n "$tag" ] || continue
+            [ "$tag" = "$SCAN" ] || docker tag "$SCAN" "$tag"
+            docker push "$tag"
+          done
 
   chart:
+    # Never publish a chart whose images failed to build, scan or push.
+    needs: image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.TAG }}
       - uses: ./.github/actions/setup-mise

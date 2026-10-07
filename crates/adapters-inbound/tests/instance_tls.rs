@@ -7,7 +7,7 @@ mod support;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use adapters_inbound::controller::{self, Ctx};
+use adapters_inbound::controller::{self, Ctx, Shutdown};
 use adapters_outbound::{ForgejoGatewayFactory, ForgejoSecretStoreFactory};
 use api::ForgejoInstance;
 use axum::Json;
@@ -61,6 +61,7 @@ async fn tls_options_decide_whether_the_instance_is_trusted() {
                 instance: None,
             },
         ),
+        shutdown: Shutdown::never(),
     });
     tokio::spawn(controller::instance::run(client.clone(), ctx));
     let (url, ca) = https_forgejo().await;

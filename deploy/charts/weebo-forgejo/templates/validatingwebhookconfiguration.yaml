@@ -21,7 +21,10 @@ webhooks:
         port: {{ .Values.webhook.servicePort }}
     rules:
       # CREATE/UPDATE only, never DELETE: revoking a namespace's access must
-      # never block the finalizer cleanup of what it already created.
+      # never block the finalizer cleanup of what it already created. The
+      # finalizer removal itself is an UPDATE, so the webhook lets through
+      # any UPDATE of an object that is already terminating
+      # (deletionTimestamp set).
       - apiGroups: ["forgejo.weebo.io"]
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]

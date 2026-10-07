@@ -208,6 +208,10 @@ relisible via GET). Donc :
 - **Secret de webhook en écriture seule** : jamais relu ; son empreinte
   SHA-256 (avec l'en-tête d'autorisation) est gardée dans
   `status.appliedSecretHash` pour détecter une rotation du `Secret`.
+  L'édition d'un hook (Forgejo 16) ignore le secret et toute clé de
+  `config` non relue (`http_method`…) : leur changement recrée le hook
+  (comme un changement de type). Format `v2:<create-only>:<en-tête>`,
+  toujours renseigné ; l'en-tête, lui, s'édite en place.
 - **Clés SSH immuables** : tout changement (titre, clé, lecture seule) =
   suppression + recréation. Sans `publicKey`, paire ed25519 générée, clé
   privée écrite dans `secretTargets` (`ssh-privatekey`/`ssh-publickey`,
@@ -285,7 +289,7 @@ l'instance.
   `deletionPolicy: Orphan` ; les users sont `Observe` (avec
   `--manage-users`, un compte local devient `bot: true` : mot de passe
   inconnu, jamais réinitialisé) ; webhooks sans `secretRef` (le secret
-  existant reste tant que le hook ne change pas). OAuth2 et tokens non
+  existant reste : l'édition d'un hook ne le touche jamais). OAuth2 et tokens non
   importés (secrets illisibles).
 - **Vérifié contre Forgejo 16.0.5** : le reconcile des CR importées
   (org, équipe avec unités, dépôt avec protection + accès d'équipe,
@@ -315,7 +319,9 @@ Catalogue initial (à étendre uniquement dans l'enum) : `Reconciled`,
 `ReferenceNotFound`, `ReferenceNotReady`, `UserNotFound`,
 `MemberPending`, `LoginSourceNotFound`, `DisruptiveUpdateRefused`,
 `NamespaceNotAllowed`, `CrossNamespaceReference`, `SecretTargetFailed`,
-`InvalidSpec`, `UnsupportedForgejoVersion` (instance < v16, ajouté en M1).
+`InvalidSpec`, `UnsupportedForgejoVersion` (instance < v16, ajouté en M1),
+`KubernetesApiError` (apiserver en échec pendant la résolution de
+l'instance : transitoire, plus confondu avec `InvalidSpec`).
 
 ## Modèle de status commun
 

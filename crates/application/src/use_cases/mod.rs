@@ -18,7 +18,13 @@ pub mod reconcile_webhook;
 
 use domain::error::ReasonCode;
 
-use crate::ports::{ForgejoRef, GatewayError};
+use crate::ports::{ForgejoGateway, ForgejoRef, GatewayError};
+
+/// A finalizer cleanup's gateway, resolved by the caller up front — but its
+/// error only matters once the cleanup actually has to call Forgejo: an
+/// `Orphan` CR, or one that never owned anything, is released even while
+/// its `ForgejoInstance` can't be resolved.
+pub type CleanupGateway<'a> = Result<&'a dyn ForgejoGateway, &'a Failure>;
 
 /// A `Ready: False` cause.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +72,11 @@ pub struct Outcome {
     /// Reconcile again no later than this (seconds), when something is due
     /// sooner than the steady-state requeue (a token's `rotationPeriod`).
     pub due_in: Option<u64>,
+    /// New `status.secretPending`: `Some(true)` when a secret was issued
+    /// but not written to every target, `Some(false)` once it was.
+    pub secret_pending: Option<bool>,
+    /// New `status.ownerId`, the Forgejo id of the owning account.
+    pub owner_id: Option<i64>,
 }
 
 impl Outcome {
@@ -77,6 +88,8 @@ impl Outcome {
             secret_hash: None,
             last_rotation: None,
             due_in: None,
+            secret_pending: None,
+            owner_id: None,
         }
     }
 
@@ -88,6 +101,8 @@ impl Outcome {
             secret_hash: None,
             last_rotation: None,
             due_in: None,
+            secret_pending: None,
+            owner_id: None,
         }
     }
 
@@ -97,6 +112,20 @@ impl Outcome {
             Ok(_) => ReasonCode::Reconciled,
             Err(f) => f.reason,
         }
+    }
+}
+
+/// Same account: by Forgejo id when both are known (a rename keeps the
+/// id), by login otherwise (a status written before ids were recorded).
+pub(crate) fn same_owner(
+    stored_login: &str,
+    stored_id: Option<i64>,
+    login: &str,
+    id: Option<i64>,
+) -> bool {
+    match (stored_id, id) {
+        (Some(a), Some(b)) => a == b,
+        _ => stored_login == login,
     }
 }
 

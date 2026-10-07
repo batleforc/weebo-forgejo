@@ -11,7 +11,7 @@ use domain::error::ReasonCode;
 
 use crate::ports::{DesiredOAuth2App, ForgejoGateway, ForgejoRef, RemoteOAuth2App, SecretStore};
 use crate::use_cases::emit::{self, rotation_requested};
-use crate::use_cases::{Failure, Outcome, gone_ok};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, gone_ok, same_owner};
 
 pub struct OAuth2Input<'a> {
     pub spec: &'a ForgejoOAuth2ApplicationSpec,
@@ -19,9 +19,16 @@ pub struct OAuth2Input<'a> {
     pub namespace: &'a str,
     /// Login of the resolved `spec.ownerRef`; `None` = the admin account.
     pub owner: Option<String>,
+    /// Forgejo id of the resolved `spec.ownerRef`.
+    pub owner_id: Option<i64>,
     /// `status.forgejoId` (app id) / `status.forgejoName` (owner login, or
     /// empty for the admin account).
     pub current: Option<ForgejoRef>,
+    /// `status.ownerId`: the id of the account `current` belongs to.
+    pub current_owner_id: Option<i64>,
+    /// `status.secretPending`: the last client secret never reached every
+    /// target, which may still hold a revoked one.
+    pub secret_pending: bool,
     pub rotate_nonce: Option<String>,
     pub last_rotation: Option<String>,
     pub allow_disruptive_update: bool,
@@ -38,10 +45,11 @@ pub async fn reconcile_oauth2(
     let ns = Some(input.namespace);
 
     // An application can't change owner: delete under the old one, then
-    // create under the new one (new client id).
+    // create under the new one (new client id). Compared by id: a renamed
+    // owner is still the same one.
     let mut current = input.current.clone();
     if let Some(c) = &current
-        && c.name != owner_name
+        && !same_owner(&c.name, input.current_owner_id, &owner_name, input.owner_id)
     {
         if !input.allow_disruptive_update {
             return Outcome::failed(
@@ -82,6 +90,7 @@ pub async fn reconcile_oauth2(
             };
             if app_differs(&desired, &remote)
                 || lost
+                || input.secret_pending
                 || rotation_requested(&input.rotate_nonce, &input.last_rotation)
             {
                 match gateway
@@ -102,6 +111,7 @@ pub async fn reconcile_oauth2(
         name: owner_name,
     });
     let mut outcome = Outcome::synced(current.clone(), "application synced");
+    outcome.owner_id = input.owner_id;
     if let Some(secret) = secret {
         let data = BTreeMap::from([
             ("FORGEJO_CLIENT_ID".to_string(), app.client_id.clone()),
@@ -109,11 +119,15 @@ pub async fn reconcile_oauth2(
             // Forgejo's OIDC issuer is the instance root.
             ("FORGEJO_URL".to_string(), gateway.web_url().to_string()),
         ]);
-        // On failure the secret is lost; the next reconcile sees the target
-        // missing and rotates again.
+        // On failure the secret is lost and the targets that exist hold the
+        // previous, now invalid one: regenerate on the next reconcile.
         if let Err(f) = emit::write_all(&targets, ns, &data, secrets).await {
-            return Outcome::failed(current, f);
+            let mut failed = Outcome::failed(current, f);
+            failed.secret_pending = Some(true);
+            failed.owner_id = input.owner_id;
+            return failed;
         }
+        outcome.secret_pending = Some(false);
         outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
     }
     outcome
@@ -124,12 +138,13 @@ pub async fn cleanup_oauth2(
     cr_name: &str,
     namespace: &str,
     current: Option<&ForgejoRef>,
-    gateway: &dyn ForgejoGateway,
+    gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
 ) -> Result<(), Failure> {
     if spec.deletion_policy == DeletionPolicy::Delete
         && let Some(c) = current
     {
+        let gateway = gateway.map_err(Clone::clone)?;
         gone_ok(gateway.delete_oauth2_app(sudo(&c.name), c.id).await)?;
     }
     let targets = emit::targets(&spec.secret_targets, cr_name, secrets);
@@ -187,7 +202,10 @@ mod tests {
             cr_name: "app",
             namespace: "team-a",
             owner: owner.map(str::to_string),
+            owner_id: None,
             current,
+            current_owner_id: None,
+            secret_pending: false,
             rotate_nonce: None,
             last_rotation: None,
             allow_disruptive_update: false,
@@ -246,6 +264,57 @@ mod tests {
         let rotated = reconcile_oauth2(rotate, &fj, &secrets).await;
         assert_eq!(rotated.last_rotation.as_deref(), Some("1"));
         assert_eq!(rotated.forgejo, current, "same application, new secret");
+    }
+
+    #[tokio::test]
+    async fn failed_write_over_an_existing_target_regenerates() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let mut s = spec();
+        let current = reconcile_oauth2(input(&s, None, None), &fj, &secrets)
+            .await
+            .forgejo;
+
+        // The PATCH regenerates the secret, then the write fails: the
+        // target still holds the old, now invalid one.
+        s.redirect_uris.push("https://app.example.com/cb2".into());
+        secrets.fail_writes(true);
+        let failed = reconcile_oauth2(input(&s, None, current.clone()), &fj, &secrets).await;
+        assert_eq!(failed.reason(), ReasonCode::SecretTargetFailed);
+        assert_eq!(failed.secret_pending, Some(true));
+
+        secrets.fail_writes(false);
+        let mut retry = input(&s, None, current.clone());
+        retry.secret_pending = true;
+        let fixed = reconcile_oauth2(retry, &fj, &secrets).await;
+        assert!(fixed.ready.is_ok(), "{fixed:?}");
+        assert_eq!(fixed.secret_pending, Some(false));
+        let (_, _, secret) = fj.oauth2_app(current.unwrap().id).unwrap();
+        assert_eq!(
+            secrets.get("team-a/app").unwrap()["FORGEJO_CLIENT_SECRET"],
+            secret
+        );
+    }
+
+    #[tokio::test]
+    async fn renamed_owner_keeps_the_application() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let id = fj.insert_user("sso-bot");
+        let s = spec();
+        let mut first = input(&s, Some("sso-bot"), None);
+        first.owner_id = Some(id);
+        let created = reconcile_oauth2(first, &fj, &secrets).await;
+        assert_eq!(created.owner_id, Some(id));
+        let current = created.forgejo;
+        fj.rename_user("sso-bot", "sso-robot").await.unwrap();
+        fj.clear_calls();
+
+        let mut renamed = input(&s, Some("sso-robot"), current.clone());
+        renamed.owner_id = Some(id);
+        renamed.current_owner_id = Some(id);
+        let outcome = reconcile_oauth2(renamed, &fj, &secrets).await;
+        assert!(outcome.ready.is_ok(), "{outcome:?}");
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+        assert_eq!(outcome.forgejo.unwrap().name, "sso-robot");
     }
 
     #[tokio::test]

@@ -1,7 +1,5 @@
 //! `ForgejoInventory`: the paginated list calls only the importer uses.
 
-use std::future::Future;
-
 use application::ports::{
     GatewayError, HookTarget, RemoteHook, RemoteKey, RemoteOrganization, RemoteRepository,
     RemoteTeam, RemoteUser,
@@ -9,26 +7,8 @@ use application::ports::{
 use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{admin_api, organization_api, repository_api, user_api};
 
-use super::teams::PAGE_SIZE;
-use super::{classify, hooks, keys, organizations, repositories, teams, users};
-
-/// Fetches pages until one comes back short.
-async fn all<T, F, Fut>(mut fetch: F) -> Result<Vec<T>, GatewayError>
-where
-    F: FnMut(i32) -> Fut,
-    Fut: Future<Output = Result<Vec<T>, GatewayError>>,
-{
-    let mut out = Vec::new();
-    for page in 1.. {
-        let batch = fetch(page).await?;
-        let len = batch.len();
-        out.extend(batch);
-        if len < PAGE_SIZE as usize {
-            break;
-        }
-    }
-    Ok(out)
-}
+use super::all_pages as all;
+use super::{PAGE_SIZE, classify, hooks, keys, organizations, repositories, teams, users};
 
 pub(super) async fn list_users(config: &Configuration) -> Result<Vec<RemoteUser>, GatewayError> {
     let users = all(|page| async move {

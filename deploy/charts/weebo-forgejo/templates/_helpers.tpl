@@ -40,7 +40,7 @@ ServiceAccount name.
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "weebo-forgejo.fullname" .) .Values.serviceAccount.name -}}
 {{- else -}}
-{{- default "default" .Values.serviceAccount.name -}}
+{{- required "serviceAccount.name is required when serviceAccount.create is false" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
 

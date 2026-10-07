@@ -13,7 +13,7 @@ use domain::error::ReasonCode;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
 use crate::ports::{ForgejoGateway, ForgejoRef, GatewayError, RemoteKey, SecretStore};
-use crate::use_cases::{Failure, Outcome, gone_ok};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, gone_ok};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyOwner {
@@ -132,20 +132,23 @@ pub async fn reconcile_key(
     outcome
 }
 
-/// `owner` is `None` when the repository/user is already gone — and took
-/// the key with it: only the emitted secrets are left to delete.
+/// `owner` is `None` only when the controller can find no record of the
+/// repository/user the key was created on (never resolved, nothing
+/// recorded): the key can't be addressed, only the emitted secrets are
+/// left to delete.
 pub async fn cleanup_key(
     owner: Option<&KeyOwner>,
     source: &KeySource,
     namespace: Option<&str>,
     deletion_policy: DeletionPolicy,
     current: Option<&ForgejoRef>,
-    gateway: &dyn ForgejoGateway,
+    gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
 ) -> Result<(), Failure> {
     if deletion_policy == DeletionPolicy::Delete
         && let (Some(owner), Some(current)) = (owner, current)
     {
+        let gateway = gateway.map_err(Clone::clone)?;
         gone_ok(delete(owner, current.id, gateway).await)?;
     }
     if source.public_key.is_none() {
@@ -348,5 +351,46 @@ mod tests {
         let source = KeySource::default();
         let outcome = reconcile_key(input(&source, None), &fj, &secrets).await;
         assert_eq!(outcome.reason(), ReasonCode::InvalidSpec);
+    }
+
+    /// An unresolvable instance only blocks a cleanup that must call
+    /// Forgejo: an orphaned key still has its secret removed.
+    #[tokio::test]
+    async fn cleanup_needs_the_gateway_only_to_delete() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let source = generated();
+        let created = reconcile_key(input(&source, None), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        let owner = KeyOwner::Repository("weebo/app".into());
+        let unresolved = Failure::new(ReasonCode::InstanceNotFound, "gone");
+
+        let deleting = cleanup_key(
+            Some(&owner),
+            &source,
+            Some("team-a"),
+            DeletionPolicy::Delete,
+            Some(&created),
+            Err(&unresolved),
+            &secrets,
+        )
+        .await;
+        assert_eq!(deleting, Err(unresolved.clone()));
+        assert!(fj.key(created.id).is_some());
+
+        cleanup_key(
+            Some(&owner),
+            &source,
+            Some("team-a"),
+            DeletionPolicy::Orphan,
+            Some(&created),
+            Err(&unresolved),
+            &secrets,
+        )
+        .await
+        .unwrap();
+        assert!(fj.key(created.id).is_some());
+        assert!(secrets.get("team-a/deploy").is_none());
     }
 }

@@ -40,9 +40,10 @@ where
     })
 }
 
-/// Polls `api.get(name)` every `poll_interval` until it errors (i.e. the
+/// Polls `api.get(name)` every `poll_interval` until it answers 404 (the
 /// object is gone), up to `timeout` — the delete-then-wait-for-404 half of
-/// the finalizer-cleanup pattern.
+/// the finalizer-cleanup pattern. Any other error (403, a schema that no
+/// longer deserializes, a dropped connection) panics instead of passing.
 pub async fn wait_for_absence<K>(
     api: &kube::Api<K>,
     name: &str,
@@ -53,7 +54,11 @@ pub async fn wait_for_absence<K>(
 {
     tokio::time::timeout(timeout, async {
         loop {
-            if api.get(name).await.is_err() {
+            let found = api
+                .get_opt(name)
+                .await
+                .unwrap_or_else(|e| panic!("getting {name:?} failed: {e}"));
+            if found.is_none() {
                 return;
             }
             tokio::time::sleep(poll_interval).await;

@@ -510,6 +510,18 @@ fn vault_log() -> std::path::PathBuf {
 }
 
 async fn vault_dev() -> VaultDev {
+    // The free port is released before vault binds it: should another
+    // process take it in between, vault exits, and we retry on a new one.
+    for _ in 0..5 {
+        if let Some(vault) = try_vault_dev().await {
+            return vault;
+        }
+    }
+    panic!("vault server -dev did not come up, see {:?}", vault_log());
+}
+
+/// `None` when vault exited before answering (its port was taken).
+async fn try_vault_dev() -> Option<VaultDev> {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -530,22 +542,26 @@ async fn vault_dev() -> VaultDev {
         .stderr(std::fs::File::create(vault_log()).unwrap())
         .spawn()
         .expect("spawning `vault server -dev`: is vault on PATH (mise install)?");
-    let vault = VaultDev {
+    let mut vault = VaultDev {
         child,
         addr: format!("http://127.0.0.1:{port}"),
     };
     for _ in 0..100 {
+        if vault.child.try_wait().unwrap().is_some() {
+            return None;
+        }
         let up = reqwest::Client::new()
             .get(format!("{}/v1/sys/health", vault.addr))
             .send()
             .await
             .is_ok_and(|r| r.status().is_success());
-        if up {
-            return vault;
+        // Still running: the answer came from our vault, not a squatter.
+        if up && vault.child.try_wait().unwrap().is_none() {
+            return Some(vault);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("vault server -dev did not come up");
+    panic!("vault server -dev did not come up, see {:?}", vault_log());
 }
 
 impl VaultDev {

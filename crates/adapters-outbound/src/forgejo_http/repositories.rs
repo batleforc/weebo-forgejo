@@ -7,7 +7,7 @@ use forgejo_client::apis::{admin_api, organization_api, repository_api as api};
 use forgejo_client::models;
 use serde_json::json;
 
-use super::{classify, found, missing_id, wire_enum, wire_string};
+use super::{classify, classify_create, found, missing_id, wire_enum, wire_string};
 
 fn split(full_name: &str) -> Result<(String, String), GatewayError> {
     full_name
@@ -86,7 +86,7 @@ pub(super) async fn create(
         };
         organization_api::create_org_repo(config, params)
             .await
-            .map_err(classify)
+            .map_err(classify_create)
     } else {
         let params = admin_api::AdminCreateRepoParams {
             username: owner.to_string(),
@@ -94,7 +94,7 @@ pub(super) async fn create(
         };
         admin_api::admin_create_repo(config, params)
             .await
-            .map_err(classify)
+            .map_err(classify_create)
     }?;
     created(result, &fallback)
 }
@@ -125,7 +125,9 @@ pub(super) async fn generate(
         template_repo,
         body: Some(body),
     };
-    let result = api::generate_repo(config, params).await.map_err(classify)?;
+    let result = api::generate_repo(config, params)
+        .await
+        .map_err(classify_create)?;
     created(result, &format!("{owner}/{}", repo.name))
 }
 
@@ -155,7 +157,9 @@ pub(super) async fn migrate(
         ..models::MigrateRepoOptions::new(options.clone_addr.clone(), repo.name.clone())
     };
     let params = api::RepoMigrateParams { body: Some(body) };
-    let result = api::repo_migrate(config, params).await.map_err(classify)?;
+    let result = api::repo_migrate(config, params)
+        .await
+        .map_err(classify_create)?;
     created(result, &format!("{owner}/{}", repo.name))
 }
 
@@ -227,7 +231,7 @@ pub(super) async fn transfer(
     api::repo_transfer(config, params)
         .await
         .map(|_| ())
-        .map_err(classify)
+        .map_err(classify_create)
 }
 
 pub(super) async fn delete(config: &Configuration, full_name: &str) -> Result<(), GatewayError> {
@@ -331,7 +335,7 @@ pub(super) async fn create_protection(
     api::repo_create_branch_protection(config, params)
         .await
         .map(|_| ())
-        .map_err(classify)
+        .map_err(classify_create)
 }
 
 pub(super) async fn edit_protection(
@@ -381,6 +385,7 @@ pub(super) async fn list_teams(
         .map(|t| RemoteTeam {
             id: t.id.unwrap_or_default(),
             name: t.name.unwrap_or_default(),
+            organization_id: t.organization.as_ref().and_then(|o| o.id),
             organization: t
                 .organization
                 .and_then(|o| o.name.or(o.username))

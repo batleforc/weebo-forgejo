@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use adapters_inbound::controller::{self, Ctx};
+use adapters_inbound::controller::{self, Ctx, Shutdown};
 use adapters_outbound::{ForgejoGatewayFactory, ForgejoHttpGateway, ForgejoSecretStoreFactory};
 use api::ForgejoInstance;
 use k8s_openapi::api::core::v1::Secret;
@@ -146,6 +146,7 @@ pub async fn live_with(options: Options) -> Live {
                 instance: None,
             },
         ),
+        shutdown: Shutdown::never(),
     });
     tokio::spawn(controller::instance::run(client.clone(), ctx.clone()));
     tokio::spawn(controller::user::run(client.clone(), ctx.clone()));

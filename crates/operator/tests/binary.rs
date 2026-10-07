@@ -179,3 +179,65 @@ async fn binary_serves_the_webhook_leads_reconciles_and_exits_on_lease_loss() {
     assert_eq!(status.code(), Some(1));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// SIGTERM (what the kubelet sends on a rollout) stops the operator
+/// cleanly — it is PID 1 in its container, so an unhandled SIGTERM would be
+/// ignored until the SIGKILL — and hands the lease over at once.
+#[tokio::test]
+async fn binary_stops_on_sigterm_and_releases_the_lease() {
+    let cluster = EnvTestCluster::start().await;
+    let client = cluster.client();
+    let dir = std::env::temp_dir().join(format!("operator-sigterm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let kubeconfig = dir.join("kubeconfig.yaml");
+    cluster.write_kubeconfig(&kubeconfig);
+
+    let mut op = Operator(
+        Command::new(env!("CARGO_BIN_EXE_operator"))
+            .env("KUBECONFIG", &kubeconfig)
+            .env("POD_NAMESPACE", "default")
+            .env("HOSTNAME", "operator-under-test")
+            // No certificate: the webhook is skipped.
+            .env("WEBHOOK_TLS_CERT_FILE", dir.join("absent.crt"))
+            .env("RUST_LOG", "info")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("operator starts"),
+    );
+
+    let leases: Api<Lease> = Api::namespaced(client.clone(), "default");
+    let holder = || {
+        let get = leases.get_opt(LEASE);
+        async move {
+            get.await
+                .ok()
+                .flatten()
+                .and_then(|l| l.spec?.holder_identity)
+        }
+    };
+    eventually("the leader lease", Duration::from_secs(30), || async {
+        holder().await.as_deref() == Some("operator-under-test")
+    })
+    .await;
+
+    let killed = Command::new("kill")
+        .args(["-TERM", &op.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = op.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "the operator ignored SIGTERM"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(holder().await.as_deref(), Some(""));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

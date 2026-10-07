@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoOrganization, ForgejoTeam, ForgejoUser};
+use application::ports::ForgejoRef;
 use application::use_cases::reconcile_team::{Member, TeamInput, cleanup_team, reconcile_team};
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
@@ -53,6 +54,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                     .collect::<Vec<_>>()
             },
         )
+        .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx)
         .for_each(|res| async move {
             if let Err(err) = res {
@@ -94,7 +96,8 @@ async fn apply(api: &Api<ForgejoTeam>, team: &ForgejoTeam, ctx: &Ctx) -> Result<
                     let input = TeamInput {
                         spec: &current.spec,
                         current: owned,
-                        organization,
+                        organization: organization.name,
+                        organization_id: Some(organization.id),
                         members,
                         allow_disruptive_update: allows_disruptive_update(&current.metadata),
                     };
@@ -116,7 +119,7 @@ async fn apply(api: &Api<ForgejoTeam>, team: &ForgejoTeam, ctx: &Ctx) -> Result<
 async fn resolve_inputs(
     team: &ForgejoTeam,
     ctx: &Ctx,
-) -> Result<Result<(String, Vec<Member>), Failure>, Error> {
+) -> Result<Result<(ForgejoRef, Vec<Member>), Failure>, Error> {
     let instance = team.spec.instance_ref.as_deref();
     let orgs: Api<ForgejoOrganization> = Api::all(ctx.client.clone());
     let org_name = &team.spec.organization_ref.name;
@@ -150,16 +153,12 @@ async fn resolve_inputs(
         };
         members.push(member);
     }
-    Ok(Ok((org.name, members)))
+    Ok(Ok((org, members)))
 }
 
 async fn cleanup(team: &ForgejoTeam, ctx: &Ctx) -> Result<Action, Error> {
-    let gateway = ctx
-        .gateways
-        .gateway_for(team.spec.instance_ref.as_deref())
-        .await
-        .map_err(|e| Error::Cleanup(e.to_string()))?;
-    cleanup_team(&team.spec, current_ref(team).as_ref(), gateway.as_ref())
+    let gateway = super::cleanup_gateway(ctx, team.spec.instance_ref.as_deref()).await;
+    cleanup_team(&team.spec, current_ref(team).as_ref(), gateway.as_deref())
         .await
         .map_err(|f| Error::Cleanup(f.message))?;
     Ok(Action::await_change())

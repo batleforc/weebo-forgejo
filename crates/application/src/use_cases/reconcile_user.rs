@@ -13,7 +13,7 @@ use rand::distr::Alphanumeric;
 use crate::ports::{
     DesiredUser, ForgejoGateway, ForgejoRef, GatewayError, RemoteUser, SecretStore,
 };
-use crate::use_cases::{Failure, Outcome, differs};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, differs};
 
 pub struct UserInput<'a> {
     pub spec: &'a ForgejoUserSpec,
@@ -22,6 +22,9 @@ pub struct UserInput<'a> {
     /// `metadata.generation != status.observedGeneration`: re-sends the
     /// fields Forgejo never returns (and so can't be diffed).
     pub spec_changed: bool,
+    /// `status.secretPending`: the last generated password never reached
+    /// every target, which may still hold an outdated one.
+    pub secret_pending: bool,
 }
 
 pub async fn reconcile_user(
@@ -53,13 +56,14 @@ pub async fn reconcile_user(
     let mut desired = desired_user(spec);
     let mut needs_edit = input.spec_changed || user_differs(&desired, &remote);
 
-    // A password can't be read back: a vanished target means the only way
-    // to hand one out again is to set a new one.
+    // A password can't be read back: a vanished target (or one a failed
+    // write left outdated) means the only way to hand one out again is to
+    // set a new one.
     let mut new_password = None;
     if spec.emits_password() {
         match any_target_missing(spec, secrets).await {
-            Ok(false) => {}
-            Ok(true) => {
+            Ok(false) if !input.secret_pending => {}
+            Ok(_) => {
                 let password = generate_password();
                 desired.password = Some(password.clone());
                 new_password = Some(password);
@@ -72,12 +76,14 @@ pub async fn reconcile_user(
     if needs_edit && let Err(e) = gateway.edit_user(&remote.login, &desired).await {
         return Outcome::failed(current, e);
     }
-    if let Some(password) = new_password
-        && let Err(f) = write_password(spec, &password, gateway, secrets).await
-    {
-        return Outcome::failed(current, f);
+    let mut outcome = Outcome::synced(current.clone(), "user synced");
+    if let Some(password) = new_password {
+        if let Err(f) = write_password(spec, &password, gateway, secrets).await {
+            return pending(current, f);
+        }
+        outcome.secret_pending = Some(false);
     }
-    Outcome::synced(current, "user synced")
+    outcome
 }
 
 /// Deletes the account only for `deletionPolicy: Delete` (never purged),
@@ -85,7 +91,7 @@ pub async fn reconcile_user(
 pub async fn cleanup_user(
     spec: &ForgejoUserSpec,
     current: Option<&ForgejoRef>,
-    gateway: &dyn ForgejoGateway,
+    gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
 ) -> Result<(), Failure> {
     if spec.management_policy == ManagementPolicy::Observe {
@@ -94,7 +100,11 @@ pub async fn cleanup_user(
     if spec.deletion_policy == api::common::DeletionPolicy::Delete
         && let Some(current) = current
     {
-        match gateway.delete_user(&current.name).await {
+        match gateway
+            .map_err(Clone::clone)?
+            .delete_user(&current.name)
+            .await
+        {
             Ok(()) | Err(GatewayError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
@@ -200,10 +210,9 @@ async fn create(
         && let Some(password) = &password
         && let Err(f) = write_password(spec, password, gateway, secrets).await
     {
-        // Persisting the id matters most here: the next reconcile finds the
-        // target still missing and resets the password instead of failing
-        // on a second create.
-        return Outcome::failed(current, f);
+        // Persisting the id matters most here: the next reconcile resets
+        // the password instead of failing on a second create.
+        return pending(current, f);
     }
 
     // admin, active, prohibit_login & co. only exist on edit.
@@ -211,7 +220,19 @@ async fn create(
     if let Err(e) = gateway.edit_user(&created.name, &desired).await {
         return Outcome::failed(current, e);
     }
-    Outcome::synced(current, "user created")
+    let mut outcome = Outcome::synced(current, "user created");
+    if spec.emits_password() {
+        outcome.secret_pending = Some(false);
+    }
+    outcome
+}
+
+/// A failed password write: the targets may hold an outdated password, so
+/// the next reconcile sets a new one even if they all exist.
+fn pending(current: Option<ForgejoRef>, f: Failure) -> Outcome {
+    let mut outcome = Outcome::failed(current, f);
+    outcome.secret_pending = Some(true);
+    outcome
 }
 
 fn desired_user(spec: &ForgejoUserSpec) -> DesiredUser {
@@ -354,6 +375,7 @@ mod tests {
             spec,
             current,
             spec_changed: false,
+            secret_pending: false,
         };
         reconcile_user(input, fj, secrets).await
     }
@@ -426,6 +448,48 @@ mod tests {
         assert!(
             outcome.forgejo.is_some(),
             "a second create must never happen"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_write_resets_the_password_even_if_targets_exist() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let spec = local("alice");
+        let created = run(&spec, None, &fj, &secrets).await.forgejo;
+        let first = fj.user("alice").unwrap().password;
+
+        // A reset whose write fails leaves the target with the old password.
+        secrets.remove("team-a/alice-forgejo");
+        secrets.fail_writes(true);
+        let failed = run(&spec, created.clone(), &fj, &secrets).await;
+        assert_eq!(failed.secret_pending, Some(true));
+        secrets.fail_writes(false);
+        secrets
+            .write(
+                &target(),
+                None,
+                &BTreeMap::from([("FORGEJO_PASSWORD".into(), "stale".into())]),
+            )
+            .await
+            .unwrap();
+
+        let input = UserInput {
+            spec: &spec,
+            current: created,
+            spec_changed: false,
+            secret_pending: true,
+        };
+        let fixed = reconcile_user(input, &fj, &secrets).await;
+        assert!(fixed.ready.is_ok(), "{fixed:?}");
+        assert_eq!(fixed.secret_pending, Some(false));
+        let user = fj.user("alice").unwrap();
+        assert_ne!(user.password, first);
+        assert_eq!(
+            user.password.as_ref(),
+            secrets
+                .get("team-a/alice-forgejo")
+                .unwrap()
+                .get("FORGEJO_PASSWORD")
         );
     }
 
@@ -527,7 +591,7 @@ mod tests {
         let spec = local("alice");
         let created = run(&spec, None, &fj, &secrets).await.forgejo;
 
-        cleanup_user(&spec, created.as_ref(), &fj, &secrets)
+        cleanup_user(&spec, created.as_ref(), Ok(&fj), &secrets)
             .await
             .unwrap();
         assert!(fj.user("alice").is_some());
@@ -541,7 +605,7 @@ mod tests {
         spec.deletion_policy = DeletionPolicy::Delete;
         let created = run(&spec, None, &fj, &secrets).await.forgejo;
 
-        cleanup_user(&spec, created.as_ref(), &fj, &secrets)
+        cleanup_user(&spec, created.as_ref(), Ok(&fj), &secrets)
             .await
             .unwrap();
         assert!(fj.user("alice").is_none());

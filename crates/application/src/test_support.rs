@@ -15,6 +15,7 @@ use crate::ports::{
     RemoteOAuth2App, RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
     RepositoryInitOptions, SecretStore, SecretStoreError,
 };
+use crate::use_cases::reconcile_webhook::{forgejo_echoes, forgejo_events};
 
 #[derive(Debug, Clone, Default)]
 pub struct FakeUser {
@@ -471,6 +472,14 @@ impl ForgejoGateway for FakeForgejo {
             .ok_or_else(|| GatewayError::NotFound(username.to_string()))?;
         u.remote.login = new_username.to_string();
         s.users.insert(new_username.to_string(), u);
+        // Tokens and applications hang off the user id: they follow.
+        let st = &mut *s;
+        let owners = st.tokens.values_mut().map(|(o, _, _)| o);
+        for owner in owners.chain(st.oauth2_apps.values_mut().map(|(o, _, _)| o)) {
+            if owner == username {
+                *owner = new_username.to_string();
+            }
+        }
         Ok(())
     }
 
@@ -579,9 +588,11 @@ impl ForgejoGateway for FakeForgejo {
         }
         let id = s.next_id;
         s.next_id += 1;
+        let organization_id = Some(s.orgs[org].remote.id);
         let mut remote = RemoteTeam {
             id,
             organization: org.to_string(),
+            organization_id,
             ..Default::default()
         };
         apply_team_edit(&mut remote, team);
@@ -767,7 +778,7 @@ impl ForgejoGateway for FakeForgejo {
         if r.protections.iter().any(|p| p.rule_name == rule.rule_name) {
             return Err(GatewayError::AlreadyExists(rule.rule_name.clone()));
         }
-        r.protections.push(rule.clone());
+        r.protections.push(as_stored(rule));
         Ok(())
     }
 
@@ -786,7 +797,7 @@ impl ForgejoGateway for FakeForgejo {
             .iter_mut()
             .find(|p| p.rule_name == rule.rule_name)
             .ok_or_else(|| GatewayError::NotFound(rule.rule_name.clone()))?;
-        *existing = rule.clone();
+        *existing = as_stored(rule);
         Ok(())
     }
 
@@ -860,8 +871,14 @@ impl ForgejoGateway for FakeForgejo {
     ) -> Result<ForgejoRef, GatewayError> {
         let mut s = self.begin(Some(format!("create_hook {target}")))?;
         let id = next_id(&mut s);
-        let mut config = hook.config.clone();
-        let secret = config.remove("secret");
+        // Like Forgejo: only echoed keys read back, events expanded.
+        let secret = hook.config.get("secret").cloned();
+        let config = hook
+            .config
+            .iter()
+            .filter(|(k, _)| forgejo_echoes(&hook.type_, k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         s.hooks.insert(
             id,
             FakeHook {
@@ -870,7 +887,7 @@ impl ForgejoGateway for FakeForgejo {
                     id,
                     type_: hook.type_.clone(),
                     config,
-                    events: hook.events.clone(),
+                    events: forgejo_events(&hook.events).into_iter().collect(),
                     branch_filter: hook.branch_filter.clone(),
                     active: hook.active,
                 },
@@ -895,10 +912,13 @@ impl ForgejoGateway for FakeForgejo {
             .get_mut(&id)
             .filter(|h| h.target == target.to_string())
             .ok_or_else(|| GatewayError::NotFound(id.to_string()))?;
-        let mut config = hook.config.clone();
-        h.secret = config.remove("secret");
-        h.remote.config = config;
-        h.remote.events = hook.events.clone();
+        // Like Forgejo: the secret and non-echoed keys are create-only.
+        for (k, v) in &hook.config {
+            if forgejo_echoes(&hook.type_, k) {
+                h.remote.config.insert(k.clone(), v.clone());
+            }
+        }
+        h.remote.events = forgejo_events(&hook.events).into_iter().collect();
         h.remote.branch_filter = hook.branch_filter.clone();
         h.remote.active = hook.active;
         Ok(())
@@ -1098,6 +1118,15 @@ impl ForgejoGateway for FakeForgejo {
             _ => Err(GatewayError::NotFound(id.to_string())),
         }
     }
+}
+
+/// Like Forgejo: the push allow-list switches only stick while pushing is
+/// enabled (the lists themselves are kept).
+fn as_stored(rule: &ProtectionRule) -> ProtectionRule {
+    let mut r = rule.clone();
+    r.enable_push_whitelist &= r.enable_push;
+    r.push_whitelist_deploy_keys &= r.enable_push_whitelist;
+    r
 }
 
 fn insert_key(

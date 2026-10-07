@@ -26,6 +26,12 @@ impl Kind {
     }
 }
 
+/// Stands for the operator's own admin account among a request's users —
+/// what an OAuth2 application without `ownerRef` is created under. Never a
+/// valid `ForgejoUser` name, so a rule restricting `allowedUsers` covers it
+/// only when it lists this value explicitly.
+pub const INSTANCE_ADMIN: &str = "@instance-admin";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
     Allow,
