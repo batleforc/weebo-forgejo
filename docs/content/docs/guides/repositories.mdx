@@ -1,15 +1,31 @@
 ---
 title: Repositories
-description: Repositories, mirrors, branch protection, team access, webhooks and deploy keys.
+description: Create, mirror and protect repositories, give teams access, and add webhooks and deploy keys.
 ---
 
-Repositories and what hangs off them are **namespaced**: they belong to
-the team owning the application, and the [allow-list](/docs/guides/allow-list)
-decides which organizations a namespace may use.
+Repositories and what hangs off them (webhooks, deploy keys) are
+**namespaced**: they live next to the application that owns them. The
+[allow-list](/docs/guides/allow-list) decides which organizations a namespace
+may use.
 
-## Creating a repository
+| Kind | Short name |
+| --- | --- |
+| `ForgejoRepository` | `fjrepo` |
+| `ForgejoWebhook` | `fjhook` |
+| `ForgejoDeployKey` | `fjdkey` |
 
-One of three ways, set at creation only:
+## Before you begin
+
+- A `ForgejoOrganization` or `ForgejoUser` CR to own the repository (see
+  [Users, OIDC and teams](/docs/guides/users-and-oidc)).
+
+## Create a repository
+
+A repository is created in one of three ways. The choice only applies at
+creation; changing it afterwards has no effect.
+
+<Tabs items={['Empty (init)', 'From a template', 'Mirror or migrate']}>
+<Tab value="Empty (init)">
 
 ```yaml
 apiVersion: forgejo.weebo.io/v1alpha1
@@ -18,54 +34,94 @@ metadata:
   name: app
   namespace: team-a
 spec:
-  organizationRef: { name: weebo }   # or userRef
+  organizationRef: { name: weebo }   # or userRef: { name: alice }
   name: app
   private: true
   init: { readme: Default, license: MIT }
-  # fromTemplate: { repositoryRef: { name: service-template } }
-  # migrate: { cloneAddr: https://github.com/x/y.git, mirror: true, mirrorInterval: 8h,
-  #            authSecretRef: { name: github, tokenKey: token } }
 ```
 
-- A template must be a `ForgejoRepository` of the same namespace with
-  `isTemplate: true`.
-- Migrations run synchronously inside Forgejo; the operator allows them
-  15 minutes.
-- `mirrorInterval` stays in sync after creation.
+</Tab>
+<Tab value="From a template">
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: app
+  namespace: team-a
+spec:
+  organizationRef: { name: weebo }
+  name: app
+  fromTemplate: { repositoryRef: { name: service-template } }
+```
+
+The template must be a `ForgejoRepository` **in the same namespace** with
+`isTemplate: true`.
+
+</Tab>
+<Tab value="Mirror or migrate">
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: upstream-lib
+  namespace: team-a
+spec:
+  organizationRef: { name: weebo }
+  name: upstream-lib
+  migrate:
+    cloneAddr: https://github.com/example/lib.git
+    mirror: true                 # false = one-off copy
+    mirrorInterval: 8h           # kept in sync after creation
+    authSecretRef: { name: github, tokenKey: token }   # for private sources
+```
+
+The migration runs inside Forgejo while the operator waits, for up to 15
+minutes.
+
+</Tab>
+</Tabs>
 
 ## Settings and lifecycle
 
-Description, website, visibility, default branch and `units` (issues,
-wiki, pull requests, projects, releases, packages, actions — unset means
-Forgejo's default) are kept in sync.
+These fields are kept in sync: description, website, visibility (`private`),
+default branch, and `units` (issues, wiki, pull requests, projects, releases,
+packages, actions). Leave a unit unset to keep Forgejo's default.
 
-- **Rename**: change `spec.name` (Forgejo keeps a redirect).
-- **Transfer**: change the owner ref — needs the
-  `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
-- **Archive**: `archived: true`. An archived repository is left untouched
-  until unarchived.
-- **Delete**: the default `deletionPolicy: Orphan` keeps the repository
-  when the CR goes away.
+| To… | Do |
+| --- | --- |
+| Rename | Change `spec.name`. Forgejo keeps a redirect from the old name. |
+| Transfer to another owner | Change `organizationRef`/`userRef` and add the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
+| Archive | Set `archived: true`. An archived repository is left untouched until you unarchive it. |
+| Delete | Delete the CR. With the default `deletionPolicy: Orphan`, the repository **stays** in Forgejo; set `Delete` to remove it. |
 
-## Branch protection and team access
+## Team access and branch protection
 
 ```yaml
 spec:
   teamRefs:
-    - name: weebo-devs
+    - name: weebo-devs           # the ForgejoTeam CR's name
   branchProtections:
     - ruleName: main
       enablePush: true
-      pushWhitelistTeams: [devs]
+      pushWhitelistTeams: [devs] # the team's name in Forgejo
       requiredApprovals: 1
       statusCheckContexts: [ci/build]
 ```
 
-Both lists are authoritative. `teamRefs` must belong to the owning
-organization; the `Owners` team and `includesAllRepositories` teams are
-always granted by Forgejo and left alone. Allow-lists name Forgejo users
-and teams directly — a team needs access to the repository to be kept in
-a push allow-list, which the operator ensures by syncing teams first.
+Both lists are authoritative: what isn't listed is removed.
+
+- **`teamRefs`** grants teams access to the repository. They must belong to
+  the owning organization. Forgejo always grants the `Owners` team and
+  teams with `includesAllRepositories`; the operator leaves those alone.
+- **Branch protection allow-lists** (`pushWhitelistTeams`,
+  `pushWhitelistUsernames`…) use **Forgejo names**, not CR names, because
+  they're passed to Forgejo as-is. In the example, the CR `weebo-devs` is the
+  Forgejo team `devs`.
+- A team only stays in a push allow-list if it has access to the repository.
+  The operator syncs `teamRefs` first, so listing the team in both places is
+  enough.
 
 ## Webhooks
 
@@ -76,17 +132,23 @@ metadata:
   name: app-ci
   namespace: team-a
 spec:
-  repositoryRef: { name: app }       # or organizationRef
+  repositoryRef: { name: app }       # or organizationRef for an org-wide hook
   url: https://ci.example.com/hooks/forgejo
   events: [push, pull_request]
   secretRef: { name: app-ci-webhook, key: hmac }
 ```
 
-The HMAC secret is write-only in Forgejo; changing the Secret's value is
-detected through `status.appliedSecretHash`. Forgejo's hook edit ignores
-the secret (and `httpMethod` or any config key it doesn't read back), so
-changing, adding or removing one of those **recreates the hook** (new id,
-delivery history lost). The authorization header is edited in place.
+Forgejo signs each delivery with the HMAC secret from `secretRef`. Things to
+know:
+
+- **Changing the Secret's value is detected.** Forgejo never returns the
+  secret, so the operator tracks a hash of it (`status.appliedSecretHash`).
+- **Some changes recreate the hook.** Forgejo's hook edit ignores the
+  secret, `httpMethod` and any config key it doesn't return. Changing,
+  adding or removing one of them deletes and recreates the hook, which gets
+  a new id and **loses its delivery history**.
+- **The authorization header** (`authorizationHeaderSecretRef`) is edited in
+  place.
 
 ## Deploy keys
 
@@ -102,7 +164,21 @@ spec:
   secretTargets: [{ name: app-deploy-key }]
 ```
 
-Without `publicKey`, an ed25519 pair is generated and the Secret gets
-`ssh-privatekey` / `ssh-publickey` (the `kubernetes.io/ssh-auth` names). A
-lost Secret or a new `forgejo.weebo.io/rotate-secret` value generates a
-fresh pair. `ForgejoUserKey` does the same for a user (e.g. a bot).
+- **Generated key.** Without `publicKey`, the operator generates an ed25519
+  pair and the Secret gets `ssh-privatekey` and `ssh-publickey`, the key
+  names of a `kubernetes.io/ssh-auth` Secret.
+- **Your own key.** Set `publicKey` and the operator only registers it.
+- **Rotation.** Deleting the Secret, or setting a new value on the
+  `forgejo.weebo.io/rotate-secret` annotation, generates a fresh pair:
+
+  ```bash
+  kubectl -n team-a annotate fjdkey app-ci \
+    forgejo.weebo.io/rotate-secret=$(date +%s) --overwrite
+  ```
+
+To give a *user* (such as a bot) an SSH key instead of a single repository,
+use [`ForgejoUserKey`](/docs/guides/users-and-oidc#ssh-keys-for-a-user).
+
+## Next
+
+[Credentials](/docs/guides/credentials).

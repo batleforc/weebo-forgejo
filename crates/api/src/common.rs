@@ -14,9 +14,8 @@ pub struct SecretKeyRef {
 }
 
 /// Reference to another CR of this operator, by `metadata.name`. Always a
-/// CR, never a raw Forgejo name (see `.prompt/plan.md`, "Références"): a
-/// cluster-scoped target is looked up cluster-wide, a namespaced one in the
-/// referencing CR's own namespace only.
+/// CR, never a raw Forgejo name: a cluster-scoped target is looked up
+/// cluster-wide, a namespaced one in the referencing CR's own namespace only.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectRef {

@@ -3,6 +3,8 @@
 // docs/public/crd-schemas/*.schema.json from deploy/crd/*.yaml — the
 // same CRD YAML `crdgen` already produces via `CustomResourceExt::crd()`.
 // Never hand-edit the generated files; re-run via `task recu`.
+// Also writes the section's index.mdx (a table of every kind) and
+// meta.json (sidebar order), which `task recu` would otherwise lose.
 // See .prompt/plan.md, "Documentation" / "Pipeline de generation".
 //
 // Field `description`s trace back to the Rust `#[schemars(description =
@@ -83,7 +85,84 @@ function renderFieldsTable(properties, required) {
   ].join("\n");
 }
 
+// The guide that explains each kind, linked from its reference page.
+const GUIDES = {
+  ForgejoInstance: ["Connect a Forgejo", "/docs/guides/connect-instance"],
+  ForgejoUser: ["Users, OIDC and teams", "/docs/guides/users-and-oidc"],
+  ForgejoUserKey: ["Users, OIDC and teams", "/docs/guides/users-and-oidc#ssh-keys-for-a-user"],
+  ForgejoOrganization: ["Users, OIDC and teams", "/docs/guides/users-and-oidc#organizations-and-teams"],
+  ForgejoTeam: ["Users, OIDC and teams", "/docs/guides/users-and-oidc#organizations-and-teams"],
+  ForgejoRepository: ["Repositories", "/docs/guides/repositories"],
+  ForgejoWebhook: ["Repositories", "/docs/guides/repositories#webhooks"],
+  ForgejoDeployKey: ["Repositories", "/docs/guides/repositories#deploy-keys"],
+  ForgejoOAuth2Application: ["Credentials", "/docs/guides/credentials#oauth2-applications"],
+  ForgejoAccessToken: ["Credentials", "/docs/guides/credentials#access-tokens"],
+  ForgejoNamespacePolicy: ["The allow-list", "/docs/guides/allow-list"],
+};
+
+// A minimal, realistic `spec` per kind. Checked against the schema below
+// (every required field present, every key a real field), so a renamed
+// field fails generation instead of shipping a stale example.
+const EXAMPLES = {
+  ForgejoInstance: {
+    url: "https://git.example.com",
+    tokenSecretRef: { name: "forgejo-admin", namespace: "weebo-forgejo", key: "token" },
+  },
+  ForgejoUser: { username: "alice", email: "alice@example.com" },
+  ForgejoUserKey: {
+    userRef: { name: "ci-bot" },
+    title: "ci",
+    secretTargets: [{ name: "ci-bot-ssh", namespace: "ci" }],
+  },
+  ForgejoOrganization: { name: "weebo", visibility: "private" },
+  ForgejoTeam: {
+    organizationRef: { name: "weebo" },
+    name: "devs",
+    permission: "write",
+    memberRefs: [{ name: "alice" }],
+  },
+  ForgejoRepository: {
+    organizationRef: { name: "weebo" },
+    name: "app",
+    private: true,
+    init: { readme: "Default" },
+  },
+  ForgejoWebhook: {
+    repositoryRef: { name: "app" },
+    url: "https://ci.example.com/hooks/forgejo",
+    events: ["push"],
+  },
+  ForgejoDeployKey: { repositoryRef: { name: "app" }, readOnly: true },
+  ForgejoOAuth2Application: {
+    redirectUris: ["https://grafana.example.com/login/generic_oauth"],
+  },
+  ForgejoAccessToken: { userRef: { name: "ci-bot" }, scopes: ["write:repository"] },
+  ForgejoNamespacePolicy: {
+    rules: [{ namespaces: ["team-*"], allowedKinds: ["ForgejoRepository"] }],
+  },
+};
+
+function checkExample(kind, example, specSchema) {
+  if (!example) throw new Error(`no example spec for ${kind} in gen-crd-docs.mjs`);
+  const props = specSchema.properties ?? {};
+  for (const key of Object.keys(example)) {
+    if (!(key in props)) throw new Error(`${kind} example: unknown field spec.${key}`);
+  }
+  for (const key of specSchema.required ?? []) {
+    if (!(key in example)) throw new Error(`${kind} example: missing required spec.${key}`);
+  }
+}
+
+function exampleManifest(kind, apiVersion, scope, example) {
+  const metadata = { name: `my-${kind.replace(/^Forgejo/, "").toLowerCase()}` };
+  if (scope === "Namespaced") metadata.namespace = "team-a";
+  return yaml
+    .dump({ apiVersion, kind, metadata, spec: example }, { lineWidth: 100 })
+    .trim();
+}
+
 const files = fs.readdirSync(crdDir).filter((f) => f.endsWith(".yaml"));
+const index = [];
 
 for (const file of files) {
   const crd = yaml.load(fs.readFileSync(path.join(crdDir, file), "utf8"));
@@ -100,14 +179,33 @@ for (const file of files) {
   // take the first sentence, so the frontmatter description doesn't
   // arbitrarily cut off mid-sentence at wherever the Rust source
   // happened to wrap.
-  const paragraph = description.replace(/\s*\n\s*/g, " ");
+  // Only the first paragraph counts, so a list that follows it (ForgejoUser's
+  // modes) never bleeds into the summary; a lead-in colon becomes a period.
+  const paragraph = description.split(/\n\s*\n/)[0].replace(/\s*\n\s*/g, " ");
   const firstSentenceEnd = paragraph.indexOf(". ");
-  const shortDescription =
-    firstSentenceEnd === -1 ? paragraph : paragraph.slice(0, firstSentenceEnd + 1);
+  const shortDescription = (
+    firstSentenceEnd === -1 ? paragraph : paragraph.slice(0, firstSentenceEnd + 1)
+  ).replace(/:$/, ".");
   const table = renderFieldsTable(specSchema.properties, specSchema.required);
+  const shortNames = crd.spec.names.shortNames ?? [];
+  const [guideTitle, guideHref] = GUIDES[kind] ?? [];
+  checkExample(kind, EXAMPLES[kind], specSchema);
+  const example = exampleManifest(kind, apiVersion, scope, EXAMPLES[kind]);
+  index.push({ kind, kindLower, shortNames, scope, shortDescription });
 
-  const frontmatter = yaml.dump({ title: kind, description: shortDescription }).trim();
-  const mdx = `---\n${frontmatter}\n---\n\n${description}\n\n## Spec fields\n\n${table}\n\n## Build a manifest\n\nFill in the fields below to generate a ready-to-apply \`${kind}\` YAML manifest.\n\n<CrdForm kind="${kind}" />\n`;
+  const facts = [
+    `- **API version:** \`${apiVersion}\``,
+    `- **Scope:** ${scope === "Namespaced" ? "Namespaced" : "Cluster"}`,
+    `- **Short names:** ${shortNames.map((n) => `\`${n}\``).join(", ") || "none"}`,
+    ...(guideTitle ? [`- **Guide:** [${guideTitle}](${guideHref})`] : []),
+  ].join("\n");
+
+  const frontmatter = yaml
+    // `full`: the page drops its TOC and widens to fit the manifest builder's
+    // form and preview side by side; prose keeps its 68ch measure regardless.
+    .dump({ title: kind, description: shortDescription.replace(/`/g, ""), full: true })
+    .trim();
+  const mdx = `---\n${frontmatter}\n---\n\n${facts}\n\n${description}\n\n## Example\n\n\`\`\`yaml\n${example}\n\`\`\`\n\n## Spec fields\n\n${table}\n\n## Build a manifest\n\nAnswer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and \`kubectl apply\`.\n\n<CrdForm kind="${kind}" />\n`;
   fs.writeFileSync(path.join(mdxOutDir, `${kindLower}.mdx`), mdx);
 
   // apiVersion/kind/scope aren't JSON Schema keywords — added here purely
@@ -120,5 +218,46 @@ for (const file of files) {
     `${JSON.stringify(cleanSchema, null, 2)}\n`,
   );
 }
+
+// Sidebar order follows the order you'd create things in, not the alphabet.
+const ORDER = [
+  "ForgejoInstance",
+  "ForgejoUser",
+  "ForgejoUserKey",
+  "ForgejoOrganization",
+  "ForgejoTeam",
+  "ForgejoNamespacePolicy",
+  "ForgejoRepository",
+  "ForgejoWebhook",
+  "ForgejoDeployKey",
+  "ForgejoOAuth2Application",
+  "ForgejoAccessToken",
+];
+const rank = (kind) => (ORDER.includes(kind) ? ORDER.indexOf(kind) : ORDER.length);
+index.sort((a, b) => rank(a.kind) - rank(b.kind) || a.kind.localeCompare(b.kind));
+
+const rows = index.map(
+  (k) =>
+    `| [\`${k.kind}\`](/docs/crds/${k.kindLower}) | ${k.shortNames.map((n) => `\`${n}\``).join(", ")} | ${k.scope === "Namespaced" ? "Namespaced" : "Cluster"} | ${escapeCell(k.shortDescription)} |`,
+);
+const indexMdx = `---
+title: CRD reference
+description: Every kind the operator adds, its fields, and an interactive manifest builder.
+---
+
+Each page lists a kind's \`spec\` fields, shows a minimal example, and has a
+form that builds a ready-to-apply manifest. These pages are generated from
+the CRDs themselves, so they always match the installed version. For the
+ideas behind the fields, start with [Concepts](/docs/concepts).
+
+| Kind | Short names | Scope | Description |
+| --- | --- | --- | --- |
+${rows.join("\n")}
+`;
+fs.writeFileSync(path.join(mdxOutDir, "index.mdx"), indexMdx);
+fs.writeFileSync(
+  path.join(mdxOutDir, "meta.json"),
+  `${JSON.stringify({ title: "CRD reference", pages: ["index", ...index.map((k) => k.kindLower)] }, null, 2)}\n`,
+);
 
 console.log(`Generated CRD docs + schemas for ${files.length} CRDs.`);

@@ -2,7 +2,7 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoInstance",
   "scope": "Cluster",
-  "description": "Connection to a real Forgejo server (v16 or later). Cluster-scoped — an\norg-wide, shared piece of infrastructure, not owned by a single\nnamespace. CRs without an `instanceRef` use the cluster's only\n`ForgejoInstance` (see `.prompt/plan.md`, \"Instance par défaut\").",
+  "description": "Connection to a real Forgejo server (v16 or later). Cluster-scoped — an\norg-wide, shared piece of infrastructure, not owned by a single\nnamespace. CRs without an `instanceRef` use the cluster's only\n`ForgejoInstance`.",
   "properties": {
     "secretStore": {
       "default": {

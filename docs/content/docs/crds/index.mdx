@@ -1,0 +1,23 @@
+---
+title: CRD reference
+description: Every kind the operator adds, its fields, and an interactive manifest builder.
+---
+
+Each page lists a kind's `spec` fields, shows a minimal example, and has a
+form that builds a ready-to-apply manifest. These pages are generated from
+the CRDs themselves, so they always match the installed version. For the
+ideas behind the fields, start with [Concepts](/docs/concepts).
+
+| Kind | Short names | Scope | Description |
+| --- | --- | --- | --- |
+| [`ForgejoInstance`](/docs/crds/forgejoinstance) | `fji` | Cluster | Connection to a real Forgejo server (v16 or later). |
+| [`ForgejoUser`](/docs/crds/forgejouser) | `fjuser` | Cluster | A Forgejo user, in one of three modes. |
+| [`ForgejoUserKey`](/docs/crds/forgejouserkey) | `fjukey` | Cluster | An SSH public key of a `ForgejoUser` — typically a bot's. |
+| [`ForgejoOrganization`](/docs/crds/forgejoorganization) | `fjorg` | Cluster | A Forgejo organization. |
+| [`ForgejoTeam`](/docs/crds/forgejoteam) | `fjteam` | Cluster | A team inside a `ForgejoOrganization`, with its members. |
+| [`ForgejoNamespacePolicy`](/docs/crds/forgejonamespacepolicy) | `fjnp` | Cluster | Namespace allow-list for the namespaced kinds, enforced by the admission webhook (CREATE/UPDATE) and re-checked by every reconciler. |
+| [`ForgejoRepository`](/docs/crds/forgejorepository) | `fjrepo` | Namespaced | A Forgejo repository, owned by a `ForgejoOrganization` or a `ForgejoUser`. |
+| [`ForgejoWebhook`](/docs/crds/forgejowebhook) | `fjhook` | Namespaced | A webhook on a `ForgejoRepository` (same namespace) or a `ForgejoOrganization` — exactly one of the two refs. |
+| [`ForgejoDeployKey`](/docs/crds/forgejodeploykey) | `fjdkey` | Namespaced | An SSH deploy key on a `ForgejoRepository` (same namespace). |
+| [`ForgejoOAuth2Application`](/docs/crds/forgejooauth2application) | `fjoauth` | Namespaced | An OAuth2 application registered in Forgejo, for apps that use Forgejo as their identity provider. |
+| [`ForgejoAccessToken`](/docs/crds/forgejoaccesstoken) | `fjtoken` | Namespaced | An access token of a `ForgejoUser` (typically a bot), issued through the admin API (Forgejo v16+) and written to `secretTargets` as `FORGEJO_TOKEN`, `FORGEJO_USERNAME` and `FORGEJO_URL`. |

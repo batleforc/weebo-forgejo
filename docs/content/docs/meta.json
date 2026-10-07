@@ -1,0 +1,14 @@
+{
+  "title": "weebo-forgejo",
+  "pages": [
+    "index",
+    "getting-started",
+    "concepts",
+    "---Guides---",
+    "...guides",
+    "---Reference---",
+    "...crds",
+    "---Contributing---",
+    "...contributing"
+  ]
+}

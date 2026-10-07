@@ -1,24 +1,57 @@
 ---
-title: Connect a ForgejoInstance
-description: Point the operator at a Forgejo with a site-admin token.
+title: Connect a Forgejo
+description: Point the operator at a Forgejo with a site-admin token, and choose where secrets are written.
 ---
 
-## Create an admin token
+A `ForgejoInstance` tells the operator which Forgejo to manage and how to
+authenticate. Every other CR uses it.
 
-The operator acts as a **site administrator** (and, for OAuth2
-applications, as their owner through Forgejo's `Sudo` header). Create a
-token with every scope it needs — `all` is simplest:
+## Before you begin
+
+- The operator is [installed](/docs/guides/install).
+- You have a **site administrator** account on Forgejo v16+.
+
+## Connect
+
+<Steps>
+<Step>
+
+### Create an admin token
+
+The operator acts as a site administrator. For OAuth2 applications, it also
+acts on behalf of their owner through Forgejo's `Sudo` header. Give the token
+every scope; `all` is simplest.
+
+Where you can run the `forgejo` CLI (on the Forgejo host, or with
+`kubectl exec` into the Forgejo pod):
 
 ```bash
 forgejo admin user generate-access-token --username <admin> \
   --token-name weebo-forgejo --scopes all --raw
-kubectl -n weebo-forgejo create secret generic forgejo-admin --from-literal=token=<token>
 ```
 
-The token is re-read on every reconcile: rotating the Secret needs no
-restart.
+Or in the web UI, signed in as the admin: *Settings → Applications →
+Generate new token*, with every permission set to *Read and write*.
 
-## The instance
+</Step>
+<Step>
+
+### Store it in a Secret
+
+From your workstation:
+
+```bash
+kubectl -n weebo-forgejo create secret generic forgejo-admin \
+  --from-literal=token=<the-token>
+```
+
+The token is read again on every reconcile, so you can rotate it by updating
+this Secret, with no restart.
+
+</Step>
+<Step>
+
+### Create the ForgejoInstance
 
 ```yaml
 apiVersion: forgejo.weebo.io/v1alpha1
@@ -26,41 +59,98 @@ kind: ForgejoInstance
 metadata:
   name: main
 spec:
-  url: https://git.example.com        # web root, not /api/v1
+  url: https://git.example.com        # the web root, not /api/v1
   tokenSecretRef:
     name: forgejo-admin
     namespace: weebo-forgejo
     key: token
-  tls:
-    caSecretRef:                       # optional private CA (PEM)
+  tls:                                 # only for a private CA
+    caSecretRef:
       name: internal-ca
       namespace: weebo-forgejo
-      key: ca.crt
+      key: ca.crt                      # PEM
 ```
 
-`kubectl get fji` shows `Ready` and the Forgejo version once connected.
+</Step>
+<Step>
 
-Every other CR has an optional `instanceRef`. Without it, the cluster's
-**only** `ForgejoInstance` is used — with zero or several, those CRs report
-`InstanceNotFound` / `AmbiguousDefaultInstance`.
+### Check it
+
+```bash
+kubectl get fji           # fji = ForgejoInstance
+kubectl describe fji main
+```
+
+```text
+NAME   URL                       READY   AGE
+main   https://git.example.com   True    12s
+```
+
+The `Ready` condition's message shows the Forgejo version it found, such as
+`Forgejo 16.0.5`. When it is `False`, the reason says why. A token that
+lacks permissions can still connect; the other CRs then report
+`ForgejoApiError`.
+
+| Reason | Fix |
+| --- | --- |
+| `TokenSecretNotFound` | Check the Secret's name, namespace and key |
+| `InstanceUnreachable` | Check the URL, DNS, network policies and TLS (`tls.caSecretRef` for a private CA) |
+| `UnsupportedForgejoVersion` | Upgrade Forgejo to v16 or later |
+| `ForgejoApiError` | Forgejo refused a request: check that the token belongs to a site admin and has every scope |
+
+</Step>
+</Steps>
+
+## One instance or several
+
+Every other CR has an optional `instanceRef: { name: main }`. Without it,
+the cluster's **only** `ForgejoInstance` is used. With zero instances, those
+CRs report `InstanceNotFound`. With several, they report
+`AmbiguousDefaultInstance`, so set `instanceRef` on each of them.
 
 ## Where secrets go
 
-`spec.secretStore` picks the default backend for CRs that emit secrets
-without listing `secretTargets`, and holds the Vault connection that every
-Vault target reuses:
+Several kinds generate credentials: local users' passwords, SSH keys, OAuth2
+client secrets, access tokens. Each CR can choose where its credential goes
+with [`secretTargets`](/docs/guides/credentials#secret-targets). When a CR
+doesn't, the instance's `secretStore.backend` decides. The default is
+`kubernetes`: a Secret named after the CR, in the CR's namespace.
+
+### When to use Vault
+
+Use Vault when credentials must reach workloads outside this cluster, or
+when your policy keeps secrets out of etcd. The Vault connection is declared
+once on the instance and reused by every Vault target:
 
 ```yaml
 spec:
   secretStore:
-    backend: kubernetes          # or vault
+    backend: vault               # default for CRs without secretTargets
     vault:
       address: https://vault.example.com:8200
-      mount: secret              # KV v2
+      mount: secret              # a KV version 2 engine
       pathPrefix: weebo-forgejo  # default path: <pathPrefix>/<namespace>/<name>
       kubernetesAuthRole: weebo-forgejo
       caSecretRef: { name: vault-ca, namespace: weebo-forgejo, key: ca.crt }
 ```
 
-The operator logs in to Vault with its own ServiceAccount token
-(Kubernetes auth) — bind the role to the `weebo-forgejo` ServiceAccount.
+The operator logs in with its own ServiceAccount through Vault's
+[Kubernetes auth method](https://developer.hashicorp.com/vault/docs/auth/kubernetes),
+with no static Vault token. Bind the role to the operator's ServiceAccount
+and give it write access under the prefix:
+
+```bash
+vault policy write weebo-forgejo - <<'EOF'
+path "secret/data/weebo-forgejo/*" { capabilities = ["create", "read", "update", "delete"] }
+path "secret/metadata/weebo-forgejo/*" { capabilities = ["read", "delete"] }
+EOF
+
+vault write auth/kubernetes/role/weebo-forgejo \
+  bound_service_account_names=weebo-forgejo \
+  bound_service_account_namespaces=weebo-forgejo \
+  token_policies=weebo-forgejo
+```
+
+## Next
+
+[Users, OIDC and teams](/docs/guides/users-and-oidc).

@@ -1,12 +1,34 @@
 ---
 title: ForgejoWebhook
 description: >-
-  A webhook on a `ForgejoRepository` (same namespace) or a `ForgejoOrganization`
-  — exactly one of the two refs.
+  A webhook on a ForgejoRepository (same namespace) or a ForgejoOrganization —
+  exactly one of the two refs.
+full: true
 ---
+
+- **API version:** `forgejo.weebo.io/v1alpha1`
+- **Scope:** Namespaced
+- **Short names:** `fjhook`
+- **Guide:** [Repositories](/docs/guides/repositories#webhooks)
 
 A webhook on a `ForgejoRepository` (same namespace) or a
 `ForgejoOrganization` — exactly one of the two refs.
+
+## Example
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoWebhook
+metadata:
+  name: my-webhook
+  namespace: team-a
+spec:
+  repositoryRef:
+    name: app
+  url: https://ci.example.com/hooks/forgejo
+  events:
+    - push
+```
 
 ## Spec fields
 
@@ -21,14 +43,14 @@ A webhook on a `ForgejoRepository` (same namespace) or a
 | `extraConfig` | `object` | no |  | Type-specific settings (e.g. `username`/`channel` for Slack). |
 | `httpMethod` | `string` | no |  |  |
 | `instanceRef` | `string` | no |  |  |
-| `organizationRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw Forgejo name (see `.prompt/plan.md`, "Références"): a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
-| `repositoryRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw Forgejo name (see `.prompt/plan.md`, "Références"): a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
+| `organizationRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw Forgejo name: a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
+| `repositoryRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw Forgejo name: a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
 | `secretRef` | `object` | no |  | HMAC secret signing the payloads. Write-only in Forgejo: a change of the Secret's value is detected through `status.appliedSecretHash`. |
 | `type` | `string` | no | `"forgejo"` | `forgejo` (default), `gitea`, `gogs`, `slack`, `discord`, `dingtalk`, `telegram`, `msteams`, `feishu`, `wechatwork` or `packagist`. Changing it recreates the hook. |
 | `url` | `string` | yes |  | Payload URL. |
 
 ## Build a manifest
 
-Fill in the fields below to generate a ready-to-apply `ForgejoWebhook` YAML manifest.
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
 
 <CrdForm kind="ForgejoWebhook" />

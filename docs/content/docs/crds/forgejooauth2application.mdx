@@ -3,7 +3,13 @@ title: ForgejoOAuth2Application
 description: >-
   An OAuth2 application registered in Forgejo, for apps that use Forgejo as
   their identity provider.
+full: true
 ---
+
+- **API version:** `forgejo.weebo.io/v1alpha1`
+- **Scope:** Namespaced
+- **Short names:** `fjoauth`
+- **Guide:** [Credentials](/docs/guides/credentials#oauth2-applications)
 
 An OAuth2 application registered in Forgejo, for apps that use Forgejo
 as their identity provider. Its credentials (`FORGEJO_CLIENT_ID`,
@@ -14,6 +20,19 @@ Forgejo regenerates the client secret on every update and never returns
 it again, so the application is only updated when the spec actually
 differs, when a target lost the secret, or on a new
 `forgejo.weebo.io/rotate-secret` nonce.
+
+## Example
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoOAuth2Application
+metadata:
+  name: my-oauth2application
+  namespace: team-a
+spec:
+  redirectUris:
+    - https://grafana.example.com/login/generic_oauth
+```
 
 ## Spec fields
 
@@ -29,6 +48,6 @@ differs, when a target lost the secret, or on a new
 
 ## Build a manifest
 
-Fill in the fields below to generate a ready-to-apply `ForgejoOAuth2Application` YAML manifest.
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
 
 <CrdForm kind="ForgejoOAuth2Application" />

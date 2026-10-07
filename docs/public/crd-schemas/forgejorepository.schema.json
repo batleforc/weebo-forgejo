@@ -2,7 +2,7 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoRepository",
   "scope": "Namespaced",
-  "description": "A Forgejo repository, owned by a `ForgejoOrganization` or a\n`ForgejoUser`. Created empty (optionally initialized), from a template\nrepository, or by migrating/mirroring a remote.\n\nExactly one of `organizationRef`/`userRef`, and at most one of\n`init`/`fromTemplate`/`migrate` — checked by the reconciler\n(`InvalidSpec`), since kube's schema can't express one-of.",
+  "description": "A Forgejo repository, owned by a `ForgejoOrganization` or a\n`ForgejoUser`. Created empty (optionally initialized), from a template\nrepository, or by migrating/mirroring a remote.\n\nSet exactly one of `organizationRef`/`userRef`, and at most one of\n`init`/`fromTemplate`/`migrate`; anything else reports `InvalidSpec`.",
   "properties": {
     "archived": {
       "default": false,
@@ -333,7 +333,7 @@
     "teamRefs": {
       "description": "`ForgejoTeam`s granted access (organization-owned repositories only;\nthe teams must belong to the owning organization). Authoritative,\nexcept for the `Owners` team and teams with\n`includesAllRepositories`, which Forgejo always grants.",
       "items": {
-        "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name (see `.prompt/plan.md`, \"Références\"): a\ncluster-scoped target is looked up cluster-wide, a namespaced one in the\nreferencing CR's own namespace only.",
+        "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name: a cluster-scoped target is looked up\ncluster-wide, a namespaced one in the referencing CR's own namespace only.",
         "properties": {
           "name": {
             "type": "string"

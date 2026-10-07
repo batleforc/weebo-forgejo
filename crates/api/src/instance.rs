@@ -8,7 +8,7 @@ use crate::status::ForgejoStatus;
 /// Connection to a real Forgejo server (v16 or later). Cluster-scoped — an
 /// org-wide, shared piece of infrastructure, not owned by a single
 /// namespace. CRs without an `instanceRef` use the cluster's only
-/// `ForgejoInstance` (see `.prompt/plan.md`, "Instance par défaut").
+/// `ForgejoInstance`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "forgejo.weebo.io",

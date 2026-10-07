@@ -1,13 +1,15 @@
 ---
 title: ForgejoUser
-description: >-
-  A Forgejo user, in one of three modes (see `.prompt/plan.md`, "ForgejoUser :
-  trois modes"): - **external** — `loginSourceId` set: the account is
-  pre-provisioned against an authentication source (e.g.
+description: A Forgejo user, in one of three modes.
+full: true
 ---
 
-A Forgejo user, in one of three modes (see `.prompt/plan.md`,
-"ForgejoUser : trois modes"):
+- **API version:** `forgejo.weebo.io/v1alpha1`
+- **Scope:** Cluster
+- **Short names:** `fjuser`
+- **Guide:** [Users, OIDC and teams](/docs/guides/users-and-oidc)
+
+A Forgejo user, in one of three modes:
 
 - **external** — `loginSourceId` set: the account is pre-provisioned
   against an authentication source (e.g. Authentik over OIDC) and linked
@@ -19,6 +21,18 @@ A Forgejo user, in one of three modes (see `.prompt/plan.md`,
 - **observed** — `managementPolicy: Observe`: the user is never created,
   modified or deleted, only resolved by `username` so other CRs can
   reference an account Forgejo auto-created at OIDC login.
+
+## Example
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: my-user
+spec:
+  username: alice
+  email: alice@example.com
+```
 
 ## Spec fields
 
@@ -45,6 +59,6 @@ A Forgejo user, in one of three modes (see `.prompt/plan.md`,
 
 ## Build a manifest
 
-Fill in the fields below to generate a ready-to-apply `ForgejoUser` YAML manifest.
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
 
 <CrdForm kind="ForgejoUser" />

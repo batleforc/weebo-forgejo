@@ -1,32 +1,59 @@
 ---
-title: weebo-forgejo-operator
-description: A Kubernetes operator that manages Forgejo as CRDs.
+title: weebo-forgejo
+description: Manage what lives inside your Forgejo — users, organizations, repositories, credentials — as Kubernetes resources.
 ---
 
-`weebo-forgejo-operator` manages the objects *inside* an existing Forgejo
-(v16 or later) — users, organizations, teams, repositories, webhooks, SSH
-keys, OAuth2 applications and access tokens — as Kubernetes custom
-resources. Forgejo itself stays deployed by its own Helm chart.
+**weebo-forgejo** is a Kubernetes operator for an existing Forgejo (v16 or
+later). Instead of clicking through the Forgejo admin UI, you describe users,
+organizations, teams, repositories, webhooks, SSH keys, OAuth2 applications
+and access tokens as YAML, apply it to your cluster, and the operator makes
+Forgejo match — and keeps it that way.
 
-- **The CR is authoritative**: drift made in the Forgejo UI is corrected on
-  the next reconcile, and updates are only sent when something differs.
-- **No implicit adoption**: a name already taken in Forgejo is reported
-  (`ForgejoObjectAlreadyExists`), never silently taken over.
-- **Secrets out**: generated passwords and keys, OAuth2 credentials and
-  tokens are written to Kubernetes Secrets and/or Vault.
-- **Namespace allow-list**: which namespace may create what, in which
-  organization, for which user — enforced by an admission webhook and
-  re-checked by every reconciler.
+Forgejo itself is not deployed by this operator: keep installing it with its
+own Helm chart, and point the operator at it.
 
 <Cards>
-  <Card title="Install via Helm" href="/docs/guides/install" />
-  <Card title="Connect a ForgejoInstance" href="/docs/guides/connect-instance" />
-  <Card title="Users, OIDC and teams" href="/docs/guides/users-and-oidc" />
-  <Card title="Repositories" href="/docs/guides/repositories" />
-  <Card title="OAuth2 applications, tokens and secrets" href="/docs/guides/credentials" />
-  <Card title="The allow-list" href="/docs/guides/allow-list" />
-  <Card title="Operating the operator" href="/docs/guides/operations" />
-  <Card title="Migrating an existing Forgejo" href="/docs/guides/migration" />
-  <Card title="Releasing" href="/docs/guides/releasing" />
-  <Card title="CRD reference" href="/docs/crds/forgejoinstance" />
+  <Card
+    title="Start here: Getting started"
+    href="/docs/getting-started"
+    description="Install the operator, connect your Forgejo and create a first organization and repository in about ten minutes."
+  />
+</Cards>
+
+## What it does for you
+
+- **Your YAML is the source of truth.** A change made by hand in the Forgejo
+  UI is put back on the next pass, and nothing is sent to Forgejo when it
+  already matches.
+- **It never takes over by surprise.** If a name is already used in Forgejo
+  by something the operator didn't create, it reports the clash
+  (`ForgejoObjectAlreadyExists`) instead of silently adopting it. Existing
+  objects are brought in on purpose, with the [importer](/docs/guides/migration).
+- **Credentials land in Secrets, not in chat.** Generated passwords, SSH keys,
+  OAuth2 client secrets and access tokens are written to Kubernetes Secrets
+  and/or Vault, ready to mount.
+- **Teams stay in their lane.** A namespace allow-list decides which
+  namespace may create what, in which organization, on whose behalf — checked
+  when you apply, and again before every change.
+
+New to the vocabulary (CR, reconcile, drift…)? Read [Concepts](/docs/concepts)
+first.
+
+## Guides
+
+<Cards>
+  <Card title="Install" href="/docs/guides/install" description="Helm chart, prerequisites, what gets deployed, upgrade and uninstall." />
+  <Card title="Connect a Forgejo" href="/docs/guides/connect-instance" description="Admin token, the ForgejoInstance, and where secrets are written." />
+  <Card title="Users, OIDC and teams" href="/docs/guides/users-and-oidc" description="Local, SSO and bot accounts, organizations and team membership." />
+  <Card title="Repositories" href="/docs/guides/repositories" description="Create, mirror and protect repositories; webhooks and deploy keys." />
+  <Card title="Credentials" href="/docs/guides/credentials" description="OAuth2 applications and access tokens, delivered to Secrets or Vault." />
+  <Card title="The allow-list" href="/docs/guides/allow-list" description="Limit which namespace may manage which organizations and users." />
+  <Card title="Monitoring & troubleshooting" href="/docs/guides/operations" description="Status, reason codes, deletion, metrics and ArgoCD." />
+  <Card title="Migrate an existing Forgejo" href="/docs/guides/migration" description="Bring objects that already exist under management with the importer." />
+</Cards>
+
+## Reference
+
+<Cards>
+  <Card title="CRD reference" href="/docs/crds" description="Every kind, every field, with an interactive manifest builder." />
 </Cards>

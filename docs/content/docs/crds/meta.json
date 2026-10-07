@@ -1,0 +1,17 @@
+{
+  "title": "CRD reference",
+  "pages": [
+    "index",
+    "forgejoinstance",
+    "forgejouser",
+    "forgejouserkey",
+    "forgejoorganization",
+    "forgejoteam",
+    "forgejonamespacepolicy",
+    "forgejorepository",
+    "forgejowebhook",
+    "forgejodeploykey",
+    "forgejooauth2application",
+    "forgejoaccesstoken"
+  ]
+}

@@ -2,6 +2,7 @@ import { getLLMText, getPageMarkdownUrl, source } from '@/lib/source';
 import { notFound } from 'next/navigation';
 
 export const revalidate = false;
+export const dynamic = 'force-static';
 
 export async function GET(_req: Request, { params }: RouteContext<'/llms.mdx/docs/[[...slug]]'>) {
   const { slug } = await params;
@@ -17,7 +18,6 @@ export async function GET(_req: Request, { params }: RouteContext<'/llms.mdx/doc
 
 export function generateStaticParams() {
   return source.getPages().map((page) => ({
-    lang: page.locale,
     slug: getPageMarkdownUrl(page).segments,
   }));
 }

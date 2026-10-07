@@ -1,114 +1,181 @@
 ---
-title: Migrating an existing Forgejo
+title: Migrate an existing Forgejo
 description: Bring users, organizations, teams, repositories, webhooks and deploy keys that already exist under the operator with the importer.
 ---
 
-The operator never adopts an object by name: a CR whose name is already
-taken in Forgejo stays `Ready: False` / `ForgejoObjectAlreadyExists`. The
-only way to bring existing objects under management is
-**`weebo-forgejo-importer`**, which reads the live instance and writes the
-matching CRs **with the Forgejo id already recorded in their status** —
-the operator then manages that exact object instead of trying to create
-it.
+If your Forgejo already has users, organizations and repositories, the
+operator won't touch them on its own. A CR whose name is already taken in
+Forgejo stays `Ready: False` with reason `ForgejoObjectAlreadyExists`, so the
+operator never takes over an object by accident.
+
+To bring existing objects under management, use **`weebo-forgejo-importer`**.
+It reads the live instance and creates the matching CRs **with each Forgejo id
+already recorded in their status**. The operator then manages that exact
+object instead of trying to create a new one.
+
+## Before you begin
+
+- The operator is [installed](/docs/guides/install) and a `ForgejoInstance`
+  is [connected](/docs/guides/connect-instance).
+- A **site-administrator token** for the importer (read access is enough).
+- For `--apply`, a kube context allowed to create the CRs and patch their
+  `status` (typically cluster-admin).
+- If a [`ForgejoNamespacePolicy`](/docs/guides/allow-list) exists, the
+  import namespace must be allowed for the imported organizations.
 
 ## What gets imported
 
 | Forgejo | CR | Notes |
 | --- | --- | --- |
-| Users | `ForgejoUser` | `managementPolicy: Observe` by default (see below) |
+| Users | `ForgejoUser` | As `managementPolicy: Observe` by default ([see below](#finish-by-hand)) |
 | Organizations | `ForgejoOrganization` | |
-| Teams + members | `ForgejoTeam` | `Owners` is skipped (Forgejo manages it) |
-| Repositories | `ForgejoRepository` | settings, units, branch protections, team access; pull mirrors keep their `migrate.mirrorInterval` |
-| Repository and organization webhooks | `ForgejoWebhook` | without `secretRef` (see below) |
-| Deploy keys | `ForgejoDeployKey` | with their `publicKey` |
+| Teams and their members | `ForgejoTeam` | Except `Owners`, which Forgejo manages |
+| Repositories | `ForgejoRepository` | Settings, units, branch protections and team access. Pull mirrors keep their `migrate.mirrorInterval`. |
+| Repository and organization webhooks | `ForgejoWebhook` | Without `secretRef` ([see below](#finish-by-hand)) |
+| Deploy keys | `ForgejoDeployKey` | With their `publicKey` |
 
-OAuth2 applications and access tokens are not imported: their secrets
-can't be read back, so the operator could never hand them out. Recreate
-them as CRs.
+**Not imported:** OAuth2 applications and access tokens. Forgejo never returns
+their secrets, so the operator could never hand them out. Recreate them as new
+CRs ([Credentials](/docs/guides/credentials)).
 
-Every imported CR has **`deletionPolicy: Orphan`** — these objects existed
-before the operator, and deleting a manifest must not destroy them. Switch
-to `Delete` per CR once you want that.
+Every imported CR gets **`deletionPolicy: Orphan`**: these objects existed
+before the operator, and deleting a manifest must not destroy them. Switch a
+CR to `Delete` once you want that.
 
-## Running it
+## Run the importer
 
-The importer needs a site-administrator token (read access is enough) and,
-with `--apply`, a kube context allowed to create the CRs and patch their
-`status` (cluster-admin, typically). It ships in the operator image; run
-it from a workstation with your kubeconfig mounted:
+The importer ships in the operator image. Run it from a workstation with
+your kubeconfig mounted. A small shell function keeps the commands below
+short (use `podman` instead of `docker` if that's what you have):
 
 ```bash
-docker run --rm -e FORGEJO_TOKEN \
-  -v "$HOME/.kube/config:/kubeconfig:ro" -e KUBECONFIG=/kubeconfig \
-  --entrypoint /usr/local/bin/weebo-forgejo-importer \
-  ghcr.io/batleforc/weebo-forgejo-operator:<version> \
-  --url https://git.example.com --namespace forgejo --owner weebo
+export FORGEJO_TOKEN=<site-admin-token>
+
+importer() {
+  docker run --rm -e FORGEJO_TOKEN \
+    -v "$HOME/.kube/config:/kubeconfig:ro" -e KUBECONFIG=/kubeconfig \
+    --entrypoint /usr/local/bin/weebo-forgejo-importer \
+    ghcr.io/batleforc/weebo-forgejo-operator:<version> "$@"
+}
 ```
 
-(or `cargo run -p importer --` from a checkout). Options:
-
-| Flag | Default | |
+| Flag | Default | Description |
 | --- | --- | --- |
 | `--url` / `FORGEJO_URL` | | Instance URL, as in `ForgejoInstance.spec.url` |
 | `--token` / `FORGEJO_TOKEN` | | Site-administrator token |
-| `--namespace`, `-n` | `default` | Namespace of the repositories, webhooks and deploy keys |
-| `--instance-ref` | none | Written as `spec.instanceRef` |
-| `--owner` (repeatable) | everything | Only these organizations/users and their repositories; other users are imported only when a team or repository references them |
+| `--namespace`, `-n` | `default` | Namespace for repositories, webhooks and deploy keys |
+| `--instance-ref` | none | Written as `spec.instanceRef` on every CR |
+| `--owner` (repeatable) | everything | Only these organizations/users and their repositories. Other users are imported only when a team or repository references them. |
 | `--manage-users` | off | Import users as `Manage` instead of `Observe` |
-| `--apply` | off | Create the CRs and seed their status (otherwise print YAML) |
+| `--apply` | off | Create the CRs and seed their status. Without it, the YAML is printed. |
 
-Warnings (a member that isn't a known user, a team left out of a
-repository's `teamRefs`...) go to stderr.
+Warnings, such as a team member that isn't a known user or a team left out of
+a repository's `teamRefs`, are printed to stderr.
 
-## The safe order: apply, then commit
+## Adopt safely: review, apply, then commit
 
-`status` is a subresource: `kubectl apply` and GitOps tools never write
-it. The adoption therefore happens in the cluster, once:
+`status` is a [subresource](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#status-subresource):
+`kubectl apply` and GitOps tools never write it. That's why the adoption
+happens in the cluster, once, before the manifests go to Git.
 
-1. **Review** what would be imported:
-   `weebo-forgejo-importer ... > forgejo.yaml`.
-2. **Adopt**: run the same command with `--apply`. Each CR is created
-   with the `forgejo.weebo.io/import-pending` annotation — the operator
-   leaves it alone — then its `status.forgejoId`/`forgejoName` are
-   written, then the annotation is removed. The operator never sees an
-   imported CR without its id, so it can't create a duplicate (webhooks
-   have no unique name to collide on).
-3. **Commit** `forgejo.yaml` to your GitOps repository. Its `status`
-   blocks are ignored when applied; the CRs already exist with their ids.
+<Steps>
+<Step>
 
-Re-running `--apply` is safe: a CR that already owns the same object is
-skipped (and unpaused, if an earlier run stopped before removing the
-annotation); one owning a different object is reported as an error and
-left untouched. A CR that existed *without* an id (e.g. one stuck on
-`ForgejoObjectAlreadyExists`) is taken over and adopted.
+### Review
 
-CR names are the Forgejo names made valid for Kubernetes (lowercase,
-`_` → `-`, repository `weebo/.profile` → `weebo.profile`), with the
-Forgejo id appended on a clash. `--apply`
-first reads the CRs already in the cluster: an object adopted by an
-earlier run keeps its CR name, and a name already owned by another object
-is never reused — so runs with different `--owner` selections don't
-collide. Without `--apply` the cluster isn't read, so on a cluster that
-already holds imported CRs, export the manifests (step 3) from the
-cluster rather than from a fresh print.
+Print what would be imported, without touching the cluster:
 
-The first reconcile of an adopted CR sends nothing to Forgejo when the
-imported spec matches — verified against Forgejo 16 by the importer's
-tests.
+```bash
+importer --url https://git.example.com --namespace forgejo --owner weebo > forgejo.yaml
+```
 
-## What to finish by hand
+</Step>
+<Step>
 
-- **Users** are imported as `Observe`: never modified, only resolved, so
-  teams and repositories can reference them. With `--manage-users` they
-  become `Manage`; a local account is then marked `bot: true`, because
-  its password can't be known — the operator never resets it. Turning
-  such a user into a regular local user (`bot: false` + `secretTargets`)
-  **resets its password** into the targets.
-- **Webhook secrets** are write-only in Forgejo, and its hook edit never
-  changes them. An imported hook keeps its current secret (edits leave it
-  alone); adding a `secretRef` recreates the hook with that secret.
-- **Organization owners** (`ownerRef`) only matter at creation and are
+### Adopt
+
+Run the same command with `--apply`:
+
+```bash
+importer --url https://git.example.com --namespace forgejo --owner weebo --apply
+```
+
+Each CR is created paused, with the `forgejo.weebo.io/import-pending`
+annotation. Its `status.forgejoId` and `forgejoName` are written, and only
+then is the annotation removed. The operator never sees an imported CR
+without its id, so it can't create a duplicate.
+
+</Step>
+<Step>
+
+### Commit
+
+Commit `forgejo.yaml` to your GitOps repository. Its `status` blocks are
+ignored when applied; the CRs already exist with their ids.
+
+</Step>
+<Step>
+
+### Check
+
+```bash
+kubectl get fjorg,fjteam,fjuser
+kubectl -n forgejo get fjrepo,fjhook,fjdkey
+```
+
+Everything should read `READY True`. The first reconcile of an adopted CR
+sends nothing to Forgejo when the imported spec matches.
+
+</Step>
+</Steps>
+
+<Accordions>
+<Accordion title="Running the importer more than once">
+
+Re-running `--apply` is safe:
+
+- A CR that already owns the same object is skipped. If an earlier run
+  stopped before removing the pause annotation, the CR is unpaused.
+- A CR that owns a *different* object is reported as an error and left
+  untouched.
+- A CR that existed *without* an id (for example one stuck on
+  `ForgejoObjectAlreadyExists`) is taken over and adopted.
+
+</Accordion>
+<Accordion title="How CR names are chosen">
+
+CR names are the Forgejo names made valid for Kubernetes: lowercase, `_` → `-`,
+and a repository like `weebo/.profile` becomes `weebo.profile`. The Forgejo id
+is appended when two names clash.
+
+With `--apply`, the importer first reads the CRs already in the cluster. An
+object adopted by an earlier run keeps its CR name, and a name already owned
+by another object is never reused, so runs with different `--owner`
+selections don't collide.
+
+Without `--apply` the cluster isn't read. On a cluster that already holds
+imported CRs, export the manifests from the cluster (`kubectl get … -o yaml`)
+rather than from a fresh print.
+
+</Accordion>
+</Accordions>
+
+## Finish by hand
+
+- **Users** are imported as `Observe`: they're never modified, only looked
+  up, so teams and repositories can reference them.
+  - With `--manage-users` they become `Manage`. A local account is then
+    marked `bot: true`, because its password can't be known, and the
+    operator never resets it.
+  - Turning such a user into a regular local user (`bot: false` plus
+    `secretTargets`) **resets its password** into the targets.
+- **Webhook secrets** are write-only in Forgejo. An imported hook keeps its
+  current secret, and edits leave it alone. Adding a `secretRef` recreates
+  the hook with that secret, which loses its delivery history.
+- **Organization owners** (`ownerRef`) only matter at creation, so they're
   left unset.
-- **Allow-list**: once a `ForgejoNamespacePolicy` exists, the import
-  namespace must be allowed for the imported organizations
-  ([The allow-list](/docs/guides/allow-list)).
+
+## Next
+
+Hand out credentials for the imported repositories:
+[Credentials](/docs/guides/credentials).

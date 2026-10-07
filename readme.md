@@ -4,6 +4,9 @@ Kubernetes operator managing Forgejo (v16+) objects — users, organizations,
 teams, repositories, keys, webhooks, OAuth2 applications, access tokens —
 as CRDs. Sibling of [weebo-authentik](https://github.com/batleforc/weebo-authentik).
 
+**Documentation: <https://batleforc.github.io/weebo-forgejo>**: start with
+[Getting started](https://batleforc.github.io/weebo-forgejo/docs/getting-started/).
+
 Status: **M4** — `ForgejoInstance`, `ForgejoUser` (local, bot, external
 OIDC, observed), `ForgejoOrganization`, `ForgejoTeam`, `ForgejoRepository`
 (empty/template/mirror, branch protections, team access), `ForgejoWebhook`,

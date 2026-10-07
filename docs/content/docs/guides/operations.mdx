@@ -1,17 +1,34 @@
 ---
-title: Operating the operator
-description: Status, reason codes, events, deletion, disruptive changes, metrics and ArgoCD.
+title: Monitoring & troubleshooting
+description: Read a CR's status, fix what its reason code points at, and wire up metrics and ArgoCD.
 ---
 
-## Status
+Every CR says whether it's in sync and, if not, why. This page explains how
+to read that, what to do about each reason, and how to watch the operator
+from your monitoring stack and from ArgoCD.
 
-Every CR shares one status shape:
+## Check the status
+
+For a quick overview, list the kinds with their `READY` column:
+
+```bash
+kubectl get fji,fjorg,fjteam,fjuser          # cluster-scoped kinds
+kubectl get fjrepo,fjhook,fjdkey,fjoauth,fjtoken -A
+```
+
+When something reads `False`, look at the condition:
+
+```bash
+kubectl -n team-a describe fjrepo app
+```
+
+Every kind shares one status shape:
 
 ```yaml
 status:
   observedGeneration: 3
   forgejoId: "42"            # the Forgejo object this CR owns
-  forgejoName: weebo/app     # the name Forgejo addresses it by
+  forgejoName: weebo/app     # the name Forgejo knows it by
   conditions:
     - type: Ready
       status: "False"
@@ -19,64 +36,126 @@ status:
       message: ForgejoOrganization "weebo" is not ready yet (InstanceUnreachable)
 ```
 
-`kubectl get fjrepo,fjteam,fjuser -A` shows `Ready` for everything at a
-glance. A Kubernetes **Event** is recorded on every `Ready` transition.
+The operator also records a Kubernetes **Event** on every `Ready`
+transition. `kubectl get events -n team-a` shows the history.
 
 ## Reason codes
 
-| Reason | Meaning |
-| --- | --- |
-| `Reconciled` | All good |
-| `InstanceNotFound` / `AmbiguousDefaultInstance` | No (unique) `ForgejoInstance` to use |
-| `InstanceUnreachable` / `TokenSecretNotFound` | Network, TLS, 5xx, timeout or rate limit (408/429) / missing admin token |
-| `KubernetesApiError` | The apiserver failed while resolving the `ForgejoInstance` (transient) |
-| `UnsupportedForgejoVersion` | Forgejo older than v16 |
-| `ForgejoObjectAlreadyExists` | The name is taken by something this CR doesn't own — never adopted |
-| `ReferenceNotFound` / `ReferenceNotReady` | A `*Ref` is missing or not ready (re-checked as soon as it changes) |
-| `UserNotFound` | An observed user hasn't logged in yet |
-| `MemberPending` | (advisory) some team members don't exist yet |
-| `DisruptiveUpdateRefused` | The change needs `forgejo.weebo.io/allow-disruptive-update: "true"` |
-| `NamespaceNotAllowed` | Refused by a `ForgejoNamespacePolicy` |
-| `SecretTargetFailed` | Writing to a Kubernetes Secret or Vault failed |
-| `InvalidSpec` | Schema-valid, but not actionable (e.g. two owners) |
-| `ForgejoApiError` | Anything else Forgejo answered |
+| Reason | Meaning | What to do |
+| --- | --- | --- |
+| `Reconciled` | In sync | Nothing |
+| `InstanceNotFound` | No `ForgejoInstance` exists, or `instanceRef` names a missing one | [Create the instance](/docs/guides/connect-instance), or fix `instanceRef` |
+| `AmbiguousDefaultInstance` | Several instances exist and the CR has no `instanceRef` | Set `instanceRef` |
+| `InstanceUnreachable` | Network, TLS, a 5xx error, a timeout or rate limiting (408/429) | Check Forgejo's health and the URL/CA; it's retried automatically |
+| `TokenSecretNotFound` | The admin token Secret is missing | Fix `tokenSecretRef` or create the Secret |
+| `KubernetesApiError` | The API server failed while resolving the instance | Transient; retried automatically |
+| `UnsupportedForgejoVersion` | Forgejo is older than v16 | Upgrade Forgejo |
+| `ForgejoObjectAlreadyExists` | The name is already used in Forgejo by an object this CR doesn't own | Rename the CR's `spec.name`, or adopt the object with the [importer](/docs/guides/migration) |
+| `ReferenceNotFound` | A `…Ref` names a CR that doesn't exist | Create it or fix the ref |
+| `ReferenceNotReady` | The referenced CR isn't `Ready` | Fix that CR first; this one follows on its own |
+| `UserNotFound` | An observed user hasn't signed in yet | Wait for their first sign-in |
+| `MemberPending` | (advisory) Some team members don't exist yet | Same as above; the others are synced |
+| `DisruptiveUpdateRefused` | The change requires recreating the object | See [Disruptive changes](#disruptive-changes) |
+| `NamespaceNotAllowed` | Refused by a `ForgejoNamespacePolicy` | Adjust the [allow-list](/docs/guides/allow-list) |
+| `SecretTargetFailed` | Writing to a Secret or to Vault failed | Check RBAC or Vault access and the target's namespace/path |
+| `InvalidSpec` | Valid YAML, but it can't be acted on (e.g. both `organizationRef` and `userRef` set) | Fix the spec; the message says what's wrong |
+| `ForgejoApiError` | Forgejo returned another error | Read the message; often a missing token scope |
 
 ## Disruptive changes
 
-Changes that can only be done by deleting and recreating (or that change
-URLs or credentials consumers rely on) are refused until the CR carries
-`forgejo.weebo.io/allow-disruptive-update: "true"`: repository transfer,
-moving a team to another organization, changing an OAuth2 application's
-owner, changing a token's scopes.
+Some changes can only be made by deleting and recreating the object in
+Forgejo, or they break whoever relies on its URL or credentials:
+
+- transferring a repository to another owner;
+- moving a team to another organization;
+- changing an OAuth2 application's owner;
+- changing an access token's `scopes` or `repositoryRefs`.
+
+These are refused (`DisruptiveUpdateRefused`) until you opt in on the CR:
+
+```bash
+kubectl -n team-a annotate fjrepo app forgejo.weebo.io/allow-disruptive-update=true
+```
 
 ## Deletion
 
-`spec.deletionPolicy`: `Orphan` keeps the Forgejo object, `Delete`
-removes it. Users, organizations and repositories default to `Orphan`;
-everything else to `Delete`. Users are never purged. Emitted secrets are
-always deleted with their CR.
+`spec.deletionPolicy` decides what happens in Forgejo when you delete a CR:
 
-## Adopting existing objects
+| Policy | Effect | Default for |
+| --- | --- | --- |
+| `Orphan` | The Forgejo object stays | Users, organizations, repositories |
+| `Delete` | The Forgejo object is deleted | Everything else |
 
-The operator never adopts by name. To bring existing Forgejo objects under
-management, use `weebo-forgejo-importer`, which creates the CRs with the
-existing ids recorded in their status — see
-[Migrating an existing Forgejo](/docs/guides/migration).
+Users are never purged, even with `Delete`. Secrets the operator generated
+are always deleted with their CR.
 
-## Observability
+The operator never takes over an object that already exists in Forgejo. To
+bring existing objects under management, see
+[Migrate an existing Forgejo](/docs/guides/migration).
 
-With `OTEL_EXPORTER_OTLP_ENDPOINT` set (`extraEnv`), traces and metrics
-are exported over OTLP:
+## Metrics and traces
 
-- `weebo_forgejo_reconcile_total{kind,result,reason}`
-- `weebo_forgejo_reconcile_duration_seconds{kind}`
-- `weebo_forgejo_webhook_decisions_total{kind,result}`
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` through the chart's `extraEnv` to export
+traces and metrics over OTLP/gRPC:
 
-`RUST_LOG` tunes log verbosity (default `info`).
+```yaml
+extraEnv:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://otel-collector.observability:4317
+  - name: RUST_LOG          # log verbosity, default info
+    value: info
+```
+
+| Metric | Labels |
+| --- | --- |
+| `weebo_forgejo_reconcile_total` | `kind`, `result`, `reason` |
+| `weebo_forgejo_reconcile_duration_seconds` | `kind` |
+| `weebo_forgejo_webhook_decisions_total` | `kind`, `result` |
+
+A useful alert is a rising `weebo_forgejo_reconcile_total{result="error"}`,
+grouped by `reason`.
 
 ## ArgoCD
 
-ArgoCD needs a health check to understand these CRDs. The chart ships it
-in the `<release>-argocd-health` ConfigMap; copy its `health.lua` into
-`argocd-cm` as `resource.customizations.health.forgejo.weebo.io_<Kind>`
-for each kind.
+ArgoCD doesn't know how to tell whether these CRs are healthy. Without a
+health check, they show as *Progressing* forever. The chart ships one in the
+`weebo-forgejo-argocd-health` ConfigMap. Add it to ArgoCD's `argocd-cm`
+once per kind, for example:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  resource.customizations.health.forgejo.weebo.io_ForgejoRepository: |
+    hs = {}
+    if obj.status ~= nil and obj.status.conditions ~= nil then
+      for i, condition in ipairs(obj.status.conditions) do
+        if condition.type == "Ready" then
+          if condition.status == "True" then
+            hs.status = "Healthy"
+          elseif condition.status == "False" then
+            hs.status = "Degraded"
+          else
+            hs.status = "Progressing"
+          end
+          hs.message = condition.message
+          return hs
+        end
+      end
+    end
+    hs.status = "Progressing"
+    hs.message = "Waiting for Ready condition"
+    return hs
+  # …repeat for ForgejoInstance, ForgejoUser, ForgejoUserKey,
+  # ForgejoOrganization, ForgejoTeam, ForgejoWebhook, ForgejoDeployKey,
+  # ForgejoOAuth2Application, ForgejoAccessToken, ForgejoNamespacePolicy.
+```
+
+Every kind uses the same script, the `health.lua` key of that ConfigMap.
+
+## Next
+
+[Migrate an existing Forgejo](/docs/guides/migration).

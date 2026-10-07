@@ -9,9 +9,8 @@ use crate::status::ForgejoStatus;
 /// `ForgejoUser`. Created empty (optionally initialized), from a template
 /// repository, or by migrating/mirroring a remote.
 ///
-/// Exactly one of `organizationRef`/`userRef`, and at most one of
-/// `init`/`fromTemplate`/`migrate` — checked by the reconciler
-/// (`InvalidSpec`), since kube's schema can't express one-of.
+/// Set exactly one of `organizationRef`/`userRef`, and at most one of
+/// `init`/`fromTemplate`/`migrate`; anything else reports `InvalidSpec`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "forgejo.weebo.io",

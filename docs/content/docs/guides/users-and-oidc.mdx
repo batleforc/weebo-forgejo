@@ -1,38 +1,90 @@
 ---
 title: Users, OIDC and teams
-description: The three ForgejoUser modes, OIDC accounts, organizations and teams.
+description: Local, SSO and bot accounts, people who sign in with OIDC, organizations and team membership.
 ---
 
-## Three kinds of users
+This guide covers accounts (`ForgejoUser`, short name `fjuser`), the
+organizations they belong to (`ForgejoOrganization`, `fjorg`) and the teams
+that give them access (`ForgejoTeam`, `fjteam`). All three are
+cluster-scoped, so who can create them is decided by Kubernetes RBAC.
 
-| Mode | Spec | Password |
+## Before you begin
+
+- A [connected](/docs/guides/connect-instance) `ForgejoInstance` with
+  `READY` set to `True`.
+
+## Kinds of accounts
+
+A `ForgejoUser` is one of three kinds of account, depending on its spec:
+
+| Account | Set in the spec | Password |
 | --- | --- | --- |
-| **External** (OIDC, LDAP...) | `loginSourceId` (+ `loginName`) | none — Forgejo links the account at first login |
-| **Local** | no `loginSourceId` | generated, written to `secretTargets` (reset if the Secret disappears) |
-| **Bot** | `bot: true` | generated and discarded: the account only works through its tokens and SSH keys |
-| **Observed** | `managementPolicy: Observe` | the operator never creates, edits or deletes it |
+| **External** (OIDC, LDAP…) | `loginSourceId` (and optionally `loginName`) | None. Forgejo links the account at its first sign-in. |
+| **Local** | no `loginSourceId` | Generated and written to `secretTargets` as `FORGEJO_USERNAME` / `FORGEJO_PASSWORD` / `FORGEJO_URL`. Reset if the Secret disappears. |
+| **Bot** | `bot: true` | Generated and thrown away. The account only works through its [tokens](/docs/guides/credentials#access-tokens) and [SSH keys](#ssh-keys-for-a-user). |
 
-`loginSourceId` is the numeric id shown in *Site administration →
-Authentication sources*: Forgejo has no API to look sources up by name.
-Authentication sources themselves are configured on Forgejo (its Helm
-chart's `gitea.oauth`, or `forgejo admin auth add-oauth`), not by the
-operator.
+Separately, `managementPolicy` decides whether the operator may change it:
 
-<Callout type="warn">
-A bot never gets `prohibit_login` or `must_change_password`: Forgejo then
+- **`Manage`** (default): the operator creates the account and keeps it in
+  line with the spec.
+- **`Observe`**: the operator never creates, edits or deletes it. It only
+  looks it up, so teams, repositories and tokens can refer to it.
+
+`kubectl get fjuser` shows the policy in its `MODE` column.
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: alice
+spec:
+  username: alice
+  email: alice@example.com
+  fullName: Alice Martin
+  secretTargets: [{ name: alice-credentials, namespace: weebo-forgejo }]
+```
+
+<Callout type="warn" title="Don't lock a bot out of its own tokens">
+Never set `prohibitLogin` or `mustChangePassword` on a bot. Forgejo then
 refuses the account's API tokens too. Use `prohibitLogin: true` only to
 disable an account entirely.
 </Callout>
 
-## People who log in with OIDC
+## People who sign in with OIDC
 
-Two ways to put them in teams:
+The authentication source itself (your OIDC provider) is configured in
+Forgejo, not by the operator: with the Forgejo Helm chart's `gitea.oauth`
+values, or with `forgejo admin auth add-oauth`.
 
-- **Pre-provision** them (external mode) when you know them in advance.
-- **Observe** them: Forgejo creates the account at first login; the CR
-  shows `UserNotFound` until then. A team listing them reports
-  `MemberPending` while syncing its other members — and adds them as soon
-  as they appear.
+There are two ways to manage these people. Pick the first when you know them
+in advance, the second when they show up on their own.
+
+<Tabs items={['Pre-provision', 'Observe on first sign-in']}>
+<Tab value="Pre-provision">
+
+Create the account ahead of time and link it to the authentication source.
+Their first sign-in lands on this account.
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: bob
+spec:
+  username: bob
+  email: bob@example.com
+  loginSourceId: 1        # see below
+  loginName: bob          # their username at the provider, if different
+```
+
+`loginSourceId` is the numeric id of the authentication source: in
+*Site administration → Authentication sources*, click the source. The id is
+the number at the end of its URL (for example `…/admin/auths/1`). Forgejo has no API to look a source up by name.
+
+</Tab>
+<Tab value="Observe on first sign-in">
+
+Let Forgejo create the account at the first sign-in, and only observe it:
 
 ```yaml
 apiVersion: forgejo.weebo.io/v1alpha1
@@ -44,6 +96,13 @@ spec:
   managementPolicy: Observe
 ```
 
+Until carol signs in, the CR reports `UserNotFound`. A team listing her
+reports `MemberPending` while it syncs its other members, and adds her as
+soon as her account appears.
+
+</Tab>
+</Tabs>
+
 ## Organizations and teams
 
 ```yaml
@@ -54,25 +113,56 @@ metadata:
 spec:
   name: weebo
   visibility: private
-  ownerRef: { name: alice }      # first owner, creation time only
+  ownerRef: { name: alice }      # the first owner; used at creation only
 ---
 apiVersion: forgejo.weebo.io/v1alpha1
 kind: ForgejoTeam
 metadata:
-  name: weebo-devs
+  name: weebo-devs               # the CR's name, used by refs
 spec:
   organizationRef: { name: weebo }
-  name: devs
-  permission: write              # unitsMap empty = every unit at this level
+  name: devs                     # the team's name in Forgejo
+  permission: write              # with unitsMap empty: every unit at this level
   memberRefs:
     - name: alice
     - name: carol
 ```
 
-`memberRefs` is authoritative: anyone else is removed. Renaming
-`spec.name` renames in place; moving a team to another organization
-recreates it and needs the `forgejo.weebo.io/allow-disruptive-update:
-"true"` annotation.
+Refs (`ownerRef`, `memberRefs`…) name **CRs**, not Forgejo accounts:
+`alice` above is the `ForgejoUser` from the previous section.
 
-Users and organizations default to `deletionPolicy: Orphan` (deleting the
-CR never deletes an account or its history); teams to `Delete`.
+- **`memberRefs` is authoritative**: anyone else in the team is removed.
+- **Renaming** the team (`spec.name`) renames it in place.
+- **Moving** it to another organization recreates it. That counts as a
+  [disruptive change](/docs/guides/operations#disruptive-changes) and needs
+  the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
+
+## SSH keys for a user
+
+`ForgejoUserKey` (`fjukey`) adds an SSH key to a user. It's typically used to
+give a bot Git access. Without `publicKey`, the operator generates an ed25519
+pair and writes it to the targets:
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUserKey
+metadata:
+  name: ci-bot-ssh
+spec:
+  userRef: { name: ci-bot }
+  title: ci
+  secretTargets: [{ name: ci-bot-ssh, namespace: ci }]
+```
+
+It works like a [deploy key](/docs/guides/repositories#deploy-keys), including
+rotation.
+
+## Deleting
+
+Users and organizations default to `deletionPolicy: Orphan`: deleting the CR
+never deletes an account or its history. Teams default to `Delete`. Users are
+never purged, even with `Delete`.
+
+## Next
+
+[Repositories](/docs/guides/repositories).

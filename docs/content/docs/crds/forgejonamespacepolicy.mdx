@@ -3,7 +3,13 @@ title: ForgejoNamespacePolicy
 description: >-
   Namespace allow-list for the namespaced kinds, enforced by the admission
   webhook (CREATE/UPDATE) and re-checked by every reconciler.
+full: true
 ---
+
+- **API version:** `forgejo.weebo.io/v1alpha1`
+- **Scope:** Cluster
+- **Short names:** `fjnp`
+- **Guide:** [The allow-list](/docs/guides/allow-list)
 
 Namespace allow-list for the namespaced kinds, enforced by the
 admission webhook (CREATE/UPDATE) and re-checked by every reconciler.
@@ -14,6 +20,21 @@ matches its namespace and kind and covers the organizations and users it
 references — and no `Deny` rule matches. Rules of every policy are
 pooled; deny always wins.
 
+## Example
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoNamespacePolicy
+metadata:
+  name: my-namespacepolicy
+spec:
+  rules:
+    - namespaces:
+        - team-*
+      allowedKinds:
+        - ForgejoRepository
+```
+
 ## Spec fields
 
 | Field | Type | Required | Default | Description |
@@ -22,6 +43,6 @@ pooled; deny always wins.
 
 ## Build a manifest
 
-Fill in the fields below to generate a ready-to-apply `ForgejoNamespacePolicy` YAML manifest.
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
 
 <CrdForm kind="ForgejoNamespacePolicy" />

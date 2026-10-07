@@ -32,7 +32,7 @@ spec:
               Connection to a real Forgejo server (v16 or later). Cluster-scoped — an
               org-wide, shared piece of infrastructure, not owned by a single
               namespace. CRs without an `instanceRef` use the cluster's only
-              `ForgejoInstance` (see `.prompt/plan.md`, "Instance par défaut").
+              `ForgejoInstance`.
             properties:
               secretStore:
                 default:

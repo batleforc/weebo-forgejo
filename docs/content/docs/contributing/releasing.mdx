@@ -3,6 +3,9 @@ title: Releasing
 description: How a version is bumped, what gets published, and the checks that guard it.
 ---
 
+This page is for maintainers of weebo-forgejo. To install a release, see
+[Install](/docs/guides/install).
+
 Versions come from the commit history: commits follow Conventional
 Commits (enforced by [cocogitto](https://docs.cocogitto.io/) on every
 commit), and `cog bump --auto` derives the next version from them.
@@ -60,3 +63,11 @@ The kind e2e runs locally too with a working container engine:
 `task e2e` (`ENGINE=podman` to build with podman). For the live suites and
 coverage: `task forgejo:container:start ENGINE=podman` (writes
 `.forgejo-test.env`), then `task coverage` or `task test:live-forgejo`.
+
+## The documentation site
+
+This site is published to GitHub Pages by `docs-pages.yml` on every push to
+`main` that touches `docs/` or the CRDs, and can be re-run by hand. It's a
+static export (`output: 'export'`); the workflow sets `DOCS_BASE_PATH` to
+`/weebo-forgejo` for the project-site sub-path. Locally, `task docs` runs the
+dev server and `task docs:build` builds and lints it at the root.

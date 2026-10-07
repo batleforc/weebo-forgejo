@@ -1,12 +1,33 @@
 ---
 title: ForgejoInstance
 description: Connection to a real Forgejo server (v16 or later).
+full: true
 ---
+
+- **API version:** `forgejo.weebo.io/v1alpha1`
+- **Scope:** Cluster
+- **Short names:** `fji`
+- **Guide:** [Connect a Forgejo](/docs/guides/connect-instance)
 
 Connection to a real Forgejo server (v16 or later). Cluster-scoped — an
 org-wide, shared piece of infrastructure, not owned by a single
 namespace. CRs without an `instanceRef` use the cluster's only
-`ForgejoInstance` (see `.prompt/plan.md`, "Instance par défaut").
+`ForgejoInstance`.
+
+## Example
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoInstance
+metadata:
+  name: my-instance
+spec:
+  url: https://git.example.com
+  tokenSecretRef:
+    name: forgejo-admin
+    namespace: weebo-forgejo
+    key: token
+```
 
 ## Spec fields
 
@@ -19,6 +40,6 @@ namespace. CRs without an `instanceRef` use the cluster's only
 
 ## Build a manifest
 
-Fill in the fields below to generate a ready-to-apply `ForgejoInstance` YAML manifest.
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
 
 <CrdForm kind="ForgejoInstance" />

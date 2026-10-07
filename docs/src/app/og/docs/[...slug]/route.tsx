@@ -5,6 +5,7 @@ import { generate as DefaultImage } from 'fumadocs-ui/og';
 import { appName } from '@/lib/shared';
 
 export const revalidate = false;
+export const dynamic = 'force-static';
 
 export async function GET(_req: Request, { params }: RouteContext<'/og/docs/[...slug]'>) {
   const { slug } = await params;
@@ -22,7 +23,6 @@ export async function GET(_req: Request, { params }: RouteContext<'/og/docs/[...
 
 export function generateStaticParams() {
   return source.getPages().map((page) => ({
-    lang: page.locale,
     slug: getPageImage(page).segments,
   }));
 }

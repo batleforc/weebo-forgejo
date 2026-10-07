@@ -1,0 +1,167 @@
+---
+title: Getting started
+description: From an empty cluster to a first organization and repository managed by the operator.
+---
+
+This walkthrough installs the operator, connects it to your Forgejo, and
+creates one organization and one private repository from YAML. It takes
+about ten minutes.
+
+**Before you begin**, you need:
+
+- a Kubernetes 1.30+ cluster and `kubectl` + `helm` pointed at it;
+- [cert-manager](https://cert-manager.io/docs/installation/) installed in
+  that cluster;
+- a Forgejo **v16 or later** reachable from the cluster, and a site
+  administrator account on it.
+
+<Steps>
+<Step>
+
+### Install the operator
+
+```bash
+helm install weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
+  --namespace weebo-forgejo --create-namespace
+```
+
+Check that both replicas are running:
+
+```bash
+kubectl -n weebo-forgejo get pods
+```
+
+```text
+NAME                             READY   STATUS    RESTARTS   AGE
+weebo-forgejo-6c9f8d7b54-2xk7p   1/1     Running   0          40s
+weebo-forgejo-6c9f8d7b54-q8wzn   1/1     Running   0          40s
+```
+
+</Step>
+<Step>
+
+### Give it an admin token
+
+The operator talks to Forgejo as a site administrator. On the machine (or
+pod) where you run the `forgejo` CLI, create a token:
+
+```bash
+forgejo admin user generate-access-token --username <admin> \
+  --token-name weebo-forgejo --scopes all --raw
+```
+
+You can also create it in the web UI: *Settings → Applications → Generate
+new token*, with every permission set to *Read and write*.
+
+Then store it in a Secret next to the operator:
+
+```bash
+kubectl -n weebo-forgejo create secret generic forgejo-admin \
+  --from-literal=token=<the-token>
+```
+
+</Step>
+<Step>
+
+### Connect your Forgejo
+
+Save this as `instance.yaml`, with your Forgejo's web address:
+
+```yaml title="instance.yaml"
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoInstance
+metadata:
+  name: main
+spec:
+  url: https://git.example.com   # the web root, not /api/v1
+  tokenSecretRef:
+    name: forgejo-admin
+    namespace: weebo-forgejo
+    key: token
+```
+
+```bash
+kubectl apply -f instance.yaml
+kubectl get forgejoinstance   # short name: fji
+```
+
+```text
+NAME   URL                       READY   AGE
+main   https://git.example.com   True    12s
+```
+
+`READY` must read `True`. If it reads `False`, run
+`kubectl describe fji main`: the condition's reason tells you why (see
+[reason codes](/docs/guides/operations#reason-codes)).
+
+</Step>
+<Step>
+
+### Create an organization and a repository
+
+Save this as `first.yaml`:
+
+```yaml title="first.yaml"
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoOrganization
+metadata:
+  name: platform
+spec:
+  name: platform          # the name in Forgejo
+  visibility: private
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: hello
+  namespace: default
+spec:
+  organizationRef: { name: platform }
+  name: hello
+  private: true
+  init: { readme: Default }
+```
+
+```bash
+kubectl apply -f first.yaml
+kubectl get forgejoorganization,forgejorepository -A
+```
+
+```text
+NAME                                             NAME       ID   READY   AGE
+forgejoorganization.forgejo.weebo.io/platform    platform   3    True    8s
+
+NAMESPACE   NAME                                        REPOSITORY       ID   READY   AGE
+default     forgejorepository.forgejo.weebo.io/hello    platform/hello   12   True    8s
+```
+
+Open `https://git.example.com/platform/hello`: the repository is there, with
+its README.
+
+</Step>
+<Step>
+
+### See it hold
+
+Change the repository's visibility to public in the Forgejo UI, wait a
+moment, and reload: it's private again. The YAML is the source of truth.
+
+To remove what you created:
+
+```bash
+kubectl delete -f first.yaml
+```
+
+Organizations and repositories default to `deletionPolicy: Orphan`: the CRs
+go away, but **the objects stay in Forgejo**. Set `deletionPolicy: Delete`
+on a CR when you want deleting it to delete the Forgejo object too.
+
+</Step>
+</Steps>
+
+## Next steps
+
+- Learn the vocabulary in [Concepts](/docs/concepts).
+- Add people: [Users, OIDC and teams](/docs/guides/users-and-oidc).
+- Hand credentials to an app: [Credentials](/docs/guides/credentials).
+- Before giving other teams access, set up [the allow-list](/docs/guides/allow-list).

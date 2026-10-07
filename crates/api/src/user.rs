@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::common::{DeletionPolicy, ManagementPolicy, SecretTarget, Visibility};
 use crate::status::ForgejoStatus;
 
-/// A Forgejo user, in one of three modes (see `.prompt/plan.md`,
-/// "ForgejoUser : trois modes"):
+/// A Forgejo user, in one of three modes:
 ///
 /// - **external** — `loginSourceId` set: the account is pre-provisioned
 ///   against an authentication source (e.g. Authentik over OIDC) and linked

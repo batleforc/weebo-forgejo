@@ -1,0 +1,13 @@
+{
+  "title": "Guides",
+  "pages": [
+    "install",
+    "connect-instance",
+    "users-and-oidc",
+    "repositories",
+    "credentials",
+    "allow-list",
+    "operations",
+    "migration"
+  ]
+}

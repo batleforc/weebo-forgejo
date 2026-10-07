@@ -1,17 +1,33 @@
 ---
 title: The allow-list
-description: ForgejoNamespacePolicy — which namespace may create what, where, for whom.
+description: ForgejoNamespacePolicy decides which namespace may create what, in which organization, for whom.
 ---
 
-Cluster-scoped kinds (instances, users, organizations, teams, user keys)
-are governed by Kubernetes RBAC. The **namespaced** kinds — repositories,
-webhooks, deploy keys, OAuth2 applications, access tokens — are governed
-by `ForgejoNamespacePolicy`:
+When several teams share a cluster, you don't want team A's namespace
+creating repositories in team B's organization, or minting a token for the
+admin account. `ForgejoNamespacePolicy` (short name `fjnp`) is the allow-list
+that prevents this.
 
-- While **no** policy exists, everything is allowed.
-- As soon as **one** exists, it's default-deny: a CR is accepted only if
-  an `Allow` rule matches its namespace and kind, **and** covers every
-  organization and user it references; and no `Deny` rule matches.
+## What it governs
+
+| Kinds | Governed by |
+| --- | --- |
+| Cluster-scoped: instances, users, user keys, organizations, teams | Kubernetes RBAC only |
+| Namespaced: repositories, webhooks, deploy keys, OAuth2 applications, access tokens | RBAC **and** the allow-list |
+
+<Callout type="warn" title="No policy means everything is allowed">
+While **no** `ForgejoNamespacePolicy` exists, every namespace may create any
+namespaced kind, referencing any organization or user. As soon as **one**
+policy exists, the default becomes **deny**.
+</Callout>
+
+## Write a policy
+
+With at least one policy in place, a CR is accepted only if:
+
+1. an `Allow` rule matches its namespace and kind;
+2. that rule covers **every** organization and user the CR references; and
+3. no `Deny` rule matches. A `Deny` always wins.
 
 ```yaml
 apiVersion: forgejo.weebo.io/v1alpha1
@@ -20,41 +36,64 @@ metadata:
   name: teams
 spec:
   rules:
-    - namespaces: ["team-*"]            # exact, "*", or prefix glob
+    # Every team-* namespace may manage repos, hooks and deploy keys in "weebo".
+    - namespaces: ["team-*"]            # exact name, "*", or a prefix glob
       allowedKinds: [ForgejoRepository, ForgejoWebhook, ForgejoDeployKey]
-      allowedOrganizations: [weebo]     # unset = any
+      allowedOrganizations: [weebo]     # unset = any organization
+    # Only team-a may mint tokens, and only for its own bot.
     - namespaces: [team-a]
       allowedKinds: [ForgejoAccessToken]
-      allowedUsers: [team-a-bot]        # unset = any — set it!
+      allowedUsers: [team-a-bot]        # unset = ANY user. Set it.
+    # Nobody may mint tokens or OAuth2 apps for admin-bot.
     - namespaces: ["*"]
       allowedKinds: [ForgejoAccessToken, ForgejoOAuth2Application]
       allowedUsers: [admin-bot]
-      effect: Deny                      # deny always wins
+      effect: Deny
 ```
 
-What each kind references: a repository its owning organization or user;
-an organization webhook its organization; an OAuth2 application its owner;
-a token its user. An OAuth2 application without `ownerRef` belongs to the
-operator's admin account and references the user `@instance-admin`: a rule
-restricting `allowedUsers` only covers it if it lists that value. Deploy
-keys and repository webhooks only reference a repository of their own
-namespace, itself checked.
+`allowedOrganizations` and `allowedUsers` list **CR names**, the
+`metadata.name` of the `ForgejoOrganization` and `ForgejoUser`, which is what
+`organizationRef`, `userRef` and `ownerRef` point at.
+
+## What each kind references
+
+A rule must cover what the CR points at:
+
+| Kind | References |
+| --- | --- |
+| `ForgejoRepository` | Its owner: the organization (`organizationRef`) or the user (`userRef`) |
+| `ForgejoWebhook` on an organization | That organization |
+| `ForgejoWebhook` on a repository | Nothing beyond the repository, which must be in the same namespace and is checked itself |
+| `ForgejoDeployKey` | Nothing beyond the repository, as above |
+| `ForgejoOAuth2Application` | Its owner (`ownerRef`), or `@instance-admin` without one |
+| `ForgejoAccessToken` | Its user (`userRef`) |
+
+**`@instance-admin`.** An OAuth2 application without `ownerRef` belongs to
+the operator's own admin account. For the allow-list, it references the
+special user `@instance-admin`. A rule that restricts `allowedUsers` only
+allows such an application if it lists `@instance-admin`.
 
 ## Where it's enforced
 
-- **Admission webhook** on CREATE/UPDATE — never DELETE, and an UPDATE
-  that leaves `spec` alone (the operator removing its finalizer, a label
-  edit) is always allowed, so revoking a namespace's access never strands
-  the cleanup of what it already made.
-  `failurePolicy: Fail`: if the webhook is down, these kinds can't be
-  written.
-- **Every reconciler** re-checks before touching Forgejo, so tightening a
-  policy also stops existing CRs (`Ready: False`,
-  `NamespaceNotAllowed`), and a policy change re-reconciles them at once.
+- **At apply time**, by the admission webhook, on create and update.
+  - It never blocks a delete. It also always allows an update that leaves
+    `spec` unchanged, such as a label edit or the operator removing its
+    finalizer. So revoking a namespace's access never prevents the cleanup
+    of what it already created.
+  - With the chart's default `failurePolicy: Fail`, these kinds can't be
+    written while the webhook is down.
+- **Before every change**, by each reconciler. Tightening a policy also
+  stops existing CRs (`Ready: False`, reason `NamespaceNotAllowed`), and a
+  policy change re-checks them right away.
 
-A denied request reads:
+A refused `kubectl apply` reads (the message uses kind names without the
+`Forgejo` prefix):
 
 ```text
 admission webhook "validate.forgejo.weebo.io" denied the request:
 no ForgejoNamespacePolicy rule allows AccessToken in namespace "team-b" with users ["admin-bot"]
 ```
+
+## Next
+
+[Monitoring & troubleshooting](/docs/guides/operations).

@@ -27,7 +27,7 @@
       "type": "boolean"
     },
     "repositoryRef": {
-      "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name (see `.prompt/plan.md`, \"Références\"): a\ncluster-scoped target is looked up cluster-wide, a namespaced one in the\nreferencing CR's own namespace only.",
+      "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw Forgejo name: a cluster-scoped target is looked up\ncluster-wide, a namespaced one in the referencing CR's own namespace only.",
       "properties": {
         "name": {
           "type": "string"
