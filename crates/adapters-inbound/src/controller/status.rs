@@ -8,11 +8,10 @@ use std::fmt::Debug;
 use api::status::{Condition, ForgejoStatus};
 use application::ports::ForgejoRef;
 use application::use_cases::Outcome;
-use domain::error::ReasonCode;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, Patch, PatchParams};
-use kube::runtime::events::{Event, EventType, Recorder};
+use kube::runtime::events::Recorder;
 use kube::{Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -75,47 +74,24 @@ pub fn spec_changed<K: HasStatus + Resource>(obj: &K) -> bool {
 }
 
 pub fn ready_condition(status: Option<&ForgejoStatus>) -> Option<&Condition> {
-    status?.conditions.iter().find(|c| c.type_ == "Ready")
+    weebo_kit_api::status::ready(&status?.conditions)
 }
 
-/// Builds the full condition list: `Ready` first, then one condition per
-/// advisory (its `type` is the reason's name). `lastTransitionTime` only
-/// moves when a condition's status flips.
+/// Builds the full condition list (the kit's: `Ready` first, then one
+/// condition per advisory; `lastTransitionTime` only moves on a flip).
 pub fn conditions(
     previous: &[Condition],
     outcome: &Outcome,
     generation: Option<i64>,
     now: &Time,
 ) -> Vec<Condition> {
-    let condition = |type_: &str, status: &str, reason: ReasonCode, message: &str| {
-        let prev = previous.iter().find(|c| c.type_ == type_);
-        let last_transition_time = match prev {
-            Some(p) if p.status == status => p.last_transition_time.clone(),
-            _ => Some(now.clone()),
-        };
-        Condition {
-            type_: type_.to_string(),
-            status: status.to_string(),
-            reason: reason.as_str().to_string(),
-            message: message.to_string(),
-            last_transition_time,
-            observed_generation: generation,
-        }
-    };
-
-    let mut out = vec![match &outcome.ready {
-        Ok(message) => condition("Ready", "True", ReasonCode::Reconciled, message),
-        Err(f) => condition("Ready", "False", f.reason, &f.message),
-    }];
-    for advisory in &outcome.advisories {
-        out.push(condition(
-            advisory.reason.as_str(),
-            "True",
-            advisory.reason,
-            &advisory.message,
-        ));
-    }
-    out
+    weebo_kit_runtime::conditions::conditions(
+        previous,
+        &outcome.ready,
+        &outcome.advisories,
+        generation,
+        now,
+    )
 }
 
 /// Patches the outcome onto `obj` (freshly read from the API server) and
@@ -131,17 +107,13 @@ pub async fn publish<K>(
 where
     K: Resource<DynamicType = ()> + HasStatus + Clone + Debug + DeserializeOwned + Serialize,
 {
-    let previous = obj.forgejo_status();
+    let previous = obj
+        .forgejo_status()
+        .map(|s| s.conditions.as_slice())
+        .unwrap_or_default();
     let generation = obj.meta().generation;
     let now = Time(Timestamp::now());
-    let conds = conditions(
-        previous
-            .map(|s| s.conditions.as_slice())
-            .unwrap_or_default(),
-        outcome,
-        generation,
-        &now,
-    );
+    let conds = conditions(previous, outcome, generation, &now);
 
     let mut status = serde_json::json!({ "conditions": conds });
     // Only a reconcile that reached the end has observed this generation:
@@ -179,33 +151,20 @@ where
     )
     .await?;
 
-    let before = ready_condition(previous).map(|c| (c.status.as_str(), c.reason.as_str()));
-    let after = (conds[0].status.as_str(), conds[0].reason.as_str());
-    if before != Some(after) {
-        let event = Event {
-            type_: if outcome.ready.is_ok() {
-                EventType::Normal
-            } else {
-                EventType::Warning
-            },
-            reason: conds[0].reason.clone(),
-            // Events cap the note at 1 KiB.
-            note: Some(conds[0].message.chars().take(1000).collect()),
-            action: "Reconcile".to_string(),
-            secondary: None,
-        };
-        // An Event is a courtesy: failing to record one must not fail the
-        // reconcile (and requeue a status patch that already succeeded).
-        if let Err(err) = recorder.publish(&event, &obj.object_ref(&())).await {
-            tracing::warn!(error = %err, "failed to publish event");
-        }
-    }
+    weebo_kit_runtime::conditions::announce_ready_change(
+        recorder,
+        &obj.object_ref(&()),
+        previous,
+        &conds,
+    )
+    .await;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use application::use_cases::{Advisory, Failure};
+    use domain::error::ReasonCode;
 
     use super::*;
 

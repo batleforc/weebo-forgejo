@@ -3,7 +3,10 @@
 
 mod support;
 
+use std::sync::Arc;
+
 use adapters_inbound::webhook::{WebhookState, router};
+use adapters_outbound::KubeClusterReader;
 use api::ForgejoNamespacePolicy;
 use axum::body::Body;
 use http_body_util::BodyExt;
@@ -34,7 +37,7 @@ fn review(namespace: &str, kind: &str, spec: Value) -> Value {
 
 async fn admit(client: &kube::Client, body: Value) -> (bool, String) {
     let app = router(WebhookState {
-        client: client.clone(),
+        policies: Arc::new(KubeClusterReader::new(client.clone())),
     });
     let request = axum::http::Request::post("/validate")
         .header("content-type", "application/json")

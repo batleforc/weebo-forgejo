@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use adapters_inbound::controller::{self, Ctx, Shutdown};
-use adapters_outbound::{ForgejoGatewayFactory, ForgejoSecretStoreFactory};
+use adapters_outbound::{ForgejoGatewayFactory, ForgejoSecretStoreFactory, KubeClusterReader};
 use api::ForgejoInstance;
 use axum::Json;
 use axum::routing::get;
@@ -54,6 +54,8 @@ async fn tls_options_decide_whether_the_instance_is_trusted() {
         client: client.clone(),
         gateways: Arc::new(ForgejoGatewayFactory::new(client.clone(), None)),
         secrets: Arc::new(ForgejoSecretStoreFactory::new(client.clone(), None)),
+        refs: Arc::new(KubeClusterReader::new(client.clone())),
+        policies: Arc::new(KubeClusterReader::new(client.clone())),
         recorder: Recorder::new(
             client.clone(),
             Reporter {

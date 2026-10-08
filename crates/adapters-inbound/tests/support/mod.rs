@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adapters_inbound::controller::{Ctx, Shutdown};
-use adapters_outbound::K8sSecretStore;
+use adapters_outbound::{KubeClusterReader, kubernetes_secret_store};
 use application::test_support::FakeForgejo;
 use kube::Client;
 use kube::runtime::events::{Recorder, Reporter};
@@ -35,8 +35,10 @@ pub async fn harness() -> Harness {
         client: client.clone(),
         gateways: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
         secrets: Arc::new(StaticSecretStoreFactory::new(Arc::new(
-            K8sSecretStore::new(client.clone()),
+            kubernetes_secret_store(client.clone()),
         ))),
+        refs: Arc::new(KubeClusterReader::new(client.clone())),
+        policies: Arc::new(KubeClusterReader::new(client.clone())),
         recorder: Recorder::new(
             client.clone(),
             Reporter {

@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use adapters_inbound::controller::{self, Ctx, Shutdown};
-use adapters_outbound::{ForgejoGatewayFactory, ForgejoHttpGateway, ForgejoSecretStoreFactory};
+use adapters_outbound::{
+    ForgejoGatewayFactory, ForgejoHttpGateway, ForgejoSecretStoreFactory, KubeClusterReader,
+};
 use api::ForgejoInstance;
 use k8s_openapi::api::core::v1::Secret;
 use kube::api::{Api, PostParams};
@@ -139,6 +141,8 @@ pub async fn live_with(options: Options) -> Live {
         client: client.clone(),
         gateways: Arc::new(ForgejoGatewayFactory::new(client.clone(), None)),
         secrets: Arc::new(ForgejoSecretStoreFactory::new(client.clone(), None)),
+        refs: Arc::new(KubeClusterReader::new(client.clone())),
+        policies: Arc::new(KubeClusterReader::new(client.clone())),
         recorder: Recorder::new(
             client.clone(),
             Reporter {

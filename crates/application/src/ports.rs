@@ -10,8 +10,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use api::common::SecretTarget;
-use api::instance::SecretStoreBackend;
+use api::namespace_policy::NamespaceRule;
 use domain::error::ReasonCode;
 
 /// Failure of a Forgejo API call, already classified into the stable
@@ -625,44 +624,84 @@ pub trait GatewayFactory: Send + Sync {
     ) -> Result<Arc<dyn ForgejoGateway>, GatewayFactoryError>;
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("secret store: {0}")]
-pub struct SecretStoreError(pub String);
+/// Secret stores are the kit's: Kubernetes `Secret`s and Vault KV, routed
+/// per target (`weebo_kit_adapters`).
+pub use weebo_kit_application::ports::{SecretStore, SecretStoreError, SecretStoreFactory};
 
-/// Writes emitted secrets (generated passwords and keys, OAuth2
-/// credentials, tokens) to each target's backend. `default_namespace` is
-/// the emitting CR's own namespace, `None` for cluster-scoped CRs (whose
-/// targets must then name one).
-#[async_trait::async_trait]
-pub trait SecretStore: Send + Sync {
-    /// Backend of the implicit target used when a CR lists none
-    /// (`ForgejoInstance.spec.secretStore.backend`).
-    fn default_backend(&self) -> SecretStoreBackend;
-    async fn write(
-        &self,
-        target: &SecretTarget,
-        default_namespace: Option<&str>,
-        data: &BTreeMap<String, String>,
-    ) -> Result<(), SecretStoreError>;
-    async fn exists(
-        &self,
-        target: &SecretTarget,
-        default_namespace: Option<&str>,
-    ) -> Result<bool, SecretStoreError>;
-    async fn delete(
-        &self,
-        target: &SecretTarget,
-        default_namespace: Option<&str>,
-    ) -> Result<(), SecretStoreError>;
+// ── Cluster reads ─────────────────────────────────────────────────────────────
+
+/// A Kubernetes API read (a referenced CR, a `Secret`, the policies)
+/// failed — usually transient, never a spec problem. Retried by the
+/// controller rather than surfaced as a `Ready` reason.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Kubernetes API error: {0}")]
+pub struct ClusterError(pub String);
+
+/// The kinds a `*Ref` field can point at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    User,
+    Organization,
+    Team,
+    Repository,
 }
 
-/// Produces the `SecretStore` of a CR's `instanceRef` (`None` → the
-/// cluster's only `ForgejoInstance`): Kubernetes always, Vault when the
-/// instance configures `secretStore.vault`.
+impl RefKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RefKind::User => "ForgejoUser",
+            RefKind::Organization => "ForgejoOrganization",
+            RefKind::Team => "ForgejoTeam",
+            RefKind::Repository => "ForgejoRepository",
+        }
+    }
+}
+
+/// What a referenced CR says about the Forgejo object behind it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReferencedCr {
+    /// Its `spec.instanceRef`.
+    pub instance_ref: Option<String>,
+    /// `status.forgejoId`/`forgejoName` (`None` while either is missing
+    /// or the id doesn't parse).
+    pub forgejo: Option<ForgejoRef>,
+    /// `status.forgejoName` alone, whatever the id.
+    pub forgejo_name: Option<String>,
+    /// Its `Ready` condition: `(status == "True", reason)`. `None` until
+    /// it was first reconciled.
+    pub ready: Option<(bool, String)>,
+    /// The Forgejo name its spec asks for (`spec.username` of a user,
+    /// `spec.name` otherwise), known before it is ever reconciled.
+    pub spec_name: Option<String>,
+    /// A team's `spec.organizationRef`.
+    pub organization_ref: Option<String>,
+}
+
+/// Read access to what the `*Ref` fields of a CR point at.
 #[async_trait::async_trait]
-pub trait SecretStoreFactory: Send + Sync {
-    async fn store_for(
+pub trait ReferenceReader: Send + Sync {
+    /// `namespace` is the referencing CR's; ignored for cluster-scoped
+    /// kinds. `Ok(None)`: no such CR.
+    async fn referenced(
         &self,
-        instance_ref: Option<&str>,
-    ) -> Result<Arc<dyn SecretStore>, SecretStoreError>;
+        kind: RefKind,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<ReferencedCr>, ClusterError>;
+    /// One key of a `Secret` in `namespace`. `Ok(None)` when the Secret or
+    /// the key is missing.
+    async fn secret_key(
+        &self,
+        namespace: &str,
+        name: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, ClusterError>;
+}
+
+/// The `spec.rules` of every `ForgejoNamespacePolicy`, one entry per
+/// policy (an existing policy with no rule still switches the cluster to
+/// default-deny).
+#[async_trait::async_trait]
+pub trait PolicySource: Send + Sync {
+    async fn policies(&self) -> Result<Vec<Vec<NamespaceRule>>, ClusterError>;
 }

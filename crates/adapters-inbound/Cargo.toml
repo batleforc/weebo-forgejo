@@ -9,6 +9,8 @@ publish.workspace = true
 domain = { workspace = true }
 api = { workspace = true }
 application = { workspace = true }
+weebo-kit-runtime = { workspace = true }
+weebo-kit-api = { workspace = true }
 async-trait = { workspace = true }
 kube = { workspace = true, features = ["admission"] }
 axum = { workspace = true }

@@ -15,6 +15,7 @@ pub mod reconcile_team;
 pub mod reconcile_token;
 pub mod reconcile_user;
 pub mod reconcile_webhook;
+pub mod refs;
 
 use domain::error::ReasonCode;
 
@@ -27,20 +28,7 @@ use crate::ports::{ForgejoGateway, ForgejoRef, GatewayError};
 pub type CleanupGateway<'a> = Result<&'a dyn ForgejoGateway, &'a Failure>;
 
 /// A `Ready: False` cause.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Failure {
-    pub reason: ReasonCode,
-    pub message: String,
-}
-
-impl Failure {
-    pub fn new(reason: ReasonCode, message: impl Into<String>) -> Self {
-        Self {
-            reason,
-            message: message.into(),
-        }
-    }
-}
+pub type Failure = weebo_kit_domain::Failure<ReasonCode>;
 
 impl From<GatewayError> for Failure {
     fn from(err: GatewayError) -> Self {
@@ -50,11 +38,7 @@ impl From<GatewayError> for Failure {
 
 /// A non-blocking condition shown next to `Ready: True` (its `type` is the
 /// reason's name).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Advisory {
-    pub reason: ReasonCode,
-    pub message: String,
-}
+pub type Advisory = weebo_kit_domain::Advisory<ReasonCode>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {

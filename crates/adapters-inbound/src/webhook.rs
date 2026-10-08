@@ -14,14 +14,15 @@ use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use domain::error::ReasonCode;
-use kube::Client;
 use kube::core::DynamicObject;
 use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::Counter;
 use serde::de::DeserializeOwned;
 
-use crate::admission::{Governed, policies};
+use application::ports::PolicySource;
+use application::use_cases::admission::Governed;
+use std::sync::Arc;
 
 static DECISIONS: LazyLock<Counter<u64>> = LazyLock::new(|| {
     opentelemetry::global::meter("weebo-forgejo-operator")
@@ -32,7 +33,7 @@ static DECISIONS: LazyLock<Counter<u64>> = LazyLock::new(|| {
 
 #[derive(Clone)]
 pub struct WebhookState {
-    pub client: Client,
+    pub policies: Arc<dyn PolicySource>,
 }
 
 pub fn router(state: WebhookState) -> Router {
@@ -50,7 +51,7 @@ async fn validate(
         return Json(AdmissionResponse::invalid("AdmissionReview without a request").into_review());
     };
     let kind = req.kind.kind.clone();
-    let decision = decide(&state.client, &req).await;
+    let decision = decide(state.policies.as_ref(), &req).await;
     DECISIONS.add(
         1,
         &[
@@ -71,7 +72,10 @@ async fn validate(
 
 /// `Err` carries the denial message. Anything this webhook can't
 /// understand fails closed.
-async fn decide(client: &Client, req: &AdmissionRequest<DynamicObject>) -> Result<(), String> {
+async fn decide(
+    policies: &dyn PolicySource,
+    req: &AdmissionRequest<DynamicObject>,
+) -> Result<(), String> {
     let namespace = req.namespace.clone().unwrap_or_default();
     let Some(object) = req.object.as_ref() else {
         return Err("request carries no object".into());
@@ -95,16 +99,11 @@ async fn decide(client: &Client, req: &AdmissionRequest<DynamicObject>) -> Resul
         other => return Err(format!("kind {other} is not handled by this webhook")),
     }?;
     let (kind, organizations, users) = refs;
-    let policies = policies(client).await.map_err(|e| {
+    let policies = policies.policies().await.map_err(|e| {
         tracing::error!(error = %e, "listing ForgejoNamespacePolicy failed");
         "ForgejoNamespacePolicy lookup failed".to_string()
     })?;
-    let request = domain::allow_list::Request {
-        namespace: &namespace,
-        kind,
-        organizations: &organizations,
-        users: &users,
-    };
+    let request = domain::allow_list::request(&namespace, kind, &organizations, &users);
     application::use_cases::admission::check(&request, &policies).map_err(|f| f.message)
 }
 
@@ -126,9 +125,11 @@ fn references<K: Governed + DeserializeOwned>(object: &DynamicObject) -> Result<
 mod tests {
     use super::*;
 
-    fn unreachable_client() -> Client {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        Client::try_from(kube::Config::new("http://127.0.0.1:1".parse().unwrap())).unwrap()
+    /// No policy lookup can succeed, as with an unreachable apiserver.
+    fn unreachable_cluster() -> Arc<dyn PolicySource> {
+        let cluster = application::test_support::FakeCluster::default();
+        cluster.fail_with("connection refused");
+        Arc::new(cluster)
     }
 
     fn review(kind: &str, object: serde_json::Value) -> AdmissionReview<DynamicObject> {
@@ -150,7 +151,7 @@ mod tests {
 
     async fn run(review: AdmissionReview<DynamicObject>) -> AdmissionResponse {
         let state = WebhookState {
-            client: unreachable_client(),
+            policies: unreachable_cluster(),
         };
         validate(State(state), Json(review))
             .await

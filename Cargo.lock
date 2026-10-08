@@ -31,6 +31,8 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "weebo-kit-api",
+ "weebo-kit-runtime",
  "wiremock",
 ]
 
@@ -49,8 +51,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "uuid",
- "vaultrs",
+ "weebo-kit-adapters",
  "wiremock",
 ]
 
@@ -169,6 +170,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
+ "weebo-kit-api",
 ]
 
 [[package]]
@@ -179,10 +181,13 @@ dependencies = [
  "async-trait",
  "domain",
  "rand 0.9.5",
+ "serde_json",
  "sha2",
  "ssh-key",
  "thiserror 2.0.21",
  "tokio",
+ "weebo-kit-application",
+ "weebo-kit-domain",
 ]
 
 [[package]]
@@ -1147,6 +1152,9 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.1.0"
+dependencies = [
+ "weebo-kit-domain",
+]
 
 [[package]]
 name = "dunce"
@@ -2631,14 +2639,9 @@ dependencies = [
  "anyhow",
  "api",
  "application",
- "axum-server",
  "futures",
  "k8s-openapi",
  "kube",
- "kube-leader-election",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "rcgen",
  "reqwest",
  "rustls",
@@ -2646,9 +2649,8 @@ dependencies = [
  "testkit",
  "tokio",
  "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
  "uuid",
+ "weebo-kit-runtime",
  "wiremock",
 ]
 
@@ -4038,12 +4040,10 @@ version = "0.1.0"
 dependencies = [
  "application",
  "async-trait",
- "envtest",
  "kube",
- "rustls",
  "serde",
- "serde_norway",
  "tokio",
+ "weebo-kit-testkit",
 ]
 
 [[package]]
@@ -4674,6 +4674,77 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "weebo-kit-adapters"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "k8s-openapi",
+ "kube",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "vaultrs",
+ "weebo-kit-api",
+ "weebo-kit-application",
+]
+
+[[package]]
+name = "weebo-kit-api"
+version = "0.1.0"
+dependencies = [
+ "k8s-openapi",
+ "schemars",
+ "serde",
+]
+
+[[package]]
+name = "weebo-kit-application"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror 2.0.21",
+ "weebo-kit-api",
+]
+
+[[package]]
+name = "weebo-kit-domain"
+version = "0.1.0"
+
+[[package]]
+name = "weebo-kit-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "kube-leader-election",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "weebo-kit-api",
+ "weebo-kit-domain",
+]
+
+[[package]]
+name = "weebo-kit-testkit"
+version = "0.1.0"
+dependencies = [
+ "envtest",
+ "kube",
+ "rustls",
+ "serde",
+ "serde_norway",
+ "tokio",
 ]
 
 [[package]]

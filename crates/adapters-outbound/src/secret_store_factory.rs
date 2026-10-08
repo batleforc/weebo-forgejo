@@ -1,49 +1,44 @@
-//! Builds the per-instance `RoutingSecretStore`. The Vault login is cached
-//! per instance for 80% of its lease (each login mints a Vault token that
-//! lives its whole TTL — logging in on every reconcile churned tokens), and
-//! rebuilt when the instance's Vault settings change.
+//! Builds the per-instance `RoutingSecretStore` (the kit's) from a
+//! `ForgejoInstance`'s `secretStore`. Vault logins are cached per instance
+//! by the kit's `VaultLogins`.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 use api::ForgejoInstance;
 use api::instance::VaultSecretStoreSpec;
 use application::ports::{SecretStore, SecretStoreError, SecretStoreFactory};
 use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt};
-use tokio::sync::Mutex;
+use weebo_kit_adapters::{
+    K8sSecretStore, RoutingSecretStore, VaultConfig, VaultLogins, VaultSecretStore, read_secret_key,
+};
 
 use crate::instance_resolver::InstanceResolver;
-use crate::secret_k8s::K8sSecretStore;
-use crate::secret_ref::read_secret_key;
-use crate::secret_routing::RoutingSecretStore;
-use crate::secret_vault::VaultSecretStore;
 
-/// The operator's projected ServiceAccount token, exchanged for a Vault
-/// token. Overridable for tests and unusual mounts.
-const DEFAULT_JWT_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+/// Server-side-apply manager of the `Secret`s this operator emits.
+pub const FIELD_MANAGER: &str = "weebo-forgejo-operator";
+/// `app.kubernetes.io/managed-by` of the `Secret`s this operator emits.
+pub const MANAGED_BY: &str = "weebo-forgejo";
 
-struct CachedVault {
-    spec: VaultSecretStoreSpec,
-    store: Arc<VaultSecretStore>,
-    expires: Instant,
+/// The Kubernetes secret store, labelled as this operator's.
+pub fn kubernetes_secret_store(client: Client) -> K8sSecretStore {
+    K8sSecretStore::new(client, FIELD_MANAGER, MANAGED_BY)
 }
 
 pub struct ForgejoSecretStoreFactory {
     client: Client,
     instances: InstanceResolver,
     kubernetes: Arc<K8sSecretStore>,
-    vault: Mutex<HashMap<String, CachedVault>>,
+    vault: VaultLogins,
 }
 
 impl ForgejoSecretStoreFactory {
     pub fn new(client: Client, store: Option<Store<ForgejoInstance>>) -> Self {
         Self {
             instances: InstanceResolver::new(client.clone(), store),
-            kubernetes: Arc::new(K8sSecretStore::new(client.clone())),
+            kubernetes: Arc::new(kubernetes_secret_store(client.clone())),
             client,
-            vault: Mutex::new(HashMap::new()),
+            vault: VaultLogins::default(),
         }
     }
 
@@ -52,49 +47,33 @@ impl ForgejoSecretStoreFactory {
         instance: &ForgejoInstance,
         spec: &VaultSecretStoreSpec,
     ) -> Result<Arc<VaultSecretStore>, String> {
-        let key = instance.name_any();
-        let mut cache = self.vault.lock().await;
-        if let Some(cached) = cache.get(&key)
-            && cached.spec == *spec
-            && cached.expires > Instant::now()
-        {
-            return Ok(cached.store.clone());
-        }
-
-        let jwt_path =
-            std::env::var("VAULT_KUBERNETES_JWT_PATH").unwrap_or_else(|_| DEFAULT_JWT_PATH.into());
-        let jwt = std::fs::read_to_string(&jwt_path)
-            .map_err(|e| format!("reading the ServiceAccount token {jwt_path}: {e}"))?;
-        let ca = match &spec.ca_secret_ref {
-            Some(r) => Some(read_secret_key(&self.client, r).await?.ok_or_else(|| {
-                format!(
-                    "Vault caSecretRef {}/{} has no key {:?}",
-                    r.namespace, r.name, r.key
-                )
-            })?),
-            None => None,
+        let config = VaultConfig {
+            address: spec.address.clone(),
+            mount: spec.mount.clone(),
+            path_prefix: spec.path_prefix.clone(),
+            kubernetes_auth_role: spec.kubernetes_auth_role.clone(),
+            kubernetes_auth_mount: spec.kubernetes_auth_mount.clone(),
+            ca_source: spec
+                .ca_secret_ref
+                .as_ref()
+                .map(|r| format!("{}/{}/{}", r.namespace, r.name, r.key)),
         };
-        let store = Arc::new(
-            VaultSecretStore::new(spec, &jwt, ca.as_deref())
-                .await
-                .map_err(|e| e.0)?,
-        );
-        match store.cache_ttl() {
-            Some(ttl) => {
-                cache.insert(
-                    key,
-                    CachedVault {
-                        spec: spec.clone(),
-                        store: store.clone(),
-                        expires: Instant::now() + ttl,
-                    },
-                );
-            }
-            None => {
-                cache.remove(&key);
-            }
-        }
-        Ok(store)
+        self.vault
+            .get(&instance.name_any(), &config, || async {
+                match &spec.ca_secret_ref {
+                    Some(r) => read_secret_key(&self.client, r)
+                        .await?
+                        .map(Some)
+                        .ok_or_else(|| {
+                            format!(
+                                "Vault caSecretRef {}/{} has no key {:?}",
+                                r.namespace, r.name, r.key
+                            )
+                        }),
+                    None => Ok(None),
+                }
+            })
+            .await
     }
 }
 
@@ -117,10 +96,10 @@ impl SecretStoreFactory for ForgejoSecretStoreFactory {
                 instance.name_any()
             )),
         };
-        Ok(Arc::new(RoutingSecretStore {
-            kubernetes: self.kubernetes.clone(),
+        Ok(Arc::new(RoutingSecretStore::new(
+            self.kubernetes.clone(),
             vault,
-            default_backend: store_spec.backend,
-        }))
+            store_spec.backend,
+        )))
     }
 }

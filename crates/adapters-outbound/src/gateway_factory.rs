@@ -9,7 +9,7 @@ use kube::{Client, ResourceExt};
 
 use crate::forgejo_http::ForgejoHttpGateway;
 use crate::instance_resolver::InstanceResolver;
-use crate::secret_ref::read_secret_key;
+use weebo_kit_adapters::read_secret_key;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Forgejo clones synchronously inside `POST /repos/migrate` (and

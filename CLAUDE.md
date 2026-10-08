@@ -11,14 +11,27 @@ change; this section is only an index.
 
 ## Architecture (hexagonal)
 
+Shared plumbing lives in **weebo-operator-kit** (sibling repo,
+`../weebo-operator-kit`, see its `docs/plan.md`): reason-code machinery,
+allow-list engine, shared CRD field types, secret stores (Kubernetes,
+Vault), telemetry, leader election, webhook TLS server, conditions/Events,
+metrics, envtest. The crates below keep only what is Forgejo-specific and
+re-export the kit where their callers expect it. Fix shared behaviour in
+the kit, not here. The kit is a `path` dependency for now — switch to a
+git tag before pushing (CI and container builds don't see the sibling).
+
 - `crates/domain` — pure logic (`ReasonCode` catalog, conditions). Zero
   `kube`/`http` dependency.
 - `crates/api` — the CRD types (`kube::CustomResource` derives).
-- `crates/application` — `reconcile_*` use-cases + port traits (`ports.rs`).
+- `crates/application` — `reconcile_*` use-cases + port traits (`ports.rs`),
+  `*Ref` resolution (`use_cases/refs.rs`, over `ReferenceReader`) and the
+  allow-list check shared by webhook and reconcilers
+  (`use_cases/admission.rs`, over `PolicySource`).
 - `crates/adapters-inbound` — kube-runtime controllers, admission webhook
-  (`webhook.rs`) and the allow-list lookup it shares with the reconcilers
-  (`admission.rs`), reconcile metrics.
-- `crates/adapters-outbound` — `ForgejoHttpGateway` over `forgejo-client`.
+  (`webhook.rs`), reconcile metrics. No cluster reads of their own beyond
+  the CR being reconciled: those go through the ports.
+- `crates/adapters-outbound` — `ForgejoHttpGateway` over `forgejo-client`,
+  secret stores, `KubeClusterReader` (the two cluster-read ports).
 - `crates/forgejo-client` — **generated, never hand-edited**: openapi-generator
   output from `spec/forgejo-v*.json` + `spec/patches/*.jq`
   (`task gen:client`; `task gen:bump FORGEJO_VERSION=x.y.z` to move release).

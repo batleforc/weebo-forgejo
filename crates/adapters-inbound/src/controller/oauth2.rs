@@ -2,8 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoOAuth2Application, ForgejoUser};
-use application::ports::ForgejoRef;
+use application::ports::{ForgejoRef, RefKind};
+use application::use_cases::admission::enforce;
 use application::use_cases::reconcile_oauth2::{OAuth2Input, cleanup_oauth2, reconcile_oauth2};
+use application::use_cases::refs::resolve_required;
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
 use kube::api::Api;
@@ -13,7 +15,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{require, resolve};
 use super::status::{current_ref, owner_id, secret_pending};
 use super::{
     Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, rotate_nonce,
@@ -86,9 +87,16 @@ async fn owner(
     let Some(owner_ref) = &app.spec.owner_ref else {
         return Ok(Ok(None));
     };
-    let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
-    let state = resolve(&users, &owner_ref.name, app.spec.instance_ref.as_deref()).await?;
-    Ok(require("ForgejoUser", &owner_ref.name, state).map(Some))
+    let ns = app.namespace().unwrap_or_default();
+    let instance = app.spec.instance_ref.as_deref();
+    let user = resolve_required(
+        ctx.refs.as_ref(),
+        RefKind::User,
+        &ns,
+        &owner_ref.name,
+        instance,
+    );
+    Ok(user.await?.map(Some))
 }
 
 async fn apply(
@@ -102,7 +110,7 @@ async fn apply(
     let (name, ns) = (current.name_any(), current.namespace().unwrap_or_default());
 
     let namespace = current.namespace().unwrap_or_default();
-    let outcome = match crate::admission::enforce(&ctx.client, &namespace, &current).await? {
+    let outcome = match enforce(ctx.policies.as_ref(), &namespace, &current).await? {
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
         Ok(()) => match owner(&current, ctx).await? {

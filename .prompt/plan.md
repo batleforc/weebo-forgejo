@@ -459,6 +459,13 @@ Identique à authentik :
 
 ## Architecture hexagonale
 
+La plomberie commune aux opérateurs weebo vit dans
+**weebo-operator-kit** (repo voisin, plan dans son `docs/plan.md`) :
+codes de raison, moteur d'allow-list, sous-types de CRD partagés,
+secret stores Kubernetes/Vault, télémétrie, leader election, serveur
+webhook TLS, conditions/Events, métriques, envtest. Les crates
+ci-dessous n'en gardent que la partie propre à Forgejo.
+
 Workspace Cargo (edition 2024), versions centralisées dans
 `[workspace.dependencies]` :
 
@@ -468,17 +475,22 @@ Workspace Cargo (edition 2024), versions centralisées dans
   plate + discriminant (`kind`/`backend`), jamais enum taggé (kube-core
   panique au merge de schema).
 - `crates/application` — use-cases `reconcile_*`, ports
-  (`ForgejoGateway`, `SecretStore`, factories).
+  (`ForgejoGateway`, `SecretStore`, factories, `ReferenceReader`,
+  `PolicySource`). La résolution des `*Ref` (`use_cases/refs`) et
+  l'allow-list (`use_cases/admission`) y vivent ; l'import n'y produit que
+  des noms + specs + objet Forgejo à posséder, jamais de CR.
 - `crates/adapters-inbound` — un controller kube.rs par CRD + webhook axum.
+  Aucune lecture cluster hors du CR réconcilié : tout passe par les ports.
 - `crates/adapters-outbound` — `ForgejoHttpGateway` (wrap
   `forgejo-client`, un fichier par ressource, gestion du header `Sudo`),
-  `K8sSecretStore`, `VaultSecretStore`, fan-out.
+  `K8sSecretStore`, `VaultSecretStore`, fan-out, `KubeClusterReader`.
 - `crates/forgejo-client` — **client généré** (cf. ci-dessous), commité.
 - `crates/operator` — binaire (wiring, leader election, TLS webhook, otel).
 - `crates/crdgen` — génère `deploy/crd/*.yaml`.
 - `crates/importer` — CLI `weebo-forgejo-importer` : lit un Forgejo réel
-  (port `ForgejoInventory`), émet le YAML des CR ou les crée avec
-  `forgejoId` amorcé (chemin d'adoption).
+  (port `ForgejoInventory`), construit les CR (`manifests` : namespace,
+  status amorcé, annotation de propriétaire des clés), émet leur YAML ou
+  les crée avec `forgejoId` amorcé (chemin d'adoption).
 - `crates/testkit` — envtest, mock wiremock, factories statiques.
 
 ### Client Forgejo généré

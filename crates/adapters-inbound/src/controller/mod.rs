@@ -1,14 +1,14 @@
 //! One `kube::runtime::Controller` per CRD. Each controller resolves the
-//! gateway and the `*Ref` fields (Kubernetes-side work), hands a plain
-//! input to its `application::use_cases::reconcile_*`, and publishes the
-//! resulting `Outcome` through [`status::publish`].
+//! gateway and the `*Ref` fields (through the `ReferenceReader` port and
+//! `application::use_cases::refs`), hands a plain input to its
+//! `application::use_cases::reconcile_*`, and publishes the resulting
+//! `Outcome` through [`status::publish`].
 
 pub mod deploy_key;
 pub mod instance;
 pub mod namespace_policy;
 pub mod oauth2;
 pub mod organization;
-pub mod refs;
 pub mod repository;
 pub mod status;
 pub mod team;
@@ -20,10 +20,9 @@ pub mod webhook;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::FutureExt;
-use futures::future::{BoxFuture, Shared};
-
-use application::ports::{GatewayFactory, SecretStoreFactory};
+use application::ports::{
+    ClusterError, GatewayFactory, PolicySource, ReferenceReader, SecretStoreFactory,
+};
 use application::use_cases::Outcome;
 use kube::Client;
 use kube::api::{Api, Patch, PatchParams};
@@ -36,11 +35,16 @@ pub use api::KEY_OWNER_ANNOTATION;
 
 /// Shared by every controller. Concrete adapters are built and injected
 /// once in `operator::main` (or by a test) — no controller names
-/// `ForgejoHttpGateway`/`K8sSecretStore` directly.
+/// `ForgejoHttpGateway`/`K8sSecretStore` directly. `client` only serves
+/// the CRs' own lifecycle (finalizers, status, annotations, events).
 pub struct Ctx {
     pub client: Client,
     pub gateways: Arc<dyn GatewayFactory>,
     pub secrets: Arc<dyn SecretStoreFactory>,
+    /// What the `*Ref` fields point at.
+    pub refs: Arc<dyn ReferenceReader>,
+    /// The `ForgejoNamespacePolicy` rules, re-checked before any Forgejo call.
+    pub policies: Arc<dyn PolicySource>,
     pub recorder: Recorder,
     pub shutdown: Shutdown,
 }
@@ -48,28 +52,14 @@ pub struct Ctx {
 /// Resolves once the process is asked to stop: every controller then stops
 /// taking new work, lets its in-flight reconciles finish, and its `run`
 /// returns (`Controller::graceful_shutdown_on`).
-#[derive(Clone)]
-pub struct Shutdown(Shared<BoxFuture<'static, ()>>);
-
-impl Shutdown {
-    pub fn new(trigger: impl Future<Output = ()> + Send + 'static) -> Self {
-        Self(trigger.boxed().shared())
-    }
-
-    /// For tests and tools whose controllers run until dropped.
-    pub fn never() -> Self {
-        Self::new(futures::future::pending())
-    }
-
-    pub fn wait(&self) -> impl Future<Output = ()> + Send + Sync + 'static {
-        self.0.clone()
-    }
-}
+pub use weebo_kit_runtime::Shutdown;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("kube error: {0}")]
     Kube(#[from] kube::Error),
+    #[error(transparent)]
+    Cluster(#[from] ClusterError),
     #[error("finalizer error: {0}")]
     Finalizer(String),
     /// A finalizer cleanup that couldn't complete: the CR stays until it

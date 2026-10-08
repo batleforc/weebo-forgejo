@@ -2,10 +2,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoOrganization, ForgejoRepository, ForgejoWebhook};
-use application::ports::HookTarget;
+use application::ports::{HookTarget, RefKind};
+use application::use_cases::admission::enforce;
 use application::use_cases::reconcile_webhook::{
     WebhookInput, cleanup_webhook, reconcile_webhook, validate,
 };
+use application::use_cases::refs::{read_secret_key, resolve_required};
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
 use kube::api::Api;
@@ -15,7 +17,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{read_secret_key, require, resolve};
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
@@ -116,7 +117,7 @@ async fn apply(
     let owned = current_ref(&current);
 
     let namespace = current.namespace().unwrap_or_default();
-    let outcome = match crate::admission::enforce(&ctx.client, &namespace, &current).await? {
+    let outcome = match enforce(ctx.policies.as_ref(), &namespace, &current).await? {
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
         Ok(()) => match resolve_inputs(&current, ctx).await? {
@@ -164,14 +165,10 @@ async fn resolve_inputs(
     }
     let ns = hook.namespace().unwrap_or_default();
     let instance = spec.instance_ref.as_deref();
+    let refs = ctx.refs.as_ref();
 
     let target = if let Some(repo) = &spec.repository_ref {
-        let repos: Api<ForgejoRepository> = Api::namespaced(ctx.client.clone(), &ns);
-        match require(
-            "ForgejoRepository",
-            &repo.name,
-            resolve(&repos, &repo.name, instance).await?,
-        ) {
+        match resolve_required(refs, RefKind::Repository, &ns, &repo.name, instance).await? {
             Ok(r) => {
                 let (owner, name) = r.name.split_once('/').unwrap_or(("", &r.name));
                 HookTarget::Repository {
@@ -186,12 +183,7 @@ async fn resolve_inputs(
             .organization_ref
             .as_ref()
             .expect("validated: exactly one target");
-        let orgs: Api<ForgejoOrganization> = Api::all(ctx.client.clone());
-        match require(
-            "ForgejoOrganization",
-            &org.name,
-            resolve(&orgs, &org.name, instance).await?,
-        ) {
+        match resolve_required(refs, RefKind::Organization, &ns, &org.name, instance).await? {
             Ok(r) => HookTarget::Organization(r.name),
             Err(f) => return Ok(Err(f)),
         }
@@ -203,7 +195,7 @@ async fn resolve_inputs(
         .zip([&spec.secret_ref, &spec.authorization_header_secret_ref])
     {
         if let Some(r) = secret_ref {
-            match read_secret_key(&ctx.client, &ns, &r.name, &r.key).await? {
+            match read_secret_key(refs, &ns, &r.name, &r.key).await? {
                 Ok(v) => *slot = Some(v),
                 Err(f) => return Ok(Err(f)),
             }

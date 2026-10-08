@@ -9,7 +9,7 @@ use adapters_outbound::ForgejoHttpGateway;
 use api::common::ObjectRef;
 use application::ports::{
     DesiredHook, DesiredOrganization, DesiredRepository, DesiredTeam, DesiredUser, ForgejoGateway,
-    ForgejoInventory, ForgejoRef, HookTarget, ProtectionRule, RepositoryInitOptions,
+    ForgejoInventory, HookTarget, ProtectionRule, RepositoryInitOptions,
 };
 use application::use_cases::import::{ImportOptions, import};
 use application::use_cases::{
@@ -25,14 +25,6 @@ fn gateway() -> ForgejoHttpGateway {
     let token = std::env::var("FORGEJO_TOKEN").expect("FORGEJO_TOKEN");
     let (api, web) = api::instance::split_urls(&url);
     ForgejoHttpGateway::new(api, web, token, reqwest::Client::new())
-}
-
-fn current(status: &Option<api::ForgejoStatus>) -> Option<ForgejoRef> {
-    let s = status.as_ref()?;
-    Some(ForgejoRef {
-        id: s.forgejo_id.as_ref()?.parse().ok()?,
-        name: s.forgejo_name.clone()?,
-    })
 }
 
 #[tokio::test]
@@ -141,7 +133,6 @@ async fn import_round_trips_a_live_organization() {
     let out = import(
         &g,
         &ImportOptions {
-            namespace: "default".into(),
             owners: vec![org_name.clone()],
             ..Default::default()
         },
@@ -158,7 +149,7 @@ async fn import_round_trips_a_live_organization() {
         }]
     );
     let r = &out.repositories[0];
-    assert_eq!(current(&r.status).unwrap().id, created.id);
+    assert_eq!(r.forgejo.id, created.id);
     assert!(r.spec.private);
     assert_eq!(
         r.spec.team_refs,
@@ -175,14 +166,14 @@ async fn import_round_trips_a_live_organization() {
     assert_eq!(h.spec.branch_filter.as_deref(), Some("main"));
     assert!(!h.spec.extra_config.contains_key("secret"));
     let k = &out.deploy_keys[0];
-    assert_eq!(current(&k.status).unwrap().id, key.id);
+    assert_eq!(k.key.forgejo.id, key.id);
 
     // Reconciling the imported CRs adopts everything in place.
     let o = &out.organizations[0];
     let outcome = org::reconcile_organization(
         org::OrganizationInput {
             spec: &o.spec,
-            current: current(&o.status),
+            current: Some(o.forgejo.clone()),
             owner: None,
         },
         &g,
@@ -192,7 +183,7 @@ async fn import_round_trips_a_live_organization() {
     let outcome = team::reconcile_team(
         team::TeamInput {
             spec: &t.spec,
-            current: current(&t.status),
+            current: Some(t.forgejo.clone()),
             organization: org_name.clone(),
             organization_id: None,
             members: vec![team::Member::Ready(login.clone())],
@@ -206,7 +197,7 @@ async fn import_round_trips_a_live_organization() {
     let outcome = repo::reconcile_repository(
         repo::RepositoryInput {
             spec: &r.spec,
-            current: current(&r.status),
+            current: Some(r.forgejo.clone()),
             owner: repo::Owner::Organization(org_name.clone()),
             source: Err(application::use_cases::Failure::new(
                 domain::error::ReasonCode::ReferenceNotReady,
@@ -223,7 +214,7 @@ async fn import_round_trips_a_live_organization() {
     let outcome = hook::reconcile_webhook(
         hook::WebhookInput {
             spec: &h.spec,
-            current: current(&h.status),
+            current: Some(h.forgejo.clone()),
             target: target.clone(),
             secret: None,
             authorization_header: None,

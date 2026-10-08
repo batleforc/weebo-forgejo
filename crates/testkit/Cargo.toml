@@ -11,6 +11,4 @@ kube = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }
-envtest = { workspace = true }
-rustls = { workspace = true }
-serde_norway = { workspace = true }
+weebo-kit-testkit = { workspace = true }

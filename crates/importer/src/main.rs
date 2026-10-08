@@ -8,7 +8,7 @@ use adapters_outbound::forgejo_http::ForgejoHttpGateway;
 use anyhow::Context;
 use application::use_cases::import::{Existing, ImportOptions, import};
 use clap::Parser;
-use importer::{apply_all, existing, to_yaml};
+use importer::{apply_all, existing, manifests, to_yaml};
 use kube::Client;
 
 #[derive(Parser, Debug)]
@@ -71,7 +71,6 @@ async fn main() -> anyhow::Result<()> {
     };
     let options = ImportOptions {
         instance_ref: args.instance_ref,
-        namespace: args.namespace,
         owners: args.owners,
         manage_users: args.manage_users,
         existing,
@@ -82,9 +81,10 @@ async fn main() -> anyhow::Result<()> {
     for warning in &imported.warnings {
         eprintln!("warning: {warning}");
     }
+    let crs = manifests(&imported, &args.namespace);
 
     if let Some(client) = client {
-        let s = apply_all(&client, &imported).await;
+        let s = apply_all(&client, &crs).await;
         eprintln!(
             "{} adopted, {} already adopted, {} failed",
             s.adopted, s.skipped, s.failed
@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
         anyhow::ensure!(s.failed == 0, "{} CR(s) could not be imported", s.failed);
         Ok(())
     } else {
-        print!("{}", to_yaml(&imported)?);
+        print!("{}", to_yaml(&crs)?);
         Ok(())
     }
 }

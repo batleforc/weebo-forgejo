@@ -3,11 +3,13 @@ use std::time::Instant;
 
 use api::repository::ForgejoRepositorySpec;
 use api::{ForgejoOrganization, ForgejoRepository, ForgejoTeam, ForgejoUser};
-use application::ports::{GenerateOptions, MigrateOptions};
+use application::ports::{GenerateOptions, MigrateOptions, RefKind};
+use application::use_cases::admission::enforce;
 use application::use_cases::reconcile_repository::{
     Owner, RepositoryInput, Source, cleanup_repository, init_options, reconcile_repository,
     validate,
 };
+use application::use_cases::refs::{read_secret_key, resolve_required, resolve_team};
 use application::use_cases::{Failure, Outcome};
 use domain::error::ReasonCode;
 use futures::StreamExt;
@@ -18,7 +20,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{read_secret_key, require, resolve};
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
@@ -149,7 +150,7 @@ async fn apply(
     let owned = current_ref(&current);
 
     let namespace = current.namespace().unwrap_or_default();
-    let outcome = match crate::admission::enforce(&ctx.client, &namespace, &current).await? {
+    let outcome = match enforce(ctx.policies.as_ref(), &namespace, &current).await? {
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
         Ok(()) => match resolve_inputs(&current, owned.is_none(), ctx).await? {
@@ -195,14 +196,10 @@ async fn resolve_inputs(
     }
     let instance = spec.instance_ref.as_deref();
     let ns = repo.namespace().unwrap_or_default();
+    let refs = ctx.refs.as_ref();
 
     let owner = if let Some(org) = &spec.organization_ref {
-        let orgs: Api<ForgejoOrganization> = Api::all(ctx.client.clone());
-        match require(
-            "ForgejoOrganization",
-            &org.name,
-            resolve(&orgs, &org.name, instance).await?,
-        ) {
+        match resolve_required(refs, RefKind::Organization, &ns, &org.name, instance).await? {
             Ok(r) => Owner::Organization(r.name),
             Err(f) => return Ok(Err(f)),
         }
@@ -211,12 +208,7 @@ async fn resolve_inputs(
             .user_ref
             .as_ref()
             .expect("validated: exactly one owner");
-        let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
-        match require(
-            "ForgejoUser",
-            &user.name,
-            resolve(&users, &user.name, instance).await?,
-        ) {
+        match resolve_required(refs, RefKind::User, &ns, &user.name, instance).await? {
             Ok(r) => Owner::User(r.name),
             Err(f) => return Ok(Err(f)),
         }
@@ -242,26 +234,12 @@ async fn resolve_inputs(
     };
 
     let mut teams = Vec::with_capacity(spec.team_refs.len());
-    let teams_api: Api<ForgejoTeam> = Api::all(ctx.client.clone());
+    let org = spec.organization_ref.as_ref().map(|o| o.name.as_str());
     for team_ref in &spec.team_refs {
-        let state = resolve(&teams_api, &team_ref.name, instance).await?;
-        let team = match require("ForgejoTeam", &team_ref.name, state) {
-            Ok(t) => t,
+        match resolve_team(refs, &team_ref.name, org, instance).await? {
+            Ok(team) => teams.push(team.name),
             Err(f) => return Ok(Err(f)),
-        };
-        // Ready implies the CR exists; its org must be the repository's.
-        let cr = teams_api.get(&team_ref.name).await?;
-        let org = spec.organization_ref.as_ref().map(|o| o.name.as_str());
-        if Some(cr.spec.organization_ref.name.as_str()) != org {
-            return Ok(Err(Failure::new(
-                ReasonCode::InvalidSpec,
-                format!(
-                    "ForgejoTeam {:?} belongs to ForgejoOrganization {:?}, not this repository's owner",
-                    team_ref.name, cr.spec.organization_ref.name
-                ),
-            )));
         }
-        teams.push(team.name);
     }
     Ok(Ok((owner, source, teams)))
 }
@@ -272,24 +250,23 @@ async fn source(
     ctx: &Ctx,
 ) -> Result<Result<Source, Failure>, Error> {
     if let Some(t) = &spec.from_template {
-        let repos: Api<ForgejoRepository> = Api::namespaced(ctx.client.clone(), ns);
-        let state = resolve(&repos, &t.repository_ref.name, spec.instance_ref.as_deref()).await?;
-        return Ok(
-            require("ForgejoRepository", &t.repository_ref.name, state).map(|r| {
-                Source::Template(
-                    r.name,
-                    GenerateOptions {
-                        git_content: t.git_content,
-                        topics: t.topics,
-                        labels: t.labels,
-                        webhooks: t.webhooks,
-                        protected_branches: t.protected_branches,
-                        git_hooks: t.git_hooks,
-                        avatar: t.avatar,
-                    },
-                )
-            }),
-        );
+        let name = &t.repository_ref.name;
+        let instance = spec.instance_ref.as_deref();
+        let template = resolve_required(ctx.refs.as_ref(), RefKind::Repository, ns, name, instance);
+        return Ok(template.await?.map(|r| {
+            Source::Template(
+                r.name,
+                GenerateOptions {
+                    git_content: t.git_content,
+                    topics: t.topics,
+                    labels: t.labels,
+                    webhooks: t.webhooks,
+                    protected_branches: t.protected_branches,
+                    git_hooks: t.git_hooks,
+                    avatar: t.avatar,
+                },
+            )
+        }));
     }
     if let Some(m) = &spec.migrate {
         let mut options = MigrateOptions {
@@ -313,7 +290,7 @@ async fn source(
                 (&auth.token_key, &mut options.auth_token),
             ] {
                 if let Some(key) = key {
-                    match read_secret_key(&ctx.client, ns, &auth.name, key).await? {
+                    match read_secret_key(ctx.refs.as_ref(), ns, &auth.name, key).await? {
                         Ok(v) => *slot = Some(v),
                         Err(f) => return Ok(Err(f)),
                     }

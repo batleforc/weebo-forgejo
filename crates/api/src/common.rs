@@ -1,26 +1,9 @@
-//! Field types shared across CRDs.
+//! Field types shared across CRDs. Those every weebo operator shares
+//! (secret refs and targets, CR refs) come from the kit.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// A key inside a Kubernetes `Secret` in an explicit namespace — used by
-/// cluster-scoped CRDs, which have no namespace of their own to default to.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SecretKeyRef {
-    pub name: String,
-    pub namespace: String,
-    pub key: String,
-}
-
-/// Reference to another CR of this operator, by `metadata.name`. Always a
-/// CR, never a raw Forgejo name: a cluster-scoped target is looked up
-/// cluster-wide, a namespaced one in the referencing CR's own namespace only.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ObjectRef {
-    pub name: String,
-}
+pub use weebo_kit_api::{LocalSecretKeyRef, ObjectRef, SecretKeyRef, SecretTarget};
 
 /// What happens to the Forgejo object when its CR is deleted.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
@@ -75,36 +58,4 @@ impl Visibility {
             Visibility::Private => "private",
         }
     }
-}
-
-/// Where an emitted secret (generated password or key, OAuth2 credentials,
-/// access token) is written. A CR may list several targets — the same
-/// value is fanned out to each.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SecretTarget {
-    /// `kubernetes` (default) or `vault`. A Vault target reuses the
-    /// connection (address, mount, auth) of the `ForgejoInstance`'s
-    /// `secretStore.vault`, which must then be set.
-    #[serde(default)]
-    pub backend: crate::instance::SecretStoreBackend,
-    /// Kubernetes: the `Secret` name. Vault: names the default path
-    /// `<pathPrefix>/<namespace>/<name>` when `path` is unset.
-    pub name: String,
-    /// Kubernetes `Secret` namespace (Vault: the namespace segment of the
-    /// default path). Defaults to the CR's own namespace; required on
-    /// cluster-scoped CRs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    /// Vault only: explicit KV v2 path under the instance's mount.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-}
-
-/// A key of a `Secret` in the referencing CR's own namespace.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct LocalSecretKeyRef {
-    pub name: String,
-    pub key: String,
 }

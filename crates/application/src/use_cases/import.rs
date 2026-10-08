@@ -1,7 +1,9 @@
 //! The importer (`.prompt/plan.md`, "Seul chemin d'adoption"): reads a live
-//! Forgejo and builds the CRs describing it, each with `status.forgejoId`/
-//! `forgejoName` seeded so the reconcilers adopt the object instead of
-//! colliding with it. Nothing here writes to Forgejo or Kubernetes.
+//! Forgejo and describes it as CR names and specs, each paired with the
+//! Forgejo object it must own — the `status.forgejoId`/`forgejoName` seed
+//! that makes the reconcilers adopt the object instead of colliding with
+//! it. Nothing here writes to Forgejo or Kubernetes, nor knows how a CR is
+//! laid out: `crates/importer` turns an [`Import`] into manifests.
 //!
 //! Every imported CR is `deletionPolicy: Orphan`: these objects existed
 //! before the operator, and deleting a generated manifest must not destroy
@@ -14,18 +16,13 @@ use api::common::{DeletionPolicy, ManagementPolicy, ObjectRef, Visibility};
 use api::keys::{ForgejoDeployKeySpec, KeySource};
 use api::organization::ForgejoOrganizationSpec;
 use api::repository::{BranchProtection, ForgejoRepositorySpec, MigrateSource, RepositoryUnits};
-use api::status::ForgejoStatus;
 use api::team::{ForgejoTeamSpec, MembersPolicy, TeamPermission};
 use api::user::ForgejoUserSpec;
 use api::webhook::ForgejoWebhookSpec;
-use api::{
-    ForgejoDeployKey, ForgejoOrganization, ForgejoRepository, ForgejoTeam, ForgejoUser,
-    ForgejoWebhook,
-};
 
 use crate::ports::{
-    ForgejoInventory, GatewayError, HookTarget, ProtectionRule, RemoteHook, RemoteRepository,
-    RemoteTeam, RemoteUser,
+    ForgejoInventory, ForgejoRef, GatewayError, HookTarget, ProtectionRule, RemoteHook,
+    RemoteRepository, RemoteTeam, RemoteUser,
 };
 
 /// Name of the team Forgejo creates with every organization; it can't be
@@ -36,8 +33,6 @@ const OWNERS_TEAM: &str = "Owners";
 pub struct ImportOptions {
     /// Written as `spec.instanceRef` (`None` = the cluster's only instance).
     pub instance_ref: Option<String>,
-    /// Namespace of the namespaced CRs (repositories, webhooks, deploy keys).
-    pub namespace: String,
     /// Organizations and users to import, with their repositories. Empty =
     /// everything. Users other than these are only imported when a team or
     /// repository references them.
@@ -54,7 +49,8 @@ pub struct ImportOptions {
 
 /// CRs already in the cluster, per kind: CR name → `status.forgejoId`
 /// (`None` for a CR whose import was interrupted before seeding, which the
-/// importer takes over). Repositories: those of `namespace` only.
+/// importer takes over). Repositories: those of the namespace the
+/// namespaced CRs go to only.
 #[derive(Debug, Clone, Default)]
 pub struct Existing {
     pub users: BTreeMap<String, Option<String>>,
@@ -63,15 +59,33 @@ pub struct Existing {
     pub repositories: BTreeMap<String, Option<String>>,
 }
 
-/// The CRs describing an instance, in dependency order.
+/// One Forgejo object to adopt: the CR name it gets, its spec, and the
+/// object that CR must own from the start.
+#[derive(Debug, Clone)]
+pub struct Imported<S> {
+    pub name: String,
+    pub spec: S,
+    pub forgejo: ForgejoRef,
+}
+
+/// A deploy key, with the repository it lives on — recorded on the CR so
+/// its cleanup finds the key even without the repository CR.
+#[derive(Debug, Clone)]
+pub struct ImportedKey {
+    pub key: Imported<ForgejoDeployKeySpec>,
+    /// `owner/name`.
+    pub repository: String,
+}
+
+/// The objects describing an instance, in dependency order.
 #[derive(Debug, Default)]
 pub struct Import {
-    pub users: Vec<ForgejoUser>,
-    pub organizations: Vec<ForgejoOrganization>,
-    pub teams: Vec<ForgejoTeam>,
-    pub repositories: Vec<ForgejoRepository>,
-    pub webhooks: Vec<ForgejoWebhook>,
-    pub deploy_keys: Vec<ForgejoDeployKey>,
+    pub users: Vec<Imported<ForgejoUserSpec>>,
+    pub organizations: Vec<Imported<ForgejoOrganizationSpec>>,
+    pub teams: Vec<Imported<ForgejoTeamSpec>>,
+    pub repositories: Vec<Imported<ForgejoRepositorySpec>>,
+    pub webhooks: Vec<Imported<ForgejoWebhookSpec>>,
+    pub deploy_keys: Vec<ImportedKey>,
     /// What was left out, and why.
     pub warnings: Vec<String>,
 }
@@ -118,9 +132,8 @@ pub async fn import(
             owner_ref: None,
             deletion_policy: DeletionPolicy::Orphan,
         };
-        let mut cr = ForgejoOrganization::new(&name, spec);
-        cr.status = seeded(org.id, &org.name);
-        out.organizations.push(cr);
+        out.organizations
+            .push(imported(name.clone(), spec, org.id, &org.name));
         orgs.push((name, org.name));
     }
 
@@ -153,12 +166,9 @@ pub async fn import(
                 }
             }
             let name = team_names.claim(&format!("{org}-{}", team.name), team.id);
-            let mut cr = ForgejoTeam::new(
-                &name,
-                team_spec(team.clone(), org_cr, permission, member_refs, options),
-            );
-            cr.status = seeded(team.id, &team.name);
-            out.teams.push(cr);
+            let spec = team_spec(team.clone(), org_cr, permission, member_refs, options);
+            out.teams
+                .push(imported(name.clone(), spec, team.id, &team.name));
             teams.insert((org.clone(), team.name), name);
         }
     }
@@ -201,10 +211,8 @@ pub async fn import(
                 Vec::new()
             };
             let spec = repository_spec(&repo, owner, protections, team_refs, options);
-            let mut cr = ForgejoRepository::new(&name, spec);
-            cr.metadata.namespace = Some(options.namespace.clone());
-            cr.status = seeded(repo.id, &full_name);
-            out.repositories.push(cr);
+            out.repositories
+                .push(imported(name.clone(), spec, repo.id, &full_name));
             hook_owners.push((
                 HookOwner::Repository(name.clone()),
                 HookTarget::Repository {
@@ -225,10 +233,8 @@ pub async fn import(
             };
             let name = suffixed(owner.cr_name(), &format!("hook-{}", hook.id));
             let spec = webhook_spec(hook.clone(), url, owner, options);
-            let mut cr = ForgejoWebhook::new(&name, spec);
-            cr.metadata.namespace = Some(options.namespace.clone());
-            cr.status = seeded(hook.id, &target.to_string());
-            out.webhooks.push(cr);
+            out.webhooks
+                .push(imported(name, spec, hook.id, &target.to_string()));
         }
     }
 
@@ -247,23 +253,19 @@ pub async fn import(
                 },
                 deletion_policy: DeletionPolicy::Orphan,
             };
-            let mut cr =
-                ForgejoDeployKey::new(&suffixed(repo_cr, &format!("key-{}", key.id)), spec);
-            cr.metadata.namespace = Some(options.namespace.clone());
-            cr.metadata.annotations = Some(BTreeMap::from([(
-                api::KEY_OWNER_ANNOTATION.to_string(),
-                full_name.clone(),
-            )]));
-            cr.status = seeded(key.id, &key.title);
-            out.deploy_keys.push(cr);
+            let name = suffixed(repo_cr, &format!("key-{}", key.id));
+            out.deploy_keys.push(ImportedKey {
+                key: imported(name, spec, key.id, &key.title),
+                repository: full_name.clone(),
+            });
         }
     }
 
     for (login, (name, user)) in &users {
         if referenced.contains(login) {
-            let mut cr = ForgejoUser::new(name, user_spec(user, options));
-            cr.status = seeded(user.id, &user.login);
-            out.users.push(cr);
+            let spec = user_spec(user, options);
+            out.users
+                .push(imported(name.clone(), spec, user.id, &user.login));
         }
     }
     Ok(out)
@@ -483,12 +485,15 @@ fn webhook_spec(
     }
 }
 
-fn seeded(id: i64, name: &str) -> Option<ForgejoStatus> {
-    Some(ForgejoStatus {
-        forgejo_id: Some(id.to_string()),
-        forgejo_name: Some(name.to_string()),
-        ..Default::default()
-    })
+fn imported<S>(name: String, spec: S, id: i64, forgejo_name: &str) -> Imported<S> {
+    Imported {
+        name,
+        spec,
+        forgejo: ForgejoRef {
+            id,
+            name: forgejo_name.to_string(),
+        },
+    }
 }
 
 fn non_empty(s: &str) -> Option<String> {
@@ -702,10 +707,7 @@ mod tests {
     }
 
     fn options() -> ImportOptions {
-        ImportOptions {
-            namespace: "forgejo".into(),
-            ..Default::default()
-        }
+        ImportOptions::default()
     }
 
     #[tokio::test]
@@ -715,12 +717,7 @@ mod tests {
 
         let names = |v: Vec<String>| v.join(",");
         assert_eq!(
-            names(
-                out.users
-                    .iter()
-                    .map(|u| u.metadata.name.clone().unwrap())
-                    .collect()
-            ),
+            names(out.users.iter().map(|u| u.name.clone()).collect()),
             "alice-x,bob"
         );
         assert!(
@@ -733,7 +730,7 @@ mod tests {
         assert_eq!(org.spec.deletion_policy, DeletionPolicy::Orphan);
 
         let team = &out.teams[0];
-        assert_eq!(team.metadata.name.as_deref(), Some("weebo-dev"));
+        assert_eq!(team.name, "weebo-dev");
         assert_eq!(team.spec.permission, TeamPermission::Write);
         assert_eq!(
             team.spec.member_refs,
@@ -747,7 +744,6 @@ mod tests {
             .iter()
             .find(|r| r.spec.name == "app")
             .unwrap();
-        assert_eq!(repo.metadata.namespace.as_deref(), Some("forgejo"));
         assert_eq!(
             repo.spec.organization_ref,
             Some(ObjectRef {
@@ -761,9 +757,7 @@ mod tests {
             }]
         );
         assert_eq!(repo.spec.branch_protections[0].required_approvals, 1);
-        let status = repo.status.as_ref().unwrap();
-        assert_eq!(status.forgejo_name.as_deref(), Some("weebo/app"));
-        assert!(status.forgejo_id.is_some());
+        assert_eq!(repo.forgejo.name, "weebo/app");
 
         let dots = out
             .repositories
@@ -781,17 +775,16 @@ mod tests {
             })
         );
         assert!(hook.spec.extra_config.is_empty());
-        assert_eq!(
-            hook.status.as_ref().unwrap().forgejo_name.as_deref(),
-            Some("repo:weebo/app")
-        );
+        assert_eq!(hook.forgejo.name, "repo:weebo/app");
 
         let key = &out.deploy_keys[0];
-        assert_eq!(key.spec.key.public_key.as_deref(), Some("ssh-ed25519 AAAA"));
-        assert!(key.spec.read_only);
         assert_eq!(
-            key.metadata.annotations.as_ref().unwrap()[api::KEY_OWNER_ANNOTATION],
-            "weebo/app",
+            key.key.spec.key.public_key.as_deref(),
+            Some("ssh-ed25519 AAAA")
+        );
+        assert!(key.key.spec.read_only);
+        assert_eq!(
+            key.repository, "weebo/app",
             "cleanup can find the key without the repository CR"
         );
         assert!(out.warnings.is_empty(), "{:?}", out.warnings);
@@ -836,14 +829,6 @@ mod tests {
         assert_eq!(bob.login_name.as_deref(), Some("bob-sub"));
     }
 
-    fn current<T>(status: &Option<ForgejoStatus>, _: &T) -> Option<crate::ports::ForgejoRef> {
-        let s = status.as_ref()?;
-        Some(crate::ports::ForgejoRef {
-            id: s.forgejo_id.as_ref()?.parse().ok()?,
-            name: s.forgejo_name.clone()?,
-        })
-    }
-
     /// The point of seeding: the reconcilers adopt the imported objects
     /// as they are — no create, no edit.
     #[tokio::test]
@@ -859,7 +844,7 @@ mod tests {
         let outcome = org::reconcile_organization(
             org::OrganizationInput {
                 spec: &o.spec,
-                current: current(&o.status, o),
+                current: Some(o.forgejo.clone()),
                 owner: None,
             },
             &f,
@@ -871,7 +856,7 @@ mod tests {
         let outcome = team::reconcile_team(
             team::TeamInput {
                 spec: &t.spec,
-                current: current(&t.status, t),
+                current: Some(t.forgejo.clone()),
                 organization: "weebo".into(),
                 organization_id: None,
                 members: vec![team::Member::Ready("Alice_X".into())],
@@ -890,7 +875,7 @@ mod tests {
         let outcome = repo::reconcile_repository(
             repo::RepositoryInput {
                 spec: &r.spec,
-                current: current(&r.status, r),
+                current: Some(r.forgejo.clone()),
                 owner: repo::Owner::Organization("weebo".into()),
                 source: Err(crate::use_cases::Failure::new(
                     domain::error::ReasonCode::ReferenceNotReady,
@@ -908,7 +893,7 @@ mod tests {
         let outcome = hook::reconcile_webhook(
             hook::WebhookInput {
                 spec: &h.spec,
-                current: current(&h.status, h),
+                current: Some(h.forgejo.clone()),
                 target: HookTarget::Repository {
                     owner: "weebo".into(),
                     name: "app".into(),
@@ -1015,15 +1000,12 @@ mod tests {
         let f = fixture().await;
         let first = import(&f, &options()).await.unwrap();
         let repo = &first.repositories[0];
-        let natural = repo.metadata.name.clone().unwrap();
+        let natural = repo.name.clone();
         // The cluster holds the repository under another name, and its
         // natural name belongs to another object.
         let existing = Existing {
             repositories: BTreeMap::from([
-                (
-                    "adopted".to_string(),
-                    repo.status.as_ref().unwrap().forgejo_id.clone(),
-                ),
+                ("adopted".to_string(), Some(repo.forgejo.id.to_string())),
                 (natural.clone(), Some("999999".to_string())),
             ]),
             ..Default::default()
@@ -1037,18 +1019,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let id = |r: &ForgejoRepository| r.status.as_ref().unwrap().forgejo_id.clone();
         let same = again
             .repositories
             .iter()
-            .find(|r| id(r) == id(repo))
+            .find(|r| r.forgejo.id == repo.forgejo.id)
             .unwrap();
-        assert_eq!(same.metadata.name.as_deref(), Some("adopted"));
-        assert!(
-            again
-                .repositories
-                .iter()
-                .all(|r| r.metadata.name.as_deref() != Some(natural.as_str()))
-        );
+        assert_eq!(same.name, "adopted");
+        assert!(again.repositories.iter().all(|r| r.name != natural));
     }
 }

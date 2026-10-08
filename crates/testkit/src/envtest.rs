@@ -1,66 +1,28 @@
-//! Real `kube-apiserver` + `etcd` through the `envtest` crate (a Rust
-//! wrapper over controller-runtime's envtest) — layer 3 of
-//! `.prompt/plan.md`'s test strategy. CRDs from `deploy/crd/` are
-//! installed for real; no container engine is involved.
-//!
-//! **Build requirement**: `envtest` generates Go bindings at build time
-//! (`rust2go`/`bindgen`), which needs Go (from mise) and `libclang.so` (the
-//! C API — mise's `clang` doesn't ship it). The Taskfile's `env:` block sets
-//! `LIBCLANG_PATH`/`BINDGEN_EXTRA_CLANG_ARGS` for Fedora's
-//! `clang-libs`; `task doctor` checks the setup. The control-plane binaries
-//! (`etcd`, `kube-apiserver`) come from mise as well.
+//! Real `kube-apiserver` + `etcd` through the kit's envtest harness
+//! (`weebo_kit_testkit::envtest`), with this operator's CRDs from
+//! `deploy/crd/` installed — layer 3 of `.prompt/plan.md`'s test strategy.
+//! See the kit for the build requirements (Go, `libclang.so`; `task doctor`
+//! checks them).
 
+use std::ops::Deref;
 use std::path::Path;
 
-use envtest::Environment;
-use kube::Client;
-
-pub struct EnvTestCluster {
-    // Dropping the server stops the control plane: kept alive with `self`.
-    _server: envtest::Server,
-    client: Client,
-}
+pub struct EnvTestCluster(weebo_kit_testkit::envtest::EnvTestCluster);
 
 impl EnvTestCluster {
     /// Panics on any setup failure: a broken harness should fail loudly at
     /// the call site rather than be threaded through every test.
     pub async fn start() -> Self {
-        // `ring` and `aws-lc-rs` are both linked transitively; rustls needs
-        // one picked before the first TLS connection. A second install (a
-        // second cluster in the same process) just loses the race.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
-        let crd_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../deploy/crd")
-            .canonicalize()
-            .expect("deploy/crd must exist — run `task recu`");
-
-        let server = Environment::default()
-            .with_crds_from_paths(vec![crd_dir.display().to_string()])
-            .expect("deploy/crd must be readable")
-            .create()
-            .await
-            .expect("envtest control plane failed to start");
-        let client = server.client().expect("envtest client");
-        Self {
-            _server: server,
-            client,
-        }
+        let crd_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/crd");
+        Self(weebo_kit_testkit::envtest::EnvTestCluster::start(&crd_dir).await)
     }
+}
 
-    pub fn client(&self) -> Client {
-        self.client.clone()
-    }
+/// `client()`, `kubeconfig()`, `write_kubeconfig()`.
+impl Deref for EnvTestCluster {
+    type Target = weebo_kit_testkit::envtest::EnvTestCluster;
 
-    /// Admin kubeconfig of the control plane: to run a real binary against
-    /// it (`KUBECONFIG`), or to read its URL and CA (Vault's Kubernetes auth).
-    pub fn kubeconfig(&self) -> kube::config::Kubeconfig {
-        self._server.kubeconfig().expect("envtest kubeconfig")
-    }
-
-    /// Writes [`Self::kubeconfig`] as YAML to `path`.
-    pub fn write_kubeconfig(&self, path: &Path) {
-        let yaml = serde_norway::to_string(&self.kubeconfig()).expect("kubeconfig serializes");
-        std::fs::write(path, yaml).expect("kubeconfig written");
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }

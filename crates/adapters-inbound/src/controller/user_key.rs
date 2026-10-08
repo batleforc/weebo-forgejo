@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoUser, ForgejoUserKey};
+use application::ports::RefKind;
 use application::use_cases::reconcile_key::{KeyInput, KeyOwner, cleanup_key, reconcile_key};
+use application::use_cases::refs::{recorded_name, resolve_required};
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
 use kube::api::Api;
@@ -12,7 +14,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{recorded_name, require, resolve};
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, rotate_nonce, status};
 use crate::metrics::record_reconcile;
@@ -59,10 +60,10 @@ async fn reconcile(obj: Arc<ForgejoUserKey>, ctx: Arc<Ctx>) -> Result<Action, Er
 }
 
 async fn user(key: &ForgejoUserKey, ctx: &Ctx) -> Result<Result<String, Failure>, Error> {
-    let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
     let name = &key.spec.user_ref.name;
-    let state = resolve(&users, name, key.spec.instance_ref.as_deref()).await?;
-    Ok(require("ForgejoUser", name, state).map(|r| r.name))
+    let instance = key.spec.instance_ref.as_deref();
+    let user = resolve_required(ctx.refs.as_ref(), RefKind::User, "", name, instance);
+    Ok(user.await?.map(|r| r.name))
 }
 
 async fn apply(
@@ -116,8 +117,8 @@ async fn cleanup(key: &ForgejoUserKey, ctx: &Ctx) -> Result<Action, Error> {
     // Where the key was created first (the ref may have changed since),
     // then the user's current login; the user CR may be not ready or
     // already gone (an `Orphan` user).
-    let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
-    let parent = recorded_name(&users, &key.spec.user_ref.name, instance).await?;
+    let user = &key.spec.user_ref.name;
+    let parent = recorded_name(ctx.refs.as_ref(), RefKind::User, "", user, instance).await?;
     let delete = key.spec.deletion_policy == api::common::DeletionPolicy::Delete;
     let owners: Vec<KeyOwner> = super::key_cleanup_owners(key, parent, delete)
         .into_iter()

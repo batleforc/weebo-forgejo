@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoDeployKey, ForgejoRepository};
+use application::ports::RefKind;
+use application::use_cases::admission::enforce;
 use application::use_cases::reconcile_key::{KeyInput, KeyOwner, cleanup_key, reconcile_key};
+use application::use_cases::refs::{recorded_name, resolve_required};
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
 use kube::api::Api;
@@ -12,7 +15,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{recorded_name, require, resolve};
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, rotate_nonce, status};
 use crate::metrics::record_reconcile;
@@ -79,10 +81,10 @@ async fn reconcile(obj: Arc<ForgejoDeployKey>, ctx: Arc<Ctx>) -> Result<Action, 
 
 async fn repository(key: &ForgejoDeployKey, ctx: &Ctx) -> Result<Result<String, Failure>, Error> {
     let ns = key.namespace().unwrap_or_default();
-    let repos: Api<ForgejoRepository> = Api::namespaced(ctx.client.clone(), &ns);
     let name = &key.spec.repository_ref.name;
-    let state = resolve(&repos, name, key.spec.instance_ref.as_deref()).await?;
-    Ok(require("ForgejoRepository", name, state).map(|r| r.name))
+    let instance = key.spec.instance_ref.as_deref();
+    let repo = resolve_required(ctx.refs.as_ref(), RefKind::Repository, &ns, name, instance);
+    Ok(repo.await?.map(|r| r.name))
 }
 
 async fn apply(
@@ -97,7 +99,7 @@ async fn apply(
 
     let namespace = current.namespace().unwrap_or_default();
     let mut resolved = None;
-    let outcome = match crate::admission::enforce(&ctx.client, &namespace, &current).await? {
+    let outcome = match enforce(ctx.policies.as_ref(), &namespace, &current).await? {
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
         Ok(()) => match repository(&current, ctx).await? {
@@ -144,8 +146,8 @@ async fn cleanup(key: &ForgejoDeployKey, ctx: &Ctx) -> Result<Action, Error> {
     // Where the key was created first (the ref may have changed since),
     // then the repository's current name; the repository CR may be not
     // ready or already gone (a namespace deletion, an `Orphan` repository).
-    let repos: Api<ForgejoRepository> = Api::namespaced(ctx.client.clone(), &ns);
-    let parent = recorded_name(&repos, &key.spec.repository_ref.name, instance).await?;
+    let repo = &key.spec.repository_ref.name;
+    let parent = recorded_name(ctx.refs.as_ref(), RefKind::Repository, &ns, repo, instance).await?;
     let delete = key.spec.deletion_policy == api::common::DeletionPolicy::Delete;
     let owners: Vec<KeyOwner> = super::key_cleanup_owners(key, parent, delete)
         .into_iter()

@@ -115,8 +115,8 @@ spec:
                 properties:
                   caSecretRef:
                     description: |-
-                      Optional custom CA certificate to verify Forgejo's TLS with, read
-                      from a Kubernetes `Secret` (the referenced `key` must hold a PEM
+                      Optional custom CA certificate to verify the instance's TLS with,
+                      read from a Kubernetes `Secret` (the referenced `key` must hold a PEM
                       bundle). Use this to trust a private CA without mounting it into the
                       operator pod — the operator reads the Secret via the API and hands the
                       PEM to its HTTP client. It is added *on top of* the platform trust
@@ -200,9 +200,7 @@ spec:
                       nullable: true
                       type: integer
                     reason:
-                      description: |-
-                        One of `domain::error::ReasonCode`'s `as_str()` values — never a
-                        hand-written string.
+                      description: One of the operator's reason codes — never a hand-written string.
                       type: string
                     status:
                       description: '`"True"`, `"False"`, or `"Unknown"`.'

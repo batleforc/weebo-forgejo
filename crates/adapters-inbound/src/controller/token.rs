@@ -2,8 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoAccessToken, ForgejoRepository, ForgejoUser};
-use application::ports::ForgejoRef;
+use application::ports::{ForgejoRef, RefKind};
+use application::use_cases::admission::enforce;
 use application::use_cases::reconcile_token::{TokenInput, cleanup_token, reconcile_token};
+use application::use_cases::refs::resolve_required;
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
 use kube::api::Api;
@@ -13,7 +15,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{require, resolve};
 use super::status::{current_ref, owner_id, secret_pending};
 use super::{
     Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, rotate_nonce,
@@ -101,25 +102,16 @@ async fn resolve_inputs(
     ctx: &Ctx,
 ) -> Result<Result<(ForgejoRef, Vec<String>), Failure>, Error> {
     let instance = token.spec.instance_ref.as_deref();
-    let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
+    let refs = ctx.refs.as_ref();
+    let ns = token.namespace().unwrap_or_default();
     let user_name = &token.spec.user_ref.name;
-    let user = match require(
-        "ForgejoUser",
-        user_name,
-        resolve(&users, user_name, instance).await?,
-    ) {
+    let user = match resolve_required(refs, RefKind::User, &ns, user_name, instance).await? {
         Ok(u) => u,
         Err(f) => return Ok(Err(f)),
     };
-    let ns = token.namespace().unwrap_or_default();
-    let repos: Api<ForgejoRepository> = Api::namespaced(ctx.client.clone(), &ns);
     let mut repositories = Vec::with_capacity(token.spec.repository_refs.len());
     for r in &token.spec.repository_refs {
-        match require(
-            "ForgejoRepository",
-            &r.name,
-            resolve(&repos, &r.name, instance).await?,
-        ) {
+        match resolve_required(refs, RefKind::Repository, &ns, &r.name, instance).await? {
             Ok(repo) => repositories.push(repo.name),
             Err(f) => return Ok(Err(f)),
         }
@@ -138,7 +130,7 @@ async fn apply(
     let (name, ns) = (current.name_any(), current.namespace().unwrap_or_default());
 
     let namespace = current.namespace().unwrap_or_default();
-    let outcome = match crate::admission::enforce(&ctx.client, &namespace, &current).await? {
+    let outcome = match enforce(ctx.policies.as_ref(), &namespace, &current).await? {
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
         Ok(()) => match resolve_inputs(&current, ctx).await? {

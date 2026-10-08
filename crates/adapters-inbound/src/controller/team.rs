@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoOrganization, ForgejoTeam, ForgejoUser};
-use application::ports::ForgejoRef;
+use application::ports::{ForgejoRef, RefKind};
 use application::use_cases::reconcile_team::{Member, TeamInput, cleanup_team, reconcile_team};
+use application::use_cases::refs::{resolve_member, resolve_required};
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
 use kube::api::Api;
@@ -13,7 +14,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{RefState, require, resolve};
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
@@ -121,37 +121,19 @@ async fn resolve_inputs(
     ctx: &Ctx,
 ) -> Result<Result<(ForgejoRef, Vec<Member>), Failure>, Error> {
     let instance = team.spec.instance_ref.as_deref();
-    let orgs: Api<ForgejoOrganization> = Api::all(ctx.client.clone());
+    let refs = ctx.refs.as_ref();
     let org_name = &team.spec.organization_ref.name;
-    let org = match require(
-        "ForgejoOrganization",
-        org_name,
-        resolve(&orgs, org_name, instance).await?,
-    ) {
+    let org = match resolve_required(refs, RefKind::Organization, "", org_name, instance).await? {
         Ok(org) => org,
         Err(f) => return Ok(Err(f)),
     };
 
-    let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
     let mut members = Vec::with_capacity(team.spec.member_refs.len());
     for member in &team.spec.member_refs {
-        let member = match resolve(&users, &member.name, instance).await? {
-            RefState::Ready(r) => Member::Ready(r.name),
-            RefState::NotFound => Member::Pending {
-                name: member.name.clone(),
-                why: "no such ForgejoUser".into(),
-                login: None,
-            },
-            RefState::NotReady(why) => Member::Pending {
-                name: member.name.clone(),
-                why,
-                login: users.get_opt(&member.name).await?.map(|u| u.spec.username),
-            },
-            other @ RefState::OtherInstance(_) => {
-                return Ok(Err(require("ForgejoUser", &member.name, other).unwrap_err()));
-            }
-        };
-        members.push(member);
+        match resolve_member(refs, &member.name, instance).await? {
+            Ok(member) => members.push(member),
+            Err(f) => return Ok(Err(f)),
+        }
     }
     Ok(Ok((org, members)))
 }

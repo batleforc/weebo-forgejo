@@ -6,14 +6,15 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 
-use api::common::SecretTarget;
+use api::namespace_policy::NamespaceRule;
 
 use crate::ports::{
-    DesiredHook, DesiredOAuth2App, DesiredOrganization, DesiredRepository, DesiredTeam,
-    DesiredToken, DesiredUser, ForgejoGateway, ForgejoInventory, ForgejoRef, GatewayError,
-    GenerateOptions, HookTarget, MigrateOptions, ProtectionRule, RemoteHook, RemoteKey,
-    RemoteOAuth2App, RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
-    RepositoryInitOptions, SecretStore, SecretStoreError,
+    ClusterError, DesiredHook, DesiredOAuth2App, DesiredOrganization, DesiredRepository,
+    DesiredTeam, DesiredToken, DesiredUser, ForgejoGateway, ForgejoInventory, ForgejoRef,
+    GatewayError, GenerateOptions, HookTarget, MigrateOptions, PolicySource, ProtectionRule,
+    RefKind, ReferenceReader, ReferencedCr, RemoteHook, RemoteKey, RemoteOAuth2App,
+    RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
+    RepositoryInitOptions,
 };
 use crate::use_cases::reconcile_webhook::{forgejo_echoes, forgejo_events};
 
@@ -1243,79 +1244,100 @@ impl ForgejoInventory for FakeForgejo {
     }
 }
 
-/// Secrets keyed by `namespace/name`.
+pub use weebo_kit_application::test_support::FakeSecretStore;
+
+/// In-memory [`ReferenceReader`] and [`PolicySource`]: the referenced CRs,
+/// `Secret` keys and namespace policies a controller would read from the
+/// cluster.
 #[derive(Default)]
-pub struct FakeSecretStore {
-    secrets: Mutex<BTreeMap<String, BTreeMap<String, String>>>,
-    fail_writes: Mutex<bool>,
+pub struct FakeCluster {
+    refs: Mutex<BTreeMap<(String, String, String), ReferencedCr>>,
+    secrets: Mutex<BTreeMap<(String, String, String), Vec<u8>>>,
+    policies: Mutex<Vec<Vec<NamespaceRule>>>,
+    failure: Mutex<Option<String>>,
 }
 
-impl FakeSecretStore {
-    fn key(target: &SecretTarget, default_namespace: Option<&str>) -> String {
-        let ns = target
-            .namespace
-            .as_deref()
-            .or(default_namespace)
-            .unwrap_or("<none>");
-        format!("{ns}/{}", target.name)
+impl FakeCluster {
+    fn ref_key(kind: RefKind, namespace: &str, name: &str) -> (String, String, String) {
+        // Only repositories are namespaced among the referenced kinds.
+        let namespace = if kind == RefKind::Repository {
+            namespace
+        } else {
+            ""
+        };
+        (kind.as_str().into(), namespace.into(), name.into())
     }
 
-    pub fn get(&self, key: &str) -> Option<BTreeMap<String, String>> {
-        self.secrets.lock().unwrap().get(key).cloned()
+    /// `namespace` is ignored for cluster-scoped kinds.
+    pub fn put(&self, kind: RefKind, namespace: &str, name: &str, cr: ReferencedCr) {
+        self.refs
+            .lock()
+            .unwrap()
+            .insert(Self::ref_key(kind, namespace, name), cr);
     }
 
-    pub fn remove(&self, key: &str) {
-        self.secrets.lock().unwrap().remove(key);
+    pub fn put_secret(&self, namespace: &str, name: &str, key: &str, value: Vec<u8>) {
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert((namespace.into(), name.into(), key.into()), value);
     }
 
-    pub fn fail_writes(&self, fail: bool) {
-        *self.fail_writes.lock().unwrap() = fail;
+    /// One entry per `ForgejoNamespacePolicy`.
+    pub fn set_policies(&self, policies: Vec<Vec<NamespaceRule>>) {
+        *self.policies.lock().unwrap() = policies;
+    }
+
+    /// Every later read fails with a [`ClusterError`].
+    pub fn fail_with(&self, message: &str) {
+        *self.failure.lock().unwrap() = Some(message.into());
+    }
+
+    fn check(&self) -> Result<(), ClusterError> {
+        match self.failure.lock().unwrap().clone() {
+            Some(message) => Err(ClusterError(message)),
+            None => Ok(()),
+        }
     }
 }
 
 #[async_trait::async_trait]
-impl SecretStore for FakeSecretStore {
-    fn default_backend(&self) -> api::instance::SecretStoreBackend {
-        api::instance::SecretStoreBackend::Kubernetes
-    }
-
-    async fn write(
+impl ReferenceReader for FakeCluster {
+    async fn referenced(
         &self,
-        target: &SecretTarget,
-        default_namespace: Option<&str>,
-        data: &BTreeMap<String, String>,
-    ) -> Result<(), SecretStoreError> {
-        if *self.fail_writes.lock().unwrap() {
-            return Err(SecretStoreError("write refused".into()));
-        }
-        self.secrets
+        kind: RefKind,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<ReferencedCr>, ClusterError> {
+        self.check()?;
+        Ok(self
+            .refs
             .lock()
             .unwrap()
-            .insert(Self::key(target, default_namespace), data.clone());
-        Ok(())
+            .get(&Self::ref_key(kind, namespace, name))
+            .cloned())
     }
 
-    async fn exists(
+    async fn secret_key(
         &self,
-        target: &SecretTarget,
-        default_namespace: Option<&str>,
-    ) -> Result<bool, SecretStoreError> {
+        namespace: &str,
+        name: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, ClusterError> {
+        self.check()?;
         Ok(self
             .secrets
             .lock()
             .unwrap()
-            .contains_key(&Self::key(target, default_namespace)))
+            .get(&(namespace.into(), name.into(), key.into()))
+            .cloned())
     }
+}
 
-    async fn delete(
-        &self,
-        target: &SecretTarget,
-        default_namespace: Option<&str>,
-    ) -> Result<(), SecretStoreError> {
-        self.secrets
-            .lock()
-            .unwrap()
-            .remove(&Self::key(target, default_namespace));
-        Ok(())
+#[async_trait::async_trait]
+impl PolicySource for FakeCluster {
+    async fn policies(&self) -> Result<Vec<Vec<NamespaceRule>>, ClusterError> {
+        self.check()?;
+        Ok(self.policies.lock().unwrap().clone())
     }
 }

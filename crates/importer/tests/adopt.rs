@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adapters_inbound::controller::{self, Ctx, Shutdown};
-use adapters_outbound::K8sSecretStore;
+use adapters_outbound::{KubeClusterReader, kubernetes_secret_store};
 use api::{ForgejoDeployKey, ForgejoRepository, ForgejoTeam, ForgejoWebhook};
 use application::ports::{
     DesiredHook, DesiredOrganization, DesiredRepository, DesiredTeam, DesiredUser, ForgejoGateway,
@@ -15,7 +15,7 @@ use application::ports::{
 };
 use application::test_support::FakeForgejo;
 use application::use_cases::import::{ImportOptions, import};
-use importer::{Summary, apply_all};
+use importer::{Summary, apply_all, manifests};
 use kube::ResourceExt;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::events::{Recorder, Reporter};
@@ -129,11 +129,11 @@ async fn imported_objects_are_adopted_without_writes() {
     let client = cluster.client();
     let forgejo = forgejo().await;
 
-    let options = ImportOptions {
-        namespace: "default".into(),
-        ..Default::default()
-    };
-    let imported = import(forgejo.as_ref(), &options).await.unwrap();
+    let options = ImportOptions::default();
+    let imported = manifests(
+        &import(forgejo.as_ref(), &options).await.unwrap(),
+        "default",
+    );
     let summary = apply_all(&client, &imported).await;
     assert_eq!(
         summary,
@@ -148,8 +148,10 @@ async fn imported_objects_are_adopted_without_writes() {
         client: client.clone(),
         gateways: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
         secrets: Arc::new(StaticSecretStoreFactory::new(Arc::new(
-            K8sSecretStore::new(client.clone()),
+            kubernetes_secret_store(client.clone()),
         ))),
+        refs: Arc::new(KubeClusterReader::new(client.clone())),
+        policies: Arc::new(KubeClusterReader::new(client.clone())),
         recorder: Recorder::new(
             client.clone(),
             Reporter {
@@ -224,7 +226,7 @@ async fn imported_objects_are_adopted_without_writes() {
     // A CR owning another Forgejo object is reported, never overwritten.
     let mut other = imported.repositories[0].clone();
     other.status.as_mut().unwrap().forgejo_id = Some("999".into());
-    let conflicting = application::use_cases::import::Import {
+    let conflicting = importer::Manifests {
         repositories: vec![other],
         ..Default::default()
     };

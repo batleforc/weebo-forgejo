@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoOrganization, ForgejoUser};
+use application::ports::RefKind;
 use application::use_cases::reconcile_organization::{
     OrganizationInput, cleanup_organization, reconcile_organization,
 };
+use application::use_cases::refs::resolve_required;
 use application::use_cases::{Failure, Outcome};
 use futures::StreamExt;
 use kube::api::Api;
@@ -14,7 +16,6 @@ use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
-use super::refs::{require, resolve};
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
@@ -108,9 +109,15 @@ async fn owner(
     let Some(owner_ref) = org.spec.owner_ref.as_ref().filter(|_| !exists) else {
         return Ok(Ok(None));
     };
-    let users: Api<ForgejoUser> = Api::all(ctx.client.clone());
-    let state = resolve(&users, &owner_ref.name, org.spec.instance_ref.as_deref()).await?;
-    Ok(require("ForgejoUser", &owner_ref.name, state).map(|r| Some(r.name)))
+    let instance = org.spec.instance_ref.as_deref();
+    let user = resolve_required(
+        ctx.refs.as_ref(),
+        RefKind::User,
+        "",
+        &owner_ref.name,
+        instance,
+    );
+    Ok(user.await?.map(|r| Some(r.name)))
 }
 
 async fn cleanup(org: &ForgejoOrganization, ctx: &Ctx) -> Result<Action, Error> {

@@ -1,13 +1,18 @@
-//! Applying an [`Import`] to a cluster: the only adoption path
-//! (`.prompt/plan.md`, "Seul chemin d'adoption"). Each CR is created
-//! paused, its `status.forgejoId`/`forgejoName` seeded, then unpaused.
+//! Turning an [`Import`] into CRs ([`manifests`]) and applying them to a
+//! cluster: the only adoption path (`.prompt/plan.md`, "Seul chemin
+//! d'adoption"). Each CR is created paused, its `status.forgejoId`/
+//! `forgejoName` seeded, then unpaused.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 use anyhow::Context;
 use api::status::ForgejoStatus;
-use application::use_cases::import::{Existing, Import};
+use api::{
+    ForgejoDeployKey, ForgejoOrganization, ForgejoRepository, ForgejoTeam, ForgejoUser,
+    ForgejoWebhook,
+};
+use application::use_cases::import::{Existing, Import, Imported};
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::{Client, Resource, ResourceExt};
 use serde::Serialize;
@@ -15,6 +20,68 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 const FIELD_MANAGER: &str = "weebo-forgejo-importer";
+
+/// The CRs describing an instance, in dependency order.
+#[derive(Debug, Default)]
+pub struct Manifests {
+    pub users: Vec<ForgejoUser>,
+    pub organizations: Vec<ForgejoOrganization>,
+    pub teams: Vec<ForgejoTeam>,
+    pub repositories: Vec<ForgejoRepository>,
+    pub webhooks: Vec<ForgejoWebhook>,
+    pub deploy_keys: Vec<ForgejoDeployKey>,
+}
+
+/// The CRs of `import`, each with its `status.forgejoId`/`forgejoName`
+/// seeded; the namespaced ones (repositories, webhooks, deploy keys) in
+/// `namespace`.
+pub fn manifests(import: &Import, namespace: &str) -> Manifests {
+    fn cr<K, S>(o: &Imported<S>, new: fn(&str, S) -> K, namespace: Option<&str>) -> K
+    where
+        K: Resource + Seeded,
+        S: Clone,
+    {
+        let mut cr = new(&o.name, o.spec.clone());
+        cr.meta_mut().namespace = namespace.map(str::to_string);
+        *cr.status_mut() = Some(ForgejoStatus {
+            forgejo_id: Some(o.forgejo.id.to_string()),
+            forgejo_name: Some(o.forgejo.name.clone()),
+            ..Default::default()
+        });
+        cr
+    }
+    let ns = Some(namespace);
+    Manifests {
+        users: import
+            .users
+            .iter()
+            .map(|o| cr(o, ForgejoUser::new, None))
+            .collect(),
+        organizations: (import.organizations.iter())
+            .map(|o| cr(o, ForgejoOrganization::new, None))
+            .collect(),
+        teams: import
+            .teams
+            .iter()
+            .map(|o| cr(o, ForgejoTeam::new, None))
+            .collect(),
+        repositories: (import.repositories.iter())
+            .map(|o| cr(o, ForgejoRepository::new, ns))
+            .collect(),
+        webhooks: (import.webhooks.iter())
+            .map(|o| cr(o, ForgejoWebhook::new, ns))
+            .collect(),
+        deploy_keys: (import.deploy_keys.iter())
+            .map(|k| {
+                let mut cr = cr(&k.key, ForgejoDeployKey::new, ns);
+                // Cleanup finds the key without the repository CR.
+                cr.annotations_mut()
+                    .insert(api::KEY_OWNER_ANNOTATION.to_string(), k.repository.clone());
+                cr
+            })
+            .collect(),
+    }
+}
 
 /// Runs `$body` with `$cr` bound to each CR of `$import`, in dependency
 /// order (one generic closure can't take the six CR types).
@@ -44,7 +111,7 @@ macro_rules! for_each {
 
 /// Every CR as one multi-document YAML stream, `status` included (ignored
 /// by `kubectl apply`, kept as a record of the adopted ids).
-pub fn to_yaml(i: &Import) -> anyhow::Result<String> {
+pub fn to_yaml(i: &Manifests) -> anyhow::Result<String> {
     let mut docs = Vec::new();
     for_each!(i, |cr| docs.push(serde_norway::to_string(cr)?));
     Ok(docs.iter().map(|d| format!("---\n{d}")).collect::<String>())
@@ -70,10 +137,10 @@ pub async fn existing(client: &Client, namespace: &str) -> anyhow::Result<Existi
             .collect())
     }
     Ok(Existing {
-        users: owners::<api::ForgejoUser>(Api::all(client.clone())).await?,
-        organizations: owners::<api::ForgejoOrganization>(Api::all(client.clone())).await?,
-        teams: owners::<api::ForgejoTeam>(Api::all(client.clone())).await?,
-        repositories: owners::<api::ForgejoRepository>(Api::namespaced(client.clone(), namespace))
+        users: owners::<ForgejoUser>(Api::all(client.clone())).await?,
+        organizations: owners::<ForgejoOrganization>(Api::all(client.clone())).await?,
+        teams: owners::<ForgejoTeam>(Api::all(client.clone())).await?,
+        repositories: owners::<ForgejoRepository>(Api::namespaced(client.clone(), namespace))
             .await?,
     })
 }
@@ -90,7 +157,7 @@ pub struct Summary {
 
 /// Adopts every CR in dependency order; a failure is reported and the rest
 /// carry on.
-pub async fn apply_all(client: &Client, i: &Import) -> Summary {
+pub async fn apply_all(client: &Client, i: &Manifests) -> Summary {
     let mut summary = Summary::default();
     for_each!(i, |cr| match adopt(client, cr).await {
         Ok(true) => summary.adopted += 1,
@@ -107,6 +174,7 @@ pub async fn apply_all(client: &Client, i: &Import) -> Summary {
 /// `Api` handle of the right scope.
 trait Seeded: Sized {
     fn seeded(&self) -> Option<&ForgejoStatus>;
+    fn status_mut(&mut self) -> &mut Option<ForgejoStatus>;
     fn api(client: Client, namespace: Option<&str>) -> Api<Self>;
 }
 
@@ -115,6 +183,9 @@ macro_rules! impl_seeded {
         impl Seeded for $kind {
             fn seeded(&self) -> Option<&ForgejoStatus> {
                 self.status.as_ref()
+            }
+            fn status_mut(&mut self) -> &mut Option<ForgejoStatus> {
+                &mut self.status
             }
             fn api(client: Client, namespace: Option<&str>) -> Api<Self> {
                 impl_seeded!(@$ctor client, namespace)
@@ -129,8 +200,8 @@ macro_rules! impl_seeded {
         Api::namespaced($client, $ns.unwrap_or("default"))
     };
 }
-impl_seeded!(cluster: api::ForgejoUser, api::ForgejoOrganization, api::ForgejoTeam);
-impl_seeded!(namespaced: api::ForgejoRepository, api::ForgejoWebhook, api::ForgejoDeployKey);
+impl_seeded!(cluster: ForgejoUser, ForgejoOrganization, ForgejoTeam);
+impl_seeded!(namespaced: ForgejoRepository, ForgejoWebhook, ForgejoDeployKey);
 
 fn describe<K: Resource<DynamicType = ()>>(cr: &K) -> String {
     match cr.namespace() {
@@ -215,4 +286,68 @@ where
     .await
     .context("removing the import-pending annotation")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use api::keys::ForgejoDeployKeySpec;
+    use api::organization::ForgejoOrganizationSpec;
+    use application::ports::ForgejoRef;
+    use application::use_cases::import::ImportedKey;
+
+    use super::*;
+
+    fn imported<S>(name: &str, spec: S, id: i64, forgejo_name: &str) -> Imported<S> {
+        Imported {
+            name: name.into(),
+            spec,
+            forgejo: ForgejoRef {
+                id,
+                name: forgejo_name.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn manifests_seed_the_status_and_place_namespaced_crs() {
+        let import = Import {
+            organizations: vec![imported(
+                "weebo",
+                serde_json::from_value::<ForgejoOrganizationSpec>(json!({"name": "weebo"}))
+                    .unwrap(),
+                9,
+                "weebo",
+            )],
+            deploy_keys: vec![ImportedKey {
+                key: imported(
+                    "weebo-app-key-3",
+                    serde_json::from_value::<ForgejoDeployKeySpec>(json!({
+                        "repositoryRef": {"name": "weebo-app"},
+                        "key": {"publicKey": "ssh-ed25519 AAAA"},
+                    }))
+                    .unwrap(),
+                    3,
+                    "ci",
+                ),
+                repository: "weebo/app".into(),
+            }],
+            ..Default::default()
+        };
+        let crs = manifests(&import, "forgejo");
+
+        let org = &crs.organizations[0];
+        assert_eq!(org.name_any(), "weebo");
+        assert_eq!(org.namespace(), None, "cluster-scoped");
+        let status = org.status.as_ref().unwrap();
+        assert_eq!(status.forgejo_id.as_deref(), Some("9"));
+        assert_eq!(status.forgejo_name.as_deref(), Some("weebo"));
+
+        let key = &crs.deploy_keys[0];
+        assert_eq!(key.namespace().as_deref(), Some("forgejo"));
+        assert_eq!(key.annotations()[api::KEY_OWNER_ANNOTATION], "weebo/app");
+        assert_eq!(
+            key.status.as_ref().unwrap().forgejo_id.as_deref(),
+            Some("3")
+        );
+    }
 }

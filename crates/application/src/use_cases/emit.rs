@@ -1,5 +1,6 @@
 //! Writing a value that Forgejo shows only once (client secret, token) to
-//! every target of a CR, and detecting a target that lost it.
+//! every target of a CR, and detecting a target that lost it — the kit's
+//! helpers, with failures mapped to `SecretTargetFailed`.
 
 use std::collections::BTreeMap;
 
@@ -9,22 +10,11 @@ use domain::error::ReasonCode;
 use crate::ports::SecretStore;
 use crate::use_cases::Failure;
 
-/// The CR's own targets, or the implicit one: named after the CR, in its
-/// namespace, on the instance's default backend.
-pub fn targets(
-    explicit: &[SecretTarget],
-    cr_name: &str,
-    store: &dyn SecretStore,
-) -> Vec<SecretTarget> {
-    if !explicit.is_empty() {
-        return explicit.to_vec();
-    }
-    vec![SecretTarget {
-        backend: store.default_backend(),
-        name: cr_name.to_string(),
-        namespace: None,
-        path: None,
-    }]
+use weebo_kit_application::emit as kit;
+pub use weebo_kit_application::emit::{rotation_requested, targets};
+
+fn failed(e: crate::ports::SecretStoreError) -> Failure {
+    Failure::new(ReasonCode::SecretTargetFailed, e.to_string())
 }
 
 pub async fn any_missing(
@@ -32,16 +22,9 @@ pub async fn any_missing(
     namespace: Option<&str>,
     store: &dyn SecretStore,
 ) -> Result<bool, Failure> {
-    for target in targets {
-        let exists = store
-            .exists(target, namespace)
-            .await
-            .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))?;
-        if !exists {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    kit::any_missing(targets, namespace, store)
+        .await
+        .map_err(failed)
 }
 
 pub async fn write_all(
@@ -50,13 +33,9 @@ pub async fn write_all(
     data: &BTreeMap<String, String>,
     store: &dyn SecretStore,
 ) -> Result<(), Failure> {
-    for target in targets {
-        store
-            .write(target, namespace, data)
-            .await
-            .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))?;
-    }
-    Ok(())
+    kit::write_all(targets, namespace, data, store)
+        .await
+        .map_err(failed)
 }
 
 pub async fn delete_all(
@@ -64,17 +43,7 @@ pub async fn delete_all(
     namespace: Option<&str>,
     store: &dyn SecretStore,
 ) -> Result<(), Failure> {
-    for target in targets {
-        store
-            .delete(target, namespace)
-            .await
-            .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))?;
-    }
-    Ok(())
-}
-
-/// A rotation was requested through a nonce the CR hasn't been rotated
-/// for yet.
-pub fn rotation_requested(nonce: &Option<String>, last_rotation: &Option<String>) -> bool {
-    nonce.is_some() && nonce != last_rotation
+    kit::delete_all(targets, namespace, store)
+        .await
+        .map_err(failed)
 }

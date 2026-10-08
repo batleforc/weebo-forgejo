@@ -10,24 +10,17 @@ application = { workspace = true }
 adapters-outbound = { workspace = true }
 adapters-inbound = { workspace = true }
 api = { workspace = true }
+weebo-kit-runtime = { workspace = true }
 kube = { workspace = true }
 futures = "0.3"
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry-otlp = { workspace = true }
-opentelemetry_sdk = { workspace = true }
-tracing-opentelemetry = { workspace = true }
 rustls = { workspace = true }
-axum-server = { workspace = true }
 anyhow = { workspace = true }
-kube-leader-election = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-# Paused clock for the lease-renewal timing tests.
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true }
 reqwest = { workspace = true }
 wiremock = { workspace = true }
 api = { workspace = true }

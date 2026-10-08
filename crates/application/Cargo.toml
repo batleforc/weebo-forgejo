@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 domain = { workspace = true }
 api = { workspace = true }
+weebo-kit-domain = { workspace = true }
+weebo-kit-application = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
@@ -15,9 +17,11 @@ sha2 = { workspace = true }
 ssh-key = { workspace = true }
 
 [dev-dependencies]
+weebo-kit-application = { workspace = true, features = ["test-support"] }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [features]
 # Exposes `test_support` (in-memory Forgejo + secret store) to other
 # crates' tests.
-test-support = []
+test-support = ["weebo-kit-application/test-support"]
