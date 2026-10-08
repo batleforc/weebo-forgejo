@@ -4,6 +4,8 @@ import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import type { MDXComponents } from 'mdx/types';
 import { CrdForm } from './crd-form/CrdForm';
+import { GroupSyncDiagram } from './GroupSyncDiagram';
+import { TeamAccessDiagram } from './TeamAccessDiagram';
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
@@ -15,6 +17,8 @@ export function getMDXComponents(components?: MDXComponents) {
     Tab,
     Tabs,
     CrdForm,
+    GroupSyncDiagram,
+    TeamAccessDiagram,
     ...components,
   } satisfies MDXComponents;
 }

@@ -113,7 +113,8 @@ spec:
 Both lists are authoritative: what isn't listed is removed.
 
 - **`teamRefs`** grants teams access to the repository. They must belong to
-  the owning organization. Forgejo always grants the `Owners` team and
+  the owning organization. The access level comes from the team (see
+  [Team access levels](/docs/guides/users-and-oidc#team-access-levels)). Forgejo always grants the `Owners` team and
   teams with `includesAllRepositories`; the operator leaves those alone.
 - **Branch protection allow-lists** (`pushWhitelistTeams`,
   `pushWhitelistUsernames`…) use **Forgejo names**, not CR names, because

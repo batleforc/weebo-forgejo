@@ -15,7 +15,7 @@ use api::keys::{ForgejoDeployKeySpec, KeySource};
 use api::organization::ForgejoOrganizationSpec;
 use api::repository::{BranchProtection, ForgejoRepositorySpec, MigrateSource, RepositoryUnits};
 use api::status::ForgejoStatus;
-use api::team::{ForgejoTeamSpec, TeamPermission};
+use api::team::{ForgejoTeamSpec, MembersPolicy, TeamPermission};
 use api::user::ForgejoUserSpec;
 use api::webhook::ForgejoWebhookSpec;
 use api::{
@@ -334,6 +334,7 @@ fn team_spec(
         units_map: team.units_map,
         includes_all_repositories: team.includes_all_repositories,
         can_create_org_repo: team.can_create_org_repo,
+        members_policy: MembersPolicy::Managed,
         member_refs,
         deletion_policy: DeletionPolicy::Orphan,
     }

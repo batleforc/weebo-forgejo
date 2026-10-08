@@ -38,6 +38,7 @@ spec:
 | `includesAllRepositories` | `boolean` | no | `false` | Grant access to every repository of the organization, current and future. |
 | `instanceRef` | `string` | no |  |  |
 | `memberRefs` | `object[]` | no |  | `ForgejoUser`s in the team. The member list is authoritative: anyone else is removed. A member whose user doesn't exist in Forgejo yet (e.g. an observed OIDC user who never logged in) is reported as `MemberPending` while the others are synced. |
+| `membersPolicy` | `string` | no | `"Managed"` | Who decides the team's members. `Managed` (the default): `memberRefs` is authoritative. `External`: the operator never adds or removes members, leaving them to Forgejo's OIDC group sync (`group-team-map` / `dyn-group-maps` on the authentication source); `memberRefs` must then be empty. |
 | `name` | `string` | yes |  | Team name, unique within the organization. `Owners` is reserved. |
 | `organizationRef` | `object` | yes |  | `ForgejoOrganization` the team belongs to. A team can't move between organizations: changing this deletes and recreates it, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
 | `permission` | `string` | no | `"read"` |  |

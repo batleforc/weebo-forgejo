@@ -1,11 +1,12 @@
 //! `ForgejoTeam`: the team itself (attempt-create-first, PATCH on drift)
-//! and its authoritative member list. Moving a team to another organization
+//! and its member list — authoritative, unless `membersPolicy: External`
+//! leaves it to Forgejo's OIDC group sync. Moving a team to another organization
 //! is a delete-and-recreate, gated by the disruptive-update annotation.
 
 use std::collections::BTreeSet;
 
 use api::common::DeletionPolicy;
-use api::team::{ForgejoTeamSpec, TeamPermission};
+use api::team::{ForgejoTeamSpec, MembersPolicy, TeamPermission};
 use domain::error::ReasonCode;
 
 use crate::ports::{DesiredTeam, ForgejoGateway, ForgejoRef, GatewayError, RemoteTeam};
@@ -41,6 +42,16 @@ pub struct TeamInput<'a> {
 }
 
 pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) -> Outcome {
+    if input.spec.members_policy == MembersPolicy::External && !input.spec.member_refs.is_empty() {
+        return Outcome::failed(
+            input.current.clone(),
+            Failure::new(
+                ReasonCode::InvalidSpec,
+                "spec.memberRefs must be empty when membersPolicy is External: \
+                 the members come from outside the operator",
+            ),
+        );
+    }
     let desired = desired_team(input.spec);
 
     let remote = match &input.current {
@@ -101,7 +112,9 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
     };
 
     let current = Some(team.clone());
-    if let Err(e) = sync_members(team.id, &input.members, gateway).await {
+    if input.spec.members_policy == MembersPolicy::Managed
+        && let Err(e) = sync_members(team.id, &input.members, gateway).await
+    {
         return Outcome::failed(current, e);
     }
 
@@ -248,6 +261,7 @@ mod tests {
             units_map: [("repo.code".to_string(), "write".to_string())].into(),
             includes_all_repositories: false,
             can_create_org_repo: false,
+            members_policy: Default::default(),
             member_refs: vec![],
             deletion_policy: DeletionPolicy::Delete,
         }
@@ -361,6 +375,40 @@ mod tests {
         assert!(outcome.ready.is_ok());
         let id = outcome.forgejo.unwrap().id;
         assert_eq!(fj.team(id).unwrap().members, vec!["alice"]);
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+    }
+
+    /// Members added by Forgejo's OIDC group sync survive every reconcile.
+    #[tokio::test]
+    async fn external_members_are_left_alone() {
+        let fj = forgejo_with_orgs(&["weebo"]).await;
+        fj.insert_user("alice");
+        let mut s = spec("devs");
+        s.members_policy = MembersPolicy::External;
+        let created = run(&s, None, "weebo", vec![], false, &fj).await.forgejo;
+        let id = created.as_ref().unwrap().id;
+        fj.insert_team_member(id, "alice");
+        fj.clear_calls();
+
+        let outcome = run(&s, created, "weebo", vec![], false, &fj).await;
+        assert!(outcome.ready.is_ok());
+        assert!(outcome.advisories.is_empty());
+        assert_eq!(fj.team(id).unwrap().members, vec!["alice"]);
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+    }
+
+    #[tokio::test]
+    async fn external_with_member_refs_is_invalid_and_touches_nothing() {
+        let fj = forgejo_with_orgs(&["weebo"]).await;
+        let mut s = spec("devs");
+        s.members_policy = MembersPolicy::External;
+        s.member_refs = vec![api::common::ObjectRef {
+            name: "alice".into(),
+        }];
+        fj.clear_calls();
+
+        let outcome = run(&s, None, "weebo", vec![], false, &fj).await;
+        assert_eq!(outcome.reason(), ReasonCode::InvalidSpec);
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
     }
 

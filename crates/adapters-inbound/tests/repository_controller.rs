@@ -72,6 +72,7 @@ async fn org_and_team(client: &kube::Client) {
                     units_map: Default::default(),
                     includes_all_repositories: false,
                     can_create_org_repo: false,
+                    members_policy: Default::default(),
                     member_refs: vec![],
                     deletion_policy: DeletionPolicy::Delete,
                 },

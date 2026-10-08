@@ -124,6 +124,7 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
                     units_map: Default::default(),
                     includes_all_repositories: false,
                     can_create_org_repo: false,
+                    members_policy: Default::default(),
                     member_refs: vec![ObjectRef {
                         name: "alice".into(),
                     }],

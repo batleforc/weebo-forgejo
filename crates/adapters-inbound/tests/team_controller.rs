@@ -51,6 +51,7 @@ fn team(name: &str, org: &str, members: &[&str]) -> ForgejoTeam {
             units_map: Default::default(),
             includes_all_repositories: false,
             can_create_org_repo: false,
+            members_policy: Default::default(),
             member_refs: members
                 .iter()
                 .map(|m| ObjectRef {

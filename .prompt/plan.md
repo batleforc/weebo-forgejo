@@ -100,6 +100,43 @@ Les `ForgejoInstance` sont mises en cache dans un reflector partagé.
 
 Suppression d'un utilisateur : jamais `purge=true`.
 
+**Membres d'équipe venant des groupes OIDC** : `ForgejoTeam.spec.membersPolicy`
+= `Managed` (défaut, `memberRefs` autoritaire) | `External` (l'opérateur
+ne touche jamais aux membres ; `memberRefs` non vide ⇒ `InvalidSpec`, sans
+appel Forgejo). Les membres viennent alors de la synchro groupe → équipe
+de la source d'authentification (`group-team-map`, `dyn-group-maps`),
+configurée hors opérateur. Constats (code Forgejo 16.0.5,
+`services/auth/source/source_group_sync.go`) : synchro **uniquement au
+login web OIDC** (révocation différée : tokens et clés SSH restent
+valides jusque-là) ; org et équipe doivent exister (sinon warning et
+ignorées) ; `group-team-map-removal` ne retire que des équipes mappées,
+mais `dyn-group-maps-removal` retire de **toutes** les équipes non
+mappées (y compris `Owners` et les équipes `Managed`). La source est
+relue en base à chaque login : un `update-oauth` prend effet sans
+redémarrage (sauf le cache des `dyn-group-maps` au premier login).
+
+Configuration recommandée (guide `oidc-groups`) : une **convention de
+nommage** posée une fois dans le chart Forgejo, `dynGroupMaps:
+'["forgejo/{org}/{team}"]'`, pour qu'une nouvelle équipe ne demande
+qu'une `ForgejoTeam` `External` et un groupe chez l'IdP — jamais de
+`helm upgrade` ni de redémarrage. Constats (chart forgejo-helm 17.2.0,
+Forgejo 16.0.5 réel + IdP OIDC de test) : le chart rejoue `update-oauth`
+à chaque démarrage, n'écrase que les options qu'il passe ; il rend
+`dynGroupMapsRemoval: true` en `--dyn-group-maps-removal "true"`, que la
+CLI refuse (`unexpected arguments`) ⇒ init en échec : l'option s'active
+une fois à la main (`kubectl exec … update-oauth --dyn-group-maps-removal`)
+et survit aux redémarrages. `scopes` doit inclure `profile` (Forgejo ne
+demande que `openid` par défaut ; Authentik met `groups` dans `profile`),
+séparés par des virgules, relus au démarrage seulement.
+
+Écarté : l'opérateur qui écrit `group-team-map` via `kubectl exec`
+(`pods/exec` sur Forgejo = accès à `app.ini`, CLI non stable). **Piste
+future** si le délai de révocation (au login) devient bloquant :
+`membersPolicy: Group` + `groupRef` vers un `AuthentikGroup`
+(weebo-authentik), l'opérateur calculant les membres lui-même —
+révocation au reconcile, plus de config côté Forgejo, au prix d'un
+couplage entre les deux opérateurs.
+
 ### Propriété des objets "par utilisateur" (Sudo)
 
 L'API OAuth2 (`/user/applications/oauth2`) est strictement scoppée à

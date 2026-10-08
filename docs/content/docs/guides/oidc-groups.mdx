@@ -1,0 +1,203 @@
+---
+title: OIDC groups and teams
+description: Let your identity provider's groups decide who is in which Forgejo team, with a naming convention set up once.
+---
+
+Rather than listing members in each `ForgejoTeam`, you can let your identity
+provider decide: whoever is in the group `forgejo/weebo/devs` is in the team
+`devs` of the organization `weebo`. Three parties share the work, and none
+does the others' job:
+
+| Who | Does what |
+| --- | --- |
+| The identity provider (Authentik here) | Holds the groups and who is in them. |
+| Forgejo's authentication source | At each sign-in, reads the user's groups and adds or removes them from the matching teams. |
+| The operator | Creates the organization and the team, sets their rights and repositories. **Never** touches the members (`membersPolicy: External`). |
+
+<GroupSyncDiagram />
+
+The mapping is a **naming convention**, configured once on the
+authentication source: `forgejo/{org}/{team}`. A new team needs a
+`ForgejoTeam` and a group at the provider, never a change to Forgejo's
+configuration or a restart.
+
+## Before you begin
+
+- Forgejo deployed with the [Forgejo Helm chart](https://code.forgejo.org/forgejo-helm/forgejo-helm),
+  and an OAuth2/OIDC provider for it at your identity provider. Its
+  redirect URI is `https://<forgejo>/user/oauth2/<source name>/callback`.
+- The operator connected to that Forgejo (see
+  [Connect an instance](/docs/guides/connect-instance)).
+- `kubectl exec` access to the Forgejo pod, once, for
+  [step 2](#2-turn-on-removal-once).
+
+## 1. Configure the authentication source
+
+In the Forgejo chart's values:
+
+```yaml
+gitea:
+  oauth:
+    - name: authentik                    # the source name, part of the redirect URI
+      provider: openidConnect
+      existingSecret: forgejo-oidc       # keys: key (client id), secret (client secret)
+      autoDiscoverUrl: https://auth.example.com/application/o/forgejo/.well-known/openid-configuration
+      scopes: openid,email,profile       # comma-separated
+      groupClaimName: groups
+      dynGroupMaps: '["forgejo/{org}/{team}"]'
+```
+
+- **`scopes` must include `profile`.** Without `scopes`, Forgejo only asks
+  for `openid`, and Authentik puts the `groups` claim in the `profile`
+  scope. Separate scopes with commas: `openid email profile` would be
+  stored as a single scope.
+- **`dynGroupMaps`** is a JSON list of patterns. `{org}` and `{team}`
+  capture letters, digits, `-`, `_` and `.`, and matching ignores case:
+  `Forgejo/Weebo/Site-Admins` maps to the team `site-admins` of `weebo`.
+  Pick a separator that can't appear in a name, like `/`.
+
+The chart applies these values at every start of the pod, and restarts it
+when they change.
+
+<Callout type="error" title="Don't put dynGroupMapsRemoval in the chart values">
+The chart passes it as `--dyn-group-maps-removal "true"`, which Forgejo's
+CLI rejects (`unexpected arguments: true`) without creating the source.
+The chart's init container then fails, and Forgejo doesn't start. Turn it
+on once by hand instead (next step).
+</Callout>
+
+## 2. Turn on removal (once)
+
+Without removal, a user who leaves a group stays in the team forever. Turn
+it on directly on the source:
+
+```bash
+# The source id, in the first column
+kubectl -n forgejo exec deploy/forgejo -c forgejo -- forgejo admin auth list
+
+kubectl -n forgejo exec deploy/forgejo -c forgejo -- \
+  forgejo admin auth update-oauth --id 1 --dyn-group-maps-removal
+```
+
+The setting is stored in Forgejo's database. The chart only updates the
+options it passes, so its next runs leave it on. It takes effect at the
+next sign-in, with no restart.
+
+<Callout type="warn" title="Removal applies to every team">
+With removal on, each sign-in takes the user out of **every** team that no
+group maps them to, in every organization. That includes the `Owners`
+teams and teams with `membersPolicy: Managed`. See
+[the rules](#rules-for-mixing-with-other-teams).
+</Callout>
+
+## 3. Declare the team
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoTeam
+metadata:
+  name: weebo-devs
+spec:
+  organizationRef: { name: weebo }
+  name: devs                     # the {team} part of the group name
+  permission: write
+  includesAllRepositories: true  # or list the team in each repository's teamRefs
+  membersPolicy: External        # members come from the groups
+```
+
+`memberRefs` must stay empty: with `External` the CR reports `InvalidSpec`
+otherwise. Rights and repositories work as for any team (see
+[Team access levels](/docs/guides/users-and-oidc#team-access-levels)).
+
+The organization and the team must exist **before** anyone signs in with
+the group. Forgejo never creates them; it skips a group whose team is
+missing and logs `group sync: Could not find team`.
+
+## 4. Create the group at the provider
+
+The group name is the pattern with the Forgejo names filled in:
+`forgejo/weebo/devs`. With [weebo-authentik](https://github.com/batleforc/weebo-authentik):
+
+```yaml
+apiVersion: authentik.weebo.io/v1alpha1
+kind: AuthentikGroup
+metadata:
+  name: forgejo-weebo-devs
+spec:
+  name: forgejo/weebo/devs
+---
+apiVersion: authentik.weebo.io/v1alpha1
+kind: AuthentikUser
+metadata:
+  name: alice
+spec:
+  username: alice
+  name: Alice
+  email: alice@example.com
+  groupRefs:
+    - forgejo/weebo/devs         # the Authentik group name, not the CR name
+```
+
+Or create the group in Authentik's admin interface.
+
+## 5. Check it
+
+Have the user sign in to Forgejo through the provider, then look at the
+team's members (*Organization → Teams → devs* in Forgejo). They're added at
+this sign-in, and the operator leaves them alone afterwards.
+
+## When membership changes
+
+Forgejo syncs the groups **only when the user signs in through the
+provider** on the web. Nothing happens in between:
+
+- **Added to a group:** they join the team at their next sign-in.
+- **Removed from a group:** they leave the team at their next sign-in.
+  Until then they keep the team's access, **including through their API
+  tokens and SSH keys**, which never go through the provider. To cut access
+  right away, also remove them from the team in Forgejo (the operator won't
+  put them back) or block the account.
+
+## Rules for mixing with other teams
+
+Because removal sweeps every team not mapped by a group, follow these
+rules:
+
+| Team | Its members |
+| --- | --- |
+| Any team an OIDC user should be in | `membersPolicy: External`, filled by a `forgejo/{org}/{team}` group. |
+| An organization's `Owners` | A group too: `forgejo/weebo/owners`. Otherwise owners lose the team at their next sign-in. |
+| `membersPolicy: Managed` | Only accounts that never sign in through the provider: bots, local accounts. |
+
+Bots and local accounts are safe in any team: the sync only runs for the
+user who is signing in through the provider.
+
+## Alternative: one entry per group
+
+If you can't rename your groups, map them explicitly instead:
+
+```yaml
+gitea:
+  oauth:
+    - name: authentik
+      # ...as above, without dynGroupMaps
+      groupClaimName: groups
+      groupTeamMap: '{"developers": {"weebo": ["devs"]}, "readers": {"weebo": ["ro"]}}'
+      groupTeamMapRemoval: true
+```
+
+Here the chart handles `groupTeamMapRemoval` correctly, and removal is
+narrower: it only takes users out of the teams **listed in the map**, so
+`Managed` teams and `Owners` are left alone. The cost is that every new
+team means editing the chart values, and the chart restarts Forgejo.
+
+## Troubleshooting
+
+| Symptom | Cause |
+| --- | --- |
+| Nobody is ever added | The token has no `groups` claim: check that `scopes` includes `profile`. Scopes are read when Forgejo starts, so restart it after changing them by hand. |
+| One group is ignored | Its team or organization doesn't exist yet (`group sync: Could not find team` in Forgejo's log), or the name has a character outside letters, digits, `-`, `_`, `.`. |
+| Users lose a team the operator gave them | Removal is on and the team is `Managed` or `Owners`: see [the rules](#rules-for-mixing-with-other-teams). |
+| Someone removed from the group still has access | Expected until their next sign-in: see [When membership changes](#when-membership-changes). |
+| Forgejo's pod doesn't start after a chart change | `dynGroupMapsRemoval` is in the values: remove it and use [step 2](#2-turn-on-removal-once). |
+| The `ForgejoTeam` reports `InvalidSpec` | `memberRefs` is set together with `membersPolicy: External`. |

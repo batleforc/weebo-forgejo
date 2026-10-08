@@ -50,6 +50,13 @@ pub struct ForgejoTeamSpec {
     pub includes_all_repositories: bool,
     #[serde(default)]
     pub can_create_org_repo: bool,
+    /// Who decides the team's members. `Managed` (the default):
+    /// `memberRefs` is authoritative. `External`: the operator never adds
+    /// or removes members, leaving them to Forgejo's OIDC group sync
+    /// (`group-team-map` / `dyn-group-maps` on the authentication source);
+    /// `memberRefs` must then be empty.
+    #[serde(default)]
+    pub members_policy: MembersPolicy,
     /// `ForgejoUser`s in the team. The member list is authoritative:
     /// anyone else is removed. A member whose user doesn't exist in Forgejo
     /// yet (e.g. an observed OIDC user who never logged in) is reported as
@@ -67,4 +74,17 @@ pub enum TeamPermission {
     Read,
     Write,
     Admin,
+}
+
+/// Who owns a team's member list.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, JsonSchema, PartialEq, Eq)]
+pub enum MembersPolicy {
+    /// `memberRefs` is authoritative: listed users are added, anyone else
+    /// is removed.
+    #[default]
+    Managed,
+    /// Members come from outside the operator — typically Forgejo's OIDC
+    /// group sync, which runs at each sign-in. The operator still owns the
+    /// team itself (name, permission, units, repositories).
+    External,
 }

@@ -594,6 +594,78 @@ async fn team_members_units_and_gated_move() {
     }
 }
 
+/// `membersPolicy: External`: members added outside the operator (Forgejo's
+/// OIDC group sync) survive reconciles that still drive the team itself.
+#[tokio::test]
+#[ignore = "needs a live Forgejo: task test:live-forgejo"]
+async fn external_team_members_are_left_to_forgejo() {
+    let l = live().await;
+    let orgs: Api<ForgejoOrganization> = l.cluster_api();
+    let teams: Api<ForgejoTeam> = l.cluster_api();
+    let org_name = l.name("ext-org");
+    let synced = l.name("synced");
+
+    l.create(
+        &orgs,
+        org("ext", json!({"name": org_name, "deletionPolicy": "Delete"})),
+    )
+    .await;
+    l.create(
+        &teams,
+        team(
+            "ext",
+            json!({"organizationRef": {"name": "ext"}, "name": "devs", "permission": "write",
+                   "membersPolicy": "External"}),
+        ),
+    )
+    .await;
+    let id = wait_for(&teams, "ext", |t| ready_id(t.status.as_ref())).await;
+
+    // What the group sync does at sign-in, then a reconcile that does
+    // change the team: the member stays.
+    forgejo_user(&l, &synced).await;
+    l.fj.add_team_member(id, &synced).await.unwrap();
+    merge(&teams, "ext", json!({"spec": {"description": "synced"}})).await;
+    for _ in 0..60 {
+        let remote = l.fj.get_team(id).await.unwrap().unwrap();
+        if remote.description == "synced" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    wait_for(&teams, "ext", |t| ready(t.status.as_ref())).await;
+    assert_eq!(
+        l.fj.get_team(id).await.unwrap().unwrap().description,
+        "synced"
+    );
+    assert_eq!(
+        l.fj.list_team_members(id).await.unwrap(),
+        vec![synced.clone()]
+    );
+
+    // memberRefs contradicts External.
+    merge(
+        &teams,
+        "ext",
+        json!({"spec": {"memberRefs": [{"name": "nobody"}]}}),
+    )
+    .await;
+    wait_for(&teams, "ext", |t| {
+        failed_with(t.status.as_ref(), "InvalidSpec")
+    })
+    .await;
+    assert_eq!(
+        l.fj.list_team_members(id).await.unwrap(),
+        vec![synced.clone()]
+    );
+
+    teams.delete("ext", &Default::default()).await.unwrap();
+    wait_for_absence(&teams, "ext").await;
+    orgs.delete("ext", &Default::default()).await.unwrap();
+    wait_for_absence(&orgs, "ext").await;
+    l.fj.delete_user(&synced).await.unwrap();
+}
+
 fn instance(name: &str, url: &str, secret: &str) -> serde_json::Value {
     json!({
         "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoInstance",

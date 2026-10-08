@@ -137,6 +137,74 @@ Refs (`ownerRef`, `memberRefs`…) name **CRs**, not Forgejo accounts:
   [disruptive change](/docs/guides/operations#disruptive-changes) and needs
   the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
 
+### Team access levels
+
+A team's access has three parts. The team says **who** (`memberRefs`) and
+**how much** (`permission`, `unitsMap`). **Where** is either every repository
+of the organization (`includesAllRepositories: true`) or the repositories
+that list the team in their
+[`teamRefs`](/docs/guides/repositories#team-access-and-branch-protection).
+
+<TeamAccessDiagram />
+
+- **`permission`** is `read`, `write` or `admin`. With `unitsMap` empty,
+  every repository unit gets this level.
+- **`unitsMap`** sets the level unit by unit (`repo.code`, `repo.issues`,
+  `repo.pulls`, `repo.releases`, `repo.wiki`, `repo.projects`,
+  `repo.packages`, `repo.actions`) to `none`, `read`, `write` or `admin`.
+  Forgejo ignores it when `permission` is `admin`.
+- **`canCreateOrgRepo`** lets members create repositories in the
+  organization.
+
+| To give… | `permission` | `unitsMap` |
+| --- | --- | --- |
+| Read-only (RO) | `read` | empty |
+| Read-write (RW) | `write` | empty |
+| Full control of the team's repositories (settings, webhooks) | `admin` | ignored |
+| A mix, such as reviewers who read the code and write issues and PRs | `read` | `repo.code: read`, `repo.issues: write`, `repo.pulls: write`, `repo.actions: none` |
+
+```yaml
+spec:
+  organizationRef: { name: weebo }
+  name: reviewers
+  permission: read
+  unitsMap:
+    repo.code: read
+    repo.issues: write
+    repo.pulls: write
+    repo.actions: none
+  includesAllRepositories: true
+```
+
+Forgejo sets some limits of its own:
+
+- **A team belongs to one organization.** To grant access to several
+  organizations, create one `ForgejoTeam` per organization.
+- **Owner rights stay with the `Owners` team.** `admin` covers the team's
+  repositories, not the organization itself, and `Owners` can't be created
+  or managed through a `ForgejoTeam`.
+- **The level is set per team, not per repository.** `teamRefs` only grants
+  the repository. To give one repository more access than the others, use a
+  second team.
+
+### OIDC groups as team members
+
+Instead of `memberRefs`, a team can take its members from your identity
+provider's groups: Forgejo adds and removes users at each sign-in, and the
+operator, with `membersPolicy: External`, manages the team but never its
+members.
+
+```yaml
+spec:
+  organizationRef: { name: weebo }
+  name: devs
+  permission: write
+  membersPolicy: External        # default: Managed
+```
+
+Setting this up, and its limits, are covered in
+[OIDC groups and teams](/docs/guides/oidc-groups).
+
 ## SSH keys for a user
 
 `ForgejoUserKey` (`fjukey`) adds an SSH key to a user. It's typically used to

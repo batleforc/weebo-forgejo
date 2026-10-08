@@ -46,6 +46,15 @@
       },
       "type": "array"
     },
+    "membersPolicy": {
+      "default": "Managed",
+      "description": "Who decides the team's members. `Managed` (the default):\n`memberRefs` is authoritative. `External`: the operator never adds\nor removes members, leaving them to Forgejo's OIDC group sync\n(`group-team-map` / `dyn-group-maps` on the authentication source);\n`memberRefs` must then be empty.",
+      "enum": [
+        "Managed",
+        "External"
+      ],
+      "type": "string"
+    },
     "name": {
       "description": "Team name, unique within the organization. `Owners` is reserved.",
       "type": "string"

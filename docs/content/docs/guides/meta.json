@@ -4,6 +4,7 @@
     "install",
     "connect-instance",
     "users-and-oidc",
+    "oidc-groups",
     "repositories",
     "credentials",
     "allow-list",

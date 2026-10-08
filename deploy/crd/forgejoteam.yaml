@@ -78,6 +78,18 @@ spec:
                   - name
                   type: object
                 type: array
+              membersPolicy:
+                default: Managed
+                description: |-
+                  Who decides the team's members. `Managed` (the default):
+                  `memberRefs` is authoritative. `External`: the operator never adds
+                  or removes members, leaving them to Forgejo's OIDC group sync
+                  (`group-team-map` / `dyn-group-maps` on the authentication source);
+                  `memberRefs` must then be empty.
+                enum:
+                - Managed
+                - External
+                type: string
               name:
                 description: Team name, unique within the organization. `Owners` is reserved.
                 type: string
