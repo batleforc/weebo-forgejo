@@ -17,8 +17,9 @@ allow-list engine, shared CRD field types, secret stores (Kubernetes,
 Vault), telemetry, leader election, webhook TLS server, conditions/Events,
 metrics, envtest. The crates below keep only what is Forgejo-specific and
 re-export the kit where their callers expect it. Fix shared behaviour in
-the kit, not here. The kit is a `path` dependency for now — switch to a
-git tag before pushing (CI and container builds don't see the sibling).
+the kit, not here, then release it (tag) and bump the `tag` of the
+`weebo-kit-*` entries in `Cargo.toml`. For a joint change, temporarily
+use `path = "../weebo-operator-kit/crates/<crate>"` — never push that.
 
 - `crates/domain` — pure logic (`ReasonCode` catalog, conditions). Zero
   `kube`/`http` dependency.
