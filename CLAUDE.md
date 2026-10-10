@@ -57,6 +57,7 @@ use `path = "../weebo-operator-kit/crates/<crate>"` — never push that.
 task lint                # fmt --check, clippy -D warnings, hadolint, actionlint
 task doctor              # check envtest prerequisites (Go, libclang, etcd, kube-apiserver)
 task test                # unit + contract tests
+task perf                # resource budget of the release binary (weebo-kit-perf)
 task test:all            # + envtest controller tests (real apiserver)
 task test:live-forgejo   # gateway + controllers + importer against a real Forgejo (FORGEJO_URL/TOKEN)
 task e2e                 # kind e2e: chart + cert-manager + Forgejo, golden path (needs docker)

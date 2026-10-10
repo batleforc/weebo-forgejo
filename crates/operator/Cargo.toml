@@ -24,6 +24,7 @@ opentelemetry = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 wiremock = { workspace = true }
+weebo-kit-perf = { workspace = true }
 api = { workspace = true }
 testkit = { workspace = true }
 k8s-openapi = { workspace = true }
