@@ -290,16 +290,32 @@ async fn token_fans_out_and_is_reissued_when_a_target_is_lost() {
     let namespaces: Api<Namespace> = l.cluster_api();
     l.create(&namespaces, json!({"metadata": {"name": "other"}}))
         .await;
+    // A namespaced CR never writes into another namespace.
+    token_cr(
+        &l,
+        "escape",
+        json!({"userRef": {"name": "bot"}, "scopes": ["read:user"],
+               "secretTargets": [{"name": "stolen", "namespace": "other"}]}),
+    )
+    .await;
+    let tokens: Api<ForgejoAccessToken> = l.api();
+    wait_for(&tokens, "escape", |t| {
+        let ready = token_status(t)?.conditions.iter().find(|c| c.type_ == "Ready")?;
+        (ready.reason == "CrossNamespaceReference").then_some(())
+    })
+    .await;
+    let elsewhere: Api<Secret> = Api::namespaced(l.client.clone(), "other");
+    assert!(elsewhere.get_opt("stolen").await.unwrap().is_none());
+
     token_cr(
         &l,
         "ci",
         json!({"userRef": {"name": "bot"}, "scopes": ["read:user"],
-               "secretTargets": [{"name": "ci-a"}, {"name": "ci-b", "namespace": "other"}]}),
+               "secretTargets": [{"name": "ci-a"}, {"name": "ci-b"}]}),
     )
     .await;
-    let tokens: Api<ForgejoAccessToken> = l.api();
     let first_id = wait_for(&tokens, "ci", |t| ready_id(token_status(t))).await;
-    let other: Api<Secret> = Api::namespaced(l.client.clone(), "other");
+    let other: Api<Secret> = l.api();
     let read_other = || async {
         let s = other.get_opt("ci-b").await.unwrap()?;
         Some(String::from_utf8(s.data?.get("FORGEJO_TOKEN")?.0.clone()).unwrap())
@@ -684,7 +700,7 @@ async fn vault_secret_store_end_to_end() {
         .post(
             "sys/policies/acl/weebo-forgejo",
             json!({"policy": "path \"secret/data/*\" { capabilities = [\"create\", \"read\", \"update\", \"delete\"] }\n\
-                              path \"secret/metadata/*\" { capabilities = [\"read\", \"delete\", \"list\"] }"}),
+                              path \"secret/metadata/*\" { capabilities = [\"create\", \"read\", \"update\", \"delete\", \"list\"] }"}),
         )
         .await;
     vault
@@ -733,7 +749,7 @@ async fn vault_secret_store_end_to_end() {
         "fan",
         json!({"userRef": {"name": "bot"}, "scopes": ["read:user"],
                "secretTargets": [{"backend": "kubernetes", "name": "fan-k8s"},
-                                 {"backend": "vault", "name": "fan", "path": "ci/fan"}]}),
+                                 {"backend": "vault", "name": "fan", "path": "weebo-forgejo/default/ci/fan"}]}),
     )
     .await;
     let tokens: Api<ForgejoAccessToken> = l.api();
@@ -756,7 +772,7 @@ async fn vault_secret_store_end_to_end() {
         "nothing in Kubernetes"
     );
 
-    let (fan, _) = vault.kv("ci/fan").await.expect("explicit Vault target");
+    let (fan, _) = vault.kv("weebo-forgejo/default/ci/fan").await.expect("explicit Vault target");
     assert_eq!(
         l.secret_value("fan-k8s", "FORGEJO_TOKEN").await.as_deref(),
         fan["FORGEJO_TOKEN"].as_str(),
@@ -780,7 +796,7 @@ async fn vault_secret_store_end_to_end() {
 
     // A lost Vault secret is noticed and reissued like a Kubernetes one.
     let resp = vault
-        .call(reqwest::Method::DELETE, "secret/metadata/ci/fan", None)
+        .call(reqwest::Method::DELETE, "secret/metadata/weebo-forgejo/default/ci/fan", None)
         .await;
     assert!(resp.status().is_success());
     tokens
@@ -793,7 +809,7 @@ async fn vault_secret_store_end_to_end() {
         .unwrap();
     let mut restored = None;
     for _ in 0..150 {
-        if let Some(v) = vault.kv("ci/fan").await {
+        if let Some(v) = vault.kv("weebo-forgejo/default/ci/fan").await {
             restored = Some(v.0);
             break;
         }
@@ -808,7 +824,7 @@ async fn vault_secret_store_end_to_end() {
         wait_for_absence(&tokens, name).await;
     }
     assert!(vault.kv(&format!("weebo-forgejo/{NS}/ci")).await.is_none());
-    assert!(vault.kv("ci/fan").await.is_none());
+    assert!(vault.kv("weebo-forgejo/default/ci/fan").await.is_none());
     assert!(l.secret_value("fan-k8s", "FORGEJO_TOKEN").await.is_none());
     let _ = std::fs::remove_file(&jwt_file);
 }

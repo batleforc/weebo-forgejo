@@ -174,6 +174,10 @@ relisible via GET). Donc :
   `spec.rotationPeriod` (durée) comparé à `status.lastRotation`.
 - Changement de `scopes` = delete-recreate = **disruptif** (cf. politique
   de mutation).
+- Ordre d'une rotation : **émettre le nouveau, l'écrire partout, puis
+  révoquer l'ancien** (le token alterne entre `name` et `name-next`, les
+  noms étant uniques par utilisateur). Écriture ratée : le nouveau est
+  révoqué, l'ancien reste valide, `secretPending` relance.
 
 ### ForgejoRepository (v1)
 
@@ -342,6 +346,34 @@ l'instance.
   (`weebo-forgejo-importer --version`) en CI et après publication.
 - **e2e kind** (`task e2e`, `deploy/e2e/run.sh`, hebdo) : toujours
   impossible localement (kind sur podman rootless), d'abord exécuté en CI.
+
+### Durcissement « prod ready » (revue d'octobre 2026)
+
+- **Secrets émis** : un CR namespacé n'écrit que dans **son** namespace
+  (`CrossNamespaceReference`, webhook + reconciler) et, sur Vault, sous
+  `<pathPrefix>/<namespace>/`. Les stores ne modifient/suppriment que ce
+  qu'ils possèdent : label `managed-by` + annotation
+  `forgejo.weebo.io/owner: <Kind>/<ns>/<name>` (Vault : `custom_metadata`).
+- **Identifiants d'admin** : token / app OAuth2 d'un `ForgejoUser`
+  `admin: true` (ou `@instance-admin`) refusés sauf règle `Allow` qui le
+  nomme dans `allowedUsers` — **même sans aucune policy**.
+- **Résolution par id** : utilisateurs et organisations renommés hors
+  opérateur sont retrouvés par id (renommés en retour, supprimés par id),
+  jamais recréés à côté ni confondus avec un homonyme.
+- `spec.instanceRef` **immuable** (règle CEL) ; règles CEL pour les
+  « exactement un de » (repo, webhook, clés, team External, email).
+- `ForgejoInstance` a un finalizer tant que des CR y sont liés ;
+  `forgejo.weebo.io/force-orphan: "true"` libère un CR sans cleanup ;
+  un cleanup raté émet un Event `CleanupFailed`.
+- Webhooks (même URL) et apps OAuth2 (même nom) : jamais de jumeau à la
+  création (`ForgejoObjectAlreadyExists`) ; patch de status retenté.
+- `appliedSecretHash` v3 : salé par CR + étiré (migration v2/legacy auto).
+- Leader election du kit (v0.2.0) : `resourceVersion` sur chaque écriture
+  du Lease, horloge monotone locale ; nom par défaut inchangé.
+- Contrôleurs : concurrence bornée, filtre generation/annotations/labels/
+  finalizers/deletion, backoff avec jitter, échecs « à changement requis »
+  relancés à 300 s ; appels Forgejo bornés par instance + métriques
+  `weebo_forgejo_forgejo_*` ; `/metrics` Prometheus, `/readyz` `/livez`.
 
 ## Convention d'erreurs : codes stables
 

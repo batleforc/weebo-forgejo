@@ -14,12 +14,15 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoWebhook",
+    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    validation = kube::core::Rule::new("has(self.spec.repositoryRef) != has(self.spec.organizationRef)").message("set exactly one of spec.repositoryRef and spec.organizationRef"),
     plural = "forgejowebhooks",
     shortname = "fjhook",
     namespaced,
     status = "ForgejoStatus",
     printcolumn = r#"{"name":"Target","type":"string","jsonPath":".status.forgejoName"}"#,
     printcolumn = r#"{"name":"URL","type":"string","jsonPath":".spec.url"}"#,
+    printcolumn = r#"{"name":"ID","type":"string","jsonPath":".status.forgejoId"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type==\"Ready\")].status"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]

@@ -19,6 +19,9 @@ spec:
     - jsonPath: .spec.readOnly
       name: ReadOnly
       type: boolean
+    - jsonPath: .status.forgejoId
+      name: ID
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -98,11 +101,13 @@ spec:
                       description: |-
                         Kubernetes `Secret` namespace (Vault: the namespace segment of the
                         default path). Defaults to the CR's own namespace; required on
-                        cluster-scoped CRs.
+                        cluster-scoped CRs. A namespaced CR may only name its own namespace.
                       nullable: true
                       type: string
                     path:
-                      description: 'Vault only: explicit KV v2 path under the instance''s mount.'
+                      description: |-
+                        Vault only: explicit KV v2 path under the instance's mount. On a
+                        namespaced CR it must stay under `<pathPrefix>/<namespace>/`.
                       nullable: true
                       type: string
                   required:
@@ -203,6 +208,12 @@ spec:
         - spec
         title: ForgejoDeployKey
         type: object
+        x-kubernetes-validations:
+        - message: 'spec.instanceRef is immutable: ids in status belong to the instance they were created on'
+          reason: FieldValueForbidden
+          rule: '(has(self.spec.instanceRef) ? self.spec.instanceRef : '''') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '''')'
+        - message: a generated key (no spec.publicKey) needs spec.secretTargets
+          rule: has(self.spec.publicKey) || (has(self.spec.secretTargets) && size(self.spec.secretTargets) > 0)
     served: true
     storage: true
     subresources:

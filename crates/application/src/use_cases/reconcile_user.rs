@@ -4,19 +4,28 @@
 
 use std::collections::BTreeMap;
 
-use api::common::{ManagementPolicy, SecretTarget};
+use api::common::ManagementPolicy;
 use api::user::ForgejoUserSpec;
 use domain::error::ReasonCode;
 use rand::Rng;
 use rand::distr::Alphanumeric;
 
 use crate::ports::{
-    DesiredUser, ForgejoGateway, ForgejoRef, GatewayError, RemoteUser, SecretStore,
+    DesiredUser, ForgejoGateway, ForgejoRef, GatewayError, RemoteUser, SecretOwner, SecretStore,
 };
-use crate::use_cases::{CleanupGateway, Failure, Outcome, differs};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, differs, emit};
+
+pub const KIND: &str = "ForgejoUser";
+
+/// The (cluster-scoped) CR named `cr_name`, as the owner of the password
+/// secrets it emits.
+fn secret_owner(cr_name: &str) -> SecretOwner<'_> {
+    SecretOwner::cluster(KIND, cr_name)
+}
 
 pub struct UserInput<'a> {
     pub spec: &'a ForgejoUserSpec,
+    pub cr_name: &'a str,
     /// From `status.forgejoId`/`status.forgejoName`.
     pub current: Option<ForgejoRef>,
     /// `metadata.generation != status.observedGeneration`: re-sends the
@@ -36,7 +45,8 @@ pub async fn reconcile_user(
     if spec.management_policy == ManagementPolicy::Observe {
         return observe(spec, gateway).await;
     }
-    if let Err(f) = validate(spec) {
+    let owner = secret_owner(input.cr_name);
+    if let Err(f) = validate(spec, &owner) {
         return Outcome::failed(input.current, f);
     }
 
@@ -46,7 +56,7 @@ pub async fn reconcile_user(
     };
 
     let Some(remote) = remote else {
-        return create(spec, gateway, secrets).await;
+        return create(spec, &owner, gateway, secrets).await;
     };
     let current = Some(ForgejoRef {
         id: remote.id,
@@ -61,7 +71,7 @@ pub async fn reconcile_user(
     // set a new one.
     let mut new_password = None;
     if spec.emits_password() {
-        match any_target_missing(spec, secrets).await {
+        match emit::any_missing(&spec.secret_targets, &owner, secrets).await {
             Ok(false) if !input.secret_pending => {}
             Ok(_) => {
                 let password = generate_password();
@@ -71,14 +81,23 @@ pub async fn reconcile_user(
             }
             Err(f) => return Outcome::failed(current, f),
         }
+    } else if spec.is_local() && input.spec_changed {
+        // Turned into a bot (or its targets dropped): the password handed
+        // out before must stop working. A bot's password is discarded, so
+        // replacing it on any spec change is harmless.
+        desired.password = Some(generate_password());
+        needs_edit = true;
+        if let Err(f) = emit::delete_all(&spec.secret_targets, &owner, secrets).await {
+            return Outcome::failed(current, f);
+        }
     }
 
     if needs_edit && let Err(e) = gateway.edit_user(&remote.login, &desired).await {
-        return Outcome::failed(current, e);
+        return Outcome::failed(current, source_failure(spec, e));
     }
     let mut outcome = Outcome::synced(current.clone(), "user synced");
     if let Some(password) = new_password {
-        if let Err(f) = write_password(spec, &password, gateway, secrets).await {
+        if let Err(f) = write_password(spec, &owner, &password, gateway, secrets).await {
             return pending(current, f);
         }
         outcome.secret_pending = Some(false);
@@ -88,8 +107,12 @@ pub async fn reconcile_user(
 
 /// Deletes the account only for `deletionPolicy: Delete` (never purged),
 /// and the emitted password secrets in every case.
+///
+/// The account is addressed by its id, never by the stored login: after a
+/// rename outside the operator, another account may hold the old login.
 pub async fn cleanup_user(
     spec: &ForgejoUserSpec,
+    cr_name: &str,
     current: Option<&ForgejoRef>,
     gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
@@ -100,22 +123,17 @@ pub async fn cleanup_user(
     if spec.deletion_policy == api::common::DeletionPolicy::Delete
         && let Some(current) = current
     {
-        match gateway
-            .map_err(Clone::clone)?
-            .delete_user(&current.name)
-            .await
-        {
-            Ok(()) | Err(GatewayError::NotFound(_)) => {}
-            Err(e) => return Err(e.into()),
+        let gateway = gateway.map_err(Clone::clone)?;
+        // `None`: already deleted.
+        if let Some(login) = gateway.user_login(current.id).await? {
+            match gateway.delete_user(&login).await {
+                Ok(()) | Err(GatewayError::NotFound(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
     }
-    if spec.emits_password() {
-        for target in &spec.secret_targets {
-            secrets
-                .delete(target, None)
-                .await
-                .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))?;
-        }
+    if spec.is_local() {
+        emit::delete_all(&spec.secret_targets, &secret_owner(cr_name), secrets).await?;
     }
     Ok(())
 }
@@ -143,7 +161,7 @@ async fn observe(spec: &ForgejoUserSpec, gateway: &dyn ForgejoGateway) -> Outcom
     }
 }
 
-fn validate(spec: &ForgejoUserSpec) -> Result<(), Failure> {
+fn validate(spec: &ForgejoUserSpec, owner: &SecretOwner<'_>) -> Result<(), Failure> {
     let invalid = |m: &str| Err(Failure::new(ReasonCode::InvalidSpec, m));
     if spec.email.is_none() {
         return invalid("spec.email is required unless managementPolicy is Observe");
@@ -153,20 +171,14 @@ fn validate(spec: &ForgejoUserSpec) -> Result<(), Failure> {
             "a local, non-bot user needs spec.secretTargets to receive its generated password",
         );
     }
-    for target in &spec.secret_targets {
-        if target.namespace.is_none() {
-            return invalid(
-                "spec.secretTargets[].namespace is required on a cluster-scoped ForgejoUser",
-            );
-        }
-    }
-    Ok(())
+    emit::check_targets(&spec.secret_targets, owner)
 }
 
-/// Finds the remote user this CR owns, renaming it first when
-/// `spec.username` moved away from the current login. `Ok(None)` means
-/// nothing is owned yet — or it was deleted out of band, in which case the
-/// CR (authoritative) recreates it.
+/// Finds the remote user this CR owns — by id: a rename outside the
+/// operator moves the account, and its old login may belong to someone
+/// else by now — renaming it back to `spec.username` when they differ.
+/// `Ok(None)` means nothing is owned yet, or it was deleted out of band,
+/// in which case the CR (authoritative) recreates it.
 async fn locate(
     spec: &ForgejoUserSpec,
     current: Option<&ForgejoRef>,
@@ -175,8 +187,11 @@ async fn locate(
     let Some(current) = current else {
         return Ok(None);
     };
-    if current.name != spec.username {
-        match gateway.rename_user(&current.name, &spec.username).await {
+    let Some(login) = gateway.user_login(current.id).await? else {
+        return Ok(None);
+    };
+    if login != spec.username {
+        match gateway.rename_user(&login, &spec.username).await {
             Ok(()) | Err(GatewayError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
@@ -191,6 +206,7 @@ async fn locate(
 
 async fn create(
     spec: &ForgejoUserSpec,
+    owner: &SecretOwner<'_>,
     gateway: &dyn ForgejoGateway,
     secrets: &dyn SecretStore,
 ) -> Outcome {
@@ -202,13 +218,13 @@ async fn create(
 
     let created = match gateway.create_user(&desired).await {
         Ok(r) => r,
-        Err(e) => return Outcome::failed(None, e),
+        Err(e) => return Outcome::failed(None, source_failure(spec, e)),
     };
     let current = Some(created.clone());
 
     if spec.emits_password()
         && let Some(password) = &password
-        && let Err(f) = write_password(spec, password, gateway, secrets).await
+        && let Err(f) = write_password(spec, owner, password, gateway, secrets).await
     {
         // Persisting the id matters most here: the next reconcile resets
         // the password instead of failing on a second create.
@@ -225,6 +241,26 @@ async fn create(
         outcome.secret_pending = Some(false);
     }
     outcome
+}
+
+/// Forgejo refuses an unknown `source_id` with a generic 422 "login source
+/// does not exist": surfaced as `LoginSourceNotFound`.
+fn source_failure(spec: &ForgejoUserSpec, e: GatewayError) -> Failure {
+    match &e {
+        GatewayError::Api(m)
+            if spec.login_source_id.is_some()
+                && m.to_lowercase().contains("login source does not exist") =>
+        {
+            Failure::new(
+                ReasonCode::LoginSourceNotFound,
+                format!(
+                    "spec.loginSourceId {} matches no authentication source in Forgejo",
+                    spec.login_source_id.unwrap_or_default()
+                ),
+            )
+        }
+        _ => e.into(),
+    }
 }
 
 /// A failed password write: the targets may hold an outdated password, so
@@ -271,24 +307,9 @@ fn user_differs(d: &DesiredUser, r: &RemoteUser) -> bool {
         || d.login_name.as_deref().unwrap_or("") != r.login_name
 }
 
-async fn any_target_missing(
-    spec: &ForgejoUserSpec,
-    secrets: &dyn SecretStore,
-) -> Result<bool, Failure> {
-    for target in &spec.secret_targets {
-        let exists = secrets
-            .exists(target, None)
-            .await
-            .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))?;
-        if !exists {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 async fn write_password(
     spec: &ForgejoUserSpec,
+    owner: &SecretOwner<'_>,
     password: &str,
     gateway: &dyn ForgejoGateway,
     secrets: &dyn SecretStore,
@@ -298,21 +319,7 @@ async fn write_password(
         ("FORGEJO_PASSWORD".to_string(), password.to_string()),
         ("FORGEJO_URL".to_string(), gateway.web_url().to_string()),
     ]);
-    for target in &spec.secret_targets {
-        write_target(secrets, target, &data).await?;
-    }
-    Ok(())
-}
-
-async fn write_target(
-    secrets: &dyn SecretStore,
-    target: &SecretTarget,
-    data: &BTreeMap<String, String>,
-) -> Result<(), Failure> {
-    secrets
-        .write(target, None, data)
-        .await
-        .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))
+    emit::write_all(&spec.secret_targets, owner, &data, secrets).await
 }
 
 /// 32 alphanumerics: ~190 bits, and passes any `PASSWORD_COMPLEXITY`
@@ -327,7 +334,7 @@ fn generate_password() -> String {
 
 #[cfg(test)]
 mod tests {
-    use api::common::{DeletionPolicy, Visibility};
+    use api::common::{DeletionPolicy, SecretTarget, Visibility};
     use api::instance::SecretStoreBackend;
 
     use super::*;
@@ -373,6 +380,7 @@ mod tests {
     ) -> Outcome {
         let input = UserInput {
             spec,
+            cr_name: "alice",
             current,
             spec_changed: false,
             secret_pending: false,
@@ -467,7 +475,7 @@ mod tests {
         secrets
             .write(
                 &target(),
-                None,
+                &secret_owner("alice"),
                 &BTreeMap::from([("FORGEJO_PASSWORD".into(), "stale".into())]),
             )
             .await
@@ -475,6 +483,7 @@ mod tests {
 
         let input = UserInput {
             spec: &spec,
+            cr_name: "alice",
             current: created,
             spec_changed: false,
             secret_pending: true,
@@ -591,7 +600,7 @@ mod tests {
         let spec = local("alice");
         let created = run(&spec, None, &fj, &secrets).await.forgejo;
 
-        cleanup_user(&spec, created.as_ref(), Ok(&fj), &secrets)
+        cleanup_user(&spec, "alice", created.as_ref(), Ok(&fj), &secrets)
             .await
             .unwrap();
         assert!(fj.user("alice").is_some());
@@ -605,9 +614,88 @@ mod tests {
         spec.deletion_policy = DeletionPolicy::Delete;
         let created = run(&spec, None, &fj, &secrets).await.forgejo;
 
-        cleanup_user(&spec, created.as_ref(), Ok(&fj), &secrets)
+        cleanup_user(&spec, "alice", created.as_ref(), Ok(&fj), &secrets)
             .await
             .unwrap();
         assert!(fj.user("alice").is_none());
+    }
+
+    /// Renamed in the UI: renamed back (found by id), never recreated next
+    /// to the original with a fresh password.
+    #[tokio::test]
+    async fn a_user_renamed_out_of_band_is_renamed_back() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let spec = local("alice");
+        let created = run(&spec, None, &fj, &secrets).await.forgejo.unwrap();
+        fj.rename_user("alice", "alice2").await.unwrap();
+        let again = run(&spec, Some(created.clone()), &fj, &secrets).await;
+        assert!(again.ready.is_ok(), "{again:?}");
+        assert_eq!(again.forgejo.as_ref().map(|r| r.id), Some(created.id));
+        assert!(fj.get_user("alice2").await.unwrap().is_none());
+        assert_eq!(fj.get_user("alice").await.unwrap().unwrap().id, created.id);
+    }
+
+    /// Deleted by id: after an out-of-band rename, another account holding
+    /// the old login is left alone.
+    #[tokio::test]
+    async fn cleanup_deletes_by_id_not_by_stored_login() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let mut spec = local("alice");
+        spec.deletion_policy = DeletionPolicy::Delete;
+        let created = run(&spec, None, &fj, &secrets).await.forgejo.unwrap();
+        fj.rename_user("alice", "alice2").await.unwrap();
+        let other = run(&local("alice"), None, &fj, &FakeSecretStore::default())
+            .await
+            .forgejo
+            .unwrap();
+        cleanup_user(&spec, "alice", Some(&created), Ok(&fj), &secrets)
+            .await
+            .unwrap();
+        assert!(
+            fj.get_user("alice2").await.unwrap().is_none(),
+            "ours is gone"
+        );
+        assert_eq!(fj.get_user("alice").await.unwrap().unwrap().id, other.id);
+    }
+
+    /// A target holding someone else's Secret is never overwritten.
+    #[tokio::test]
+    async fn a_foreign_secret_target_is_refused() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        secrets.insert_foreign(
+            "team-a/alice-forgejo",
+            "someone-else",
+            BTreeMap::from([("db".to_string(), "keep".to_string())]),
+        );
+        let outcome = run(&local("alice"), None, &fj, &secrets).await;
+        assert_eq!(outcome.reason(), ReasonCode::SecretTargetFailed);
+        assert_eq!(secrets.get("team-a/alice-forgejo").unwrap()["db"], "keep");
+    }
+
+    /// Turned into a bot: the handed-out password stops working and its
+    /// secret goes.
+    #[tokio::test]
+    async fn becoming_a_bot_revokes_the_emitted_password() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let mut spec = local("alice");
+        let created = run(&spec, None, &fj, &secrets).await.forgejo;
+        assert!(secrets.get("team-a/alice-forgejo").is_some());
+        spec.bot = true;
+        fj.clear_calls();
+        let input = UserInput {
+            spec: &spec,
+            cr_name: "alice",
+            current: created,
+            spec_changed: true,
+            secret_pending: false,
+        };
+        let outcome = reconcile_user(input, &fj, &secrets).await;
+        assert!(outcome.ready.is_ok(), "{outcome:?}");
+        assert!(secrets.get("team-a/alice-forgejo").is_none());
+        assert!(
+            fj.calls().iter().any(|c| c.starts_with("edit_user")),
+            "{:?}",
+            fj.calls()
+        );
     }
 }

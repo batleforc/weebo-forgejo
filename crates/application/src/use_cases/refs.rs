@@ -34,7 +34,7 @@ pub async fn resolve(
     let Some(cr) = reader.referenced(kind, namespace, name).await? else {
         return Ok(RefState::NotFound);
     };
-    if cr.instance_ref.as_deref() != our_instance {
+    if !same_instance(reader, cr.instance_ref.as_deref(), our_instance).await? {
         return Ok(RefState::OtherInstance(cr.instance_ref));
     }
     Ok(match (cr.forgejo, cr.ready) {
@@ -54,11 +54,29 @@ pub async fn recorded_name(
     name: &str,
     our_instance: Option<&str>,
 ) -> Result<Option<String>, ClusterError> {
-    Ok(reader
-        .referenced(kind, namespace, name)
-        .await?
-        .filter(|cr| cr.instance_ref.as_deref() == our_instance)
-        .and_then(|cr| cr.forgejo_name))
+    let Some(cr) = reader.referenced(kind, namespace, name).await? else {
+        return Ok(None);
+    };
+    if !same_instance(reader, cr.instance_ref.as_deref(), our_instance).await? {
+        return Ok(None);
+    }
+    Ok(cr.forgejo_name)
+}
+
+/// Two `instanceRef`s designate the same instance: equal, or one empty
+/// while the other names the cluster's only instance.
+async fn same_instance(
+    reader: &dyn ReferenceReader,
+    theirs: Option<&str>,
+    ours: Option<&str>,
+) -> Result<bool, ClusterError> {
+    Ok(match (theirs, ours) {
+        (a, b) if a == b => true,
+        (Some(named), None) | (None, Some(named)) => {
+            reader.default_instance().await?.as_deref() == Some(named)
+        }
+        _ => false,
+    })
 }
 
 /// A single required ref: anything but `Ready` fails the reconcile.
@@ -362,5 +380,29 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn an_empty_instance_ref_matches_the_only_instance_by_name() {
+        let cluster = FakeCluster::default();
+        cluster.put(
+            RefKind::Organization,
+            "",
+            "weebo",
+            ReferencedCr {
+                instance_ref: Some("main".into()),
+                ..ready(1, "weebo")
+            },
+        );
+        // Several instances: an empty ref is no instance in particular.
+        let state = resolve(&cluster, RefKind::Organization, "", "weebo", None)
+            .await
+            .unwrap();
+        assert!(matches!(state, RefState::OtherInstance(_)), "{state:?}");
+        cluster.set_default_instance(Some("main"));
+        let state = resolve(&cluster, RefKind::Organization, "", "weebo", None)
+            .await
+            .unwrap();
+        assert!(matches!(state, RefState::Ready(_)), "{state:?}");
     }
 }

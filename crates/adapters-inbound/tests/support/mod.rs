@@ -47,6 +47,7 @@ pub async fn harness() -> Harness {
             },
         ),
         shutdown: Shutdown::never(),
+        health: Default::default(),
     });
     Harness {
         cluster,

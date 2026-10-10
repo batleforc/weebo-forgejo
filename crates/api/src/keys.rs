@@ -15,12 +15,15 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoDeployKey",
+    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    validation = kube::core::Rule::new("has(self.spec.publicKey) || (has(self.spec.secretTargets) && size(self.spec.secretTargets) > 0)").message("a generated key (no spec.publicKey) needs spec.secretTargets"),
     plural = "forgejodeploykeys",
     shortname = "fjdkey",
     namespaced,
     status = "ForgejoStatus",
     printcolumn = r#"{"name":"Repository","type":"string","jsonPath":".spec.repositoryRef.name"}"#,
     printcolumn = r#"{"name":"ReadOnly","type":"boolean","jsonPath":".spec.readOnly"}"#,
+    printcolumn = r#"{"name":"ID","type":"string","jsonPath":".status.forgejoId"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type==\"Ready\")].status"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
@@ -48,10 +51,13 @@ pub struct ForgejoDeployKeySpec {
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoUserKey",
+    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    validation = kube::core::Rule::new("has(self.spec.publicKey) || (has(self.spec.secretTargets) && size(self.spec.secretTargets) > 0)").message("a generated key (no spec.publicKey) needs spec.secretTargets"),
     plural = "forgejouserkeys",
     shortname = "fjukey",
     status = "ForgejoStatus",
     printcolumn = r#"{"name":"User","type":"string","jsonPath":".spec.userRef.name"}"#,
+    printcolumn = r#"{"name":"ID","type":"string","jsonPath":".status.forgejoId"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type==\"Ready\")].status"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]

@@ -38,4 +38,14 @@ COPY --from=builder /build/target/release/weebo-forgejo-importer /usr/local/bin/
 # `runAsNonRoot` without resolving names; the Helm chart pins the same UID.
 USER 65532:65532
 
+# Static OCI metadata; version, revision and created are added by the
+# publish workflow (build-push-action `labels:`).
+LABEL org.opencontainers.image.title="weebo-forgejo-operator" \
+      org.opencontainers.image.description="Kubernetes operator managing Forgejo objects as CRDs" \
+      org.opencontainers.image.source="https://github.com/batleforc/weebo-forgejo" \
+      org.opencontainers.image.url="https://github.com/batleforc/weebo-forgejo" \
+      org.opencontainers.image.documentation="https://batleforc.github.io/weebo-forgejo" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="batleforc"
+
 ENTRYPOINT ["/usr/local/bin/operator"]

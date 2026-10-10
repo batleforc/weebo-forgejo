@@ -29,7 +29,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: forgejo
-          image: codeberg.org/forgejo/forgejo:16-rootless
+          # Pinned (tag + digest); keep in step with .tasks/gen.yaml FORGEJO_VERSION.
+          image: codeberg.org/forgejo/forgejo:16.0.5-rootless@sha256:5effb7305584aca479b29fde6f9631a6dbe86ae798ae02eeea33a3666f0c0bf8
           env:
             - name: FORGEJO__security__INSTALL_LOCK
               value: "true"

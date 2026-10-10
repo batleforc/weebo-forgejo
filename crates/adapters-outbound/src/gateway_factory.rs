@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use api::ForgejoInstance;
@@ -7,8 +8,12 @@ use application::ports::{ForgejoGateway, GatewayFactory, GatewayFactoryError};
 use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt};
 
+use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
+
 use crate::forgejo_http::ForgejoHttpGateway;
 use crate::instance_resolver::InstanceResolver;
+use crate::metered::{MeteredGateway, max_inflight};
 use weebo_kit_adapters::read_secret_key;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -18,12 +23,29 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MIGRATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Builds a [`ForgejoHttpGateway`] per call from the selected
-/// `ForgejoInstance`. Nothing is cached: the token `Secret` is re-read on
-/// every call (rotation needs no restart), and an edited `spec.tls` or
-/// rotated CA applies on the next reconcile.
+/// `ForgejoInstance`, wrapped in a [`MeteredGateway`]. The token `Secret`
+/// (and CA) are re-read on every call — a rotation needs no restart — but
+/// the HTTP clients (connection pools, TLS sessions) are reused per
+/// instance until its TLS settings or CA content change, and every gateway
+/// of one instance shares its in-flight limit.
 pub struct ForgejoGatewayFactory {
     client: Client,
     instances: InstanceResolver,
+    cache: Mutex<HashMap<String, CachedClients>>,
+}
+
+/// What the HTTP clients of an instance were built from.
+#[derive(Clone, PartialEq, Eq)]
+struct ClientKey {
+    insecure_skip_verify: bool,
+    ca_digest: Option<Vec<u8>>,
+}
+
+struct CachedClients {
+    key: ClientKey,
+    http: reqwest::Client,
+    slow: reqwest::Client,
+    permits: Arc<Semaphore>,
 }
 
 impl ForgejoGatewayFactory {
@@ -33,7 +55,46 @@ impl ForgejoGatewayFactory {
         Self {
             instances: InstanceResolver::new(client.clone(), store),
             client,
+            cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The instance's cached clients, rebuilt when what they were built
+    /// from changed.
+    fn clients(
+        &self,
+        instance: &ForgejoInstance,
+        ca_pem: Option<&[u8]>,
+    ) -> Result<(reqwest::Client, reqwest::Client, Arc<Semaphore>), GatewayFactoryError> {
+        let key = ClientKey {
+            insecure_skip_verify: instance.spec.tls.insecure_skip_verify,
+            ca_digest: ca_pem.map(|pem| Sha256::digest(pem).to_vec()),
+        };
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        let name = instance.name_any();
+        if let Some(c) = cache.get(&name)
+            && c.key == key
+        {
+            return Ok((c.http.clone(), c.slow.clone(), c.permits.clone()));
+        }
+        let http = build_http_client(&instance.spec.tls, ca_pem, REQUEST_TIMEOUT)?;
+        let slow = build_http_client(&instance.spec.tls, ca_pem, MIGRATION_TIMEOUT)?;
+        // A TLS change keeps the in-flight limit: calls still running on
+        // the old clients count against it.
+        let permits = cache
+            .get(&name)
+            .map(|c| c.permits.clone())
+            .unwrap_or_else(|| Arc::new(Semaphore::new(max_inflight())));
+        cache.insert(
+            name,
+            CachedClients {
+                key,
+                http: http.clone(),
+                slow: slow.clone(),
+                permits: permits.clone(),
+            },
+        );
+        Ok((http, slow, permits))
     }
 
     pub async fn build(
@@ -67,14 +128,12 @@ impl ForgejoGatewayFactory {
             ),
             None => None,
         };
-        let http = build_http_client(&instance.spec.tls, ca_pem.as_deref(), REQUEST_TIMEOUT)?;
-        let slow = build_http_client(&instance.spec.tls, ca_pem.as_deref(), MIGRATION_TIMEOUT)?;
+        let (http, slow, permits) = self.clients(instance, ca_pem.as_deref())?;
 
         let (api_base, web_url) = api::instance::split_urls(&instance.spec.url);
-        Ok(Arc::new(
-            ForgejoHttpGateway::new(api_base, web_url, token.trim().to_string(), http)
-                .with_slow_client(slow),
-        ))
+        let gateway = ForgejoHttpGateway::new(api_base, web_url, token.trim().to_string(), http)
+            .with_slow_client(slow);
+        Ok(Arc::new(MeteredGateway::new(Arc::new(gateway), permits)))
     }
 }
 

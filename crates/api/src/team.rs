@@ -14,6 +14,8 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoTeam",
+    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    validation = kube::core::Rule::new("!has(self.spec.membersPolicy) || self.spec.membersPolicy != 'External' || !has(self.spec.memberRefs) || size(self.spec.memberRefs) == 0").message("spec.memberRefs must be empty when membersPolicy is External"),
     plural = "forgejoteams",
     shortname = "fjteam",
     status = "ForgejoStatus",

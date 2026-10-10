@@ -1,27 +1,47 @@
 name: Release
 
-# Bumps the version from conventional commits, pushes the bump commit + tag,
-# then calls publish.yml for that tag (a tag pushed with GITHUB_TOKEN
-# triggers no workflow on its own). Manual only. If main's protection
-# requires signed commits, the bot's push is refused: bump locally instead
-# (`cog bump --auto`, then push the commit and tag) — publish.yml runs on
-# the pushed tag. See docs: "Releasing".
+# Gates main on the kind e2e, bumps the version from conventional commits,
+# pushes the bump commit + tag, then calls publish.yml for that tag (a tag
+# pushed with GITHUB_TOKEN triggers no workflow on its own), which pushes
+# and signs the images and the chart and creates the GitHub Release.
+# Manual only. If main's protection requires signed commits, the bot's push
+# is refused: bump locally instead (`cog bump --auto`, then push the commit
+# and tag) — publish.yml runs on the pushed tag, e2e gate included. See
+# docs: "Releasing".
 on:
   workflow_dispatch: {}
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
+  # Before anything is tagged: a failing e2e must not leave a tag without
+  # artifacts behind.
+  e2e:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/e2e.yml
+    with:
+      ref: main
+
   bump:
+    needs: e2e
     runs-on: ubuntu-latest
+    permissions:
+      # Pushes the bump commit and the tag.
+      contents: write
     outputs:
       bumped: ${{ steps.bump.outputs.bumped }}
       tag: ${{ steps.bump.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: main
           fetch-depth: 0
+          # Kept: this job pushes.
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: ./.github/actions/setup-mise
       - run: mise install
@@ -44,16 +64,23 @@ jobs:
           fi
       - name: Push bump commit and tag
         if: steps.bump.outputs.bumped == 'true'
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
         run: |
           git push origin HEAD:main
-          git push origin --tags
+          git push origin "refs/tags/$TAG"
 
   publish:
     needs: bump
     if: needs.bump.outputs.bumped == 'true'
+    # The union of what publish.yml's jobs request.
     permissions:
-      contents: read
+      contents: write
       packages: write
+      id-token: write
     uses: ./.github/workflows/publish.yml
     with:
       tag: ${{ needs.bump.outputs.tag }}
+      # The e2e job above already ran on main; the bump commit only
+      # changes version numbers.
+      run-e2e: false

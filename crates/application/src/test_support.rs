@@ -174,6 +174,30 @@ impl FakeForgejo {
             .map(|(_, t, v)| (t.clone(), v.clone()))
     }
 
+    /// Every OAuth2 application of `owner` (`admin` for the admin account).
+    pub fn oauth2_apps_of(&self, owner: &str) -> Vec<RemoteOAuth2App> {
+        self.state
+            .lock()
+            .unwrap()
+            .oauth2_apps
+            .values()
+            .filter(|(o, _, _)| o == owner)
+            .map(|(_, a, _)| a.clone())
+            .collect()
+    }
+
+    /// Every live token of `user`.
+    pub fn tokens_of(&self, user: &str) -> Vec<RemoteToken> {
+        self.state
+            .lock()
+            .unwrap()
+            .tokens
+            .values()
+            .filter(|(owner, _, _)| owner == user)
+            .map(|(_, t, _)| t.clone())
+            .collect()
+    }
+
     pub fn set_clock(&self, unix_seconds: i64) {
         self.state.lock().unwrap().clock = unix_seconds;
     }
@@ -427,6 +451,15 @@ impl ForgejoGateway for FakeForgejo {
             .values()
             .find(|u| u.remote.id == id)
             .map(|u| u.remote.login.clone()))
+    }
+
+    async fn organization_name(&self, id: i64) -> Result<Option<String>, GatewayError> {
+        Ok(self
+            .begin(None)?
+            .orgs
+            .values()
+            .find(|o| o.remote.id == id)
+            .map(|o| o.remote.name.clone()))
     }
 
     async fn create_user(&self, user: &DesiredUser) -> Result<ForgejoRef, GatewayError> {
@@ -942,6 +975,15 @@ impl ForgejoGateway for FakeForgejo {
         Ok(())
     }
 
+    async fn list_hooks(&self, target: &HookTarget) -> Result<Vec<RemoteHook>, GatewayError> {
+        let s = self.begin(None)?;
+        Ok(s.hooks
+            .values()
+            .filter(|h| h.target == target.to_string())
+            .map(|h| h.remote.clone())
+            .collect())
+    }
+
     async fn delete_hook(&self, target: &HookTarget, id: i64) -> Result<(), GatewayError> {
         let mut s = self.begin(Some(format!("delete_hook {target} {id}")))?;
         match s.hooks.get(&id) {
@@ -1077,6 +1119,19 @@ impl ForgejoGateway for FakeForgejo {
             }
             _ => Err(GatewayError::NotFound(id.to_string())),
         }
+    }
+
+    async fn list_oauth2_apps(
+        &self,
+        sudo: Option<&str>,
+    ) -> Result<Vec<RemoteOAuth2App>, GatewayError> {
+        let owner = sudo.unwrap_or("admin");
+        let s = self.begin(None)?;
+        Ok(s.oauth2_apps
+            .values()
+            .filter(|(o, _, _)| o == owner)
+            .map(|(_, a, _)| a.clone())
+            .collect())
     }
 
     async fn list_access_tokens(&self, username: &str) -> Result<Vec<RemoteToken>, GatewayError> {
@@ -1225,15 +1280,6 @@ impl ForgejoInventory for FakeForgejo {
             .collect())
     }
 
-    async fn list_hooks(&self, target: &HookTarget) -> Result<Vec<RemoteHook>, GatewayError> {
-        let s = self.begin(None)?;
-        Ok(s.hooks
-            .values()
-            .filter(|h| h.target == target.to_string())
-            .map(|h| h.remote.clone())
-            .collect())
-    }
-
     async fn list_deploy_keys(&self, full_name: &str) -> Result<Vec<RemoteKey>, GatewayError> {
         let s = self.begin(None)?;
         Ok(s.keys
@@ -1255,6 +1301,8 @@ pub struct FakeCluster {
     secrets: Mutex<BTreeMap<(String, String, String), Vec<u8>>>,
     policies: Mutex<Vec<Vec<NamespaceRule>>>,
     failure: Mutex<Option<String>>,
+    dependents: Mutex<Vec<String>>,
+    default_instance: Mutex<Option<String>>,
 }
 
 impl FakeCluster {
@@ -1283,6 +1331,16 @@ impl FakeCluster {
             .insert((namespace.into(), name.into(), key.into()), value);
     }
 
+    /// The cluster's only instance, if any (`default_instance`).
+    pub fn set_default_instance(&self, name: Option<&str>) {
+        *self.default_instance.lock().unwrap() = name.map(str::to_string);
+    }
+
+    /// What `instance_dependents` answers, whatever the instance.
+    pub fn set_dependents(&self, dependents: Vec<String>) {
+        *self.dependents.lock().unwrap() = dependents;
+    }
+
     /// One entry per `ForgejoNamespacePolicy`.
     pub fn set_policies(&self, policies: Vec<Vec<NamespaceRule>>) {
         *self.policies.lock().unwrap() = policies;
@@ -1303,6 +1361,20 @@ impl FakeCluster {
 
 #[async_trait::async_trait]
 impl ReferenceReader for FakeCluster {
+    async fn default_instance(&self) -> Result<Option<String>, ClusterError> {
+        self.check()?;
+        Ok(self.default_instance.lock().unwrap().clone())
+    }
+
+    async fn instance_dependents(
+        &self,
+        _instance: &str,
+        _default: bool,
+    ) -> Result<Vec<String>, ClusterError> {
+        self.check()?;
+        Ok(self.dependents.lock().unwrap().clone())
+    }
+
     async fn referenced(
         &self,
         kind: RefKind,

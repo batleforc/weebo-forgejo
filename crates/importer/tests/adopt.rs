@@ -160,6 +160,7 @@ async fn imported_objects_are_adopted_without_writes() {
             },
         ),
         shutdown: Shutdown::never(),
+        health: Default::default(),
     });
     tokio::spawn(controller::user::run(client.clone(), ctx.clone()));
     tokio::spawn(controller::organization::run(client.clone(), ctx.clone()));

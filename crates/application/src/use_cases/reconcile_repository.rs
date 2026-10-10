@@ -399,7 +399,7 @@ pub fn go_duration_secs(s: &str) -> Option<u64> {
         }
         let n: u64 = number.parse().ok()?;
         number.clear();
-        total += n * match c {
+        let unit = match c {
             'h' => 3600,
             's' => 1,
             'm' if chars.peek() == Some(&'s') => {
@@ -409,8 +409,11 @@ pub fn go_duration_secs(s: &str) -> Option<u64> {
             'm' => 60,
             _ => return None,
         };
+        // Overflow is an invalid duration, not a wrap-around (a huge
+        // rotation period must never read as already expired).
+        total = total.checked_add(n.checked_mul(unit)?)?;
     }
-    number.is_empty().then_some(total)
+    (number.is_empty() && i64::try_from(total).is_ok()).then_some(total)
 }
 
 fn sorted(v: &[String]) -> Vec<String> {
@@ -798,6 +801,8 @@ mod tests {
         assert_eq!(go_duration_secs("10m0s"), Some(600));
         assert_eq!(go_duration_secs("0"), Some(0));
         assert_eq!(go_duration_secs("soon"), None);
+        assert_eq!(go_duration_secs("99999999999999999999h"), None);
+        assert_eq!(go_duration_secs(&format!("{}h", u64::MAX / 3600)), None);
     }
 
     #[test]

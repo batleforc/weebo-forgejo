@@ -11,17 +11,21 @@ use crate::status::ForgejoStatus;
 ///
 /// Token values can't be read back: a lost target, a new
 /// `forgejo.weebo.io/rotate-secret` nonce or an elapsed `rotationPeriod`
-/// issues a new token (the old one is revoked first, as names are unique).
+/// issues a new token. The new token is issued and written to every target
+/// before the old one is revoked; as names are unique per user, a rotated
+/// token alternates between `name` and `name-next`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoAccessToken",
+    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
     plural = "forgejoaccesstokens",
     shortname = "fjtoken",
     namespaced,
     status = "ForgejoStatus",
     printcolumn = r#"{"name":"User","type":"string","jsonPath":".spec.userRef.name"}"#,
+    printcolumn = r#"{"name":"ID","type":"string","jsonPath":".status.forgejoId"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type==\"Ready\")].status"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]

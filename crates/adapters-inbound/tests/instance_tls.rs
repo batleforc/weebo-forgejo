@@ -64,6 +64,7 @@ async fn tls_options_decide_whether_the_instance_is_trusted() {
             },
         ),
         shutdown: Shutdown::never(),
+        health: Default::default(),
     });
     tokio::spawn(controller::instance::run(client.clone(), ctx));
     let (url, ca) = https_forgejo().await;

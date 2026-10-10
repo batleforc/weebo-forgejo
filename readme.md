@@ -18,6 +18,17 @@ site in [`docs/`](docs/) (`task docs`), examples in
 [`deploy/examples/`](deploy/examples/).
 Design and roadmap: [`.prompt/plan.md`](.prompt/plan.md).
 
+```bash
+helm install weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
+  --namespace weebo-forgejo --create-namespace
+```
+
+Releases (multi-arch images, chart, CRD bundle) are signed with cosign and
+ship an SBOM and SLSA provenance:
+[verify a release](https://batleforc.github.io/weebo-forgejo/docs/guides/verify-release).
+Security reports: [SECURITY.md](SECURITY.md). Contributing:
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Development
 
 ```bash

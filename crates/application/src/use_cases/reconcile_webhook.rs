@@ -15,7 +15,7 @@ use api::webhook::ForgejoWebhookSpec;
 use domain::error::ReasonCode;
 use sha2::{Digest, Sha256};
 
-use crate::ports::{DesiredHook, ForgejoGateway, ForgejoRef, HookTarget, RemoteHook};
+use crate::ports::{DesiredHook, ForgejoGateway, ForgejoRef, GatewayError, HookTarget, RemoteHook};
 use crate::use_cases::{CleanupGateway, Failure, Outcome, gone_ok};
 
 pub struct WebhookInput<'a> {
@@ -42,8 +42,9 @@ pub fn validate(spec: &ForgejoWebhookSpec) -> Result<(), Failure> {
 
 pub async fn reconcile_webhook(input: WebhookInput<'_>, gateway: &dyn ForgejoGateway) -> Outcome {
     let desired = desired_hook(&input);
-    let applied = Applied::of(&desired);
-    let change = applied.compare(input.applied_secret_hash.as_deref(), &input);
+    let stored = input.applied_secret_hash.as_deref();
+    let applied = Applied::of(&desired, stored);
+    let change = applied.compare(stored, &desired, &input);
     let target_name = input.target.to_string();
 
     // Looked up on the *current* target: after a repository rename the
@@ -64,12 +65,14 @@ pub async fn reconcile_webhook(input: WebhookInput<'_>, gateway: &dyn ForgejoGat
         return Outcome::failed(input.current.clone(), e);
     }
 
+    let mut recreating = false;
     let id = match remote {
         // The type and the create-only inputs are fixed at creation.
         Some(r) if r.type_ != desired.type_ || change == Change::Recreate => {
             if let Err(e) = gone_ok(gateway.delete_hook(&input.target, r.id).await) {
                 return Outcome::failed(input.current.clone(), e);
             }
+            recreating = true;
             None
         }
         Some(r) => {
@@ -84,10 +87,37 @@ pub async fn reconcile_webhook(input: WebhookInput<'_>, gateway: &dyn ForgejoGat
     };
     let id = match id {
         Some(id) => id,
-        None => match gateway.create_hook(&input.target, &desired).await {
-            Ok(r) => r.id,
-            Err(e) => return Outcome::failed(None, e),
-        },
+        None => {
+            // Never a twin: a hook with this URL already on the target is
+            // one whose create response was lost, or someone else's —
+            // either way not adopted implicitly (the importer does that).
+            if !recreating {
+                match gateway.list_hooks(&input.target).await {
+                    Ok(hooks) => {
+                        let url = desired.config.get("url");
+                        if let Some(twin) = hooks.iter().find(|h| h.config.get("url") == url) {
+                            return Outcome::failed(
+                                input.current.clone(),
+                                Failure::new(
+                                    ReasonCode::ForgejoObjectAlreadyExists,
+                                    format!(
+                                        "{target_name} already has hook {} for {}; delete it or \
+                                         adopt it with weebo-forgejo-importer",
+                                        twin.id,
+                                        url.map_or("", String::as_str)
+                                    ),
+                                ),
+                            );
+                        }
+                    }
+                    Err(e) => return Outcome::failed(input.current.clone(), e),
+                }
+            }
+            match gateway.create_hook(&input.target, &desired).await {
+                Ok(r) => r.id,
+                Err(e) => return Outcome::failed(None, e),
+            }
+        }
     };
 
     let mut outcome = Outcome::synced(
@@ -102,9 +132,13 @@ pub async fn reconcile_webhook(input: WebhookInput<'_>, gateway: &dyn ForgejoGat
     outcome
 }
 
+/// Deleted on the recorded target, else on `now` — where the referenced
+/// repository or organization lives now, which differs after a rename the
+/// status hasn't caught up with.
 pub async fn cleanup_webhook(
     spec: &ForgejoWebhookSpec,
     current: Option<&ForgejoRef>,
+    now: Option<HookTarget>,
     gateway: CleanupGateway<'_>,
 ) -> Result<(), Failure> {
     if spec.deletion_policy != DeletionPolicy::Delete {
@@ -113,11 +147,19 @@ pub async fn cleanup_webhook(
     let Some(current) = current else {
         return Ok(());
     };
-    let Some(target) = parse_target(&current.name) else {
-        return Ok(());
-    };
+    let recorded = parse_target(&current.name);
     let gateway = gateway.map_err(Clone::clone)?;
-    gone_ok(gateway.delete_hook(&target, current.id).await).map_err(Into::into)
+    for target in recorded
+        .iter()
+        .chain(now.iter().filter(|t| Some(*t) != recorded.as_ref()))
+    {
+        match gateway.delete_hook(target, current.id).await {
+            Ok(()) => return Ok(()),
+            Err(GatewayError::NotFound(_)) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Inverse of `HookTarget`'s `Display`.
@@ -223,13 +265,17 @@ pub fn forgejo_events(events: &[String]) -> BTreeSet<String> {
     out
 }
 
-/// What `status.appliedSecretHash` records, as `v2:<create-only>:<header>`:
-/// a digest of the create-only inputs (the secret and every config key
-/// Forgejo doesn't echo) and one of the authorization header, `-` when
-/// absent. Earlier releases stored one digest of (secret, header), or
-/// nothing when both were unset.
+/// What `status.appliedSecretHash` records, as
+/// `v3:<salt>:<create-only>:<header>`: digests of the create-only inputs
+/// (the secret and every config key Forgejo doesn't echo) and of the
+/// authorization header, `-` when absent. The status is readable by anyone
+/// who can read the CR, so the digests are salted per CR and stretched: a
+/// low-entropy secret can't be looked up, and guessing it offline is slow.
+/// Earlier releases stored `v2:` (unsalted digests), or one digest of
+/// (secret, header) — both still compared, then upgraded.
 #[derive(Debug, PartialEq, Eq)]
 struct Applied {
+    salt: String,
     create_only: String,
     header: String,
 }
@@ -243,56 +289,113 @@ enum Change {
     Recreate,
 }
 
+/// Rounds of the v3 digest stretching.
+const STRETCH_ROUNDS: u32 = 10_000;
+
+/// The create-only parts of `desired`, as `(key, value)` pairs.
+fn create_only(desired: &DesiredHook) -> Vec<&str> {
+    let create_only: BTreeMap<&String, &String> = desired
+        .config
+        .iter()
+        .filter(|(k, _)| !forgejo_echoes(&desired.type_, k))
+        .collect();
+    create_only
+        .into_iter()
+        .flat_map(|(k, v)| [k.as_str(), v.as_str()])
+        .collect()
+}
+
 impl Applied {
-    fn of(desired: &DesiredHook) -> Self {
-        let create_only: BTreeMap<&String, &String> = desired
-            .config
-            .iter()
-            .filter(|(k, _)| !forgejo_echoes(&desired.type_, k))
-            .collect();
+    /// With the salt of `stored` when it is v3, a fresh one otherwise.
+    fn of(desired: &DesiredHook, stored: Option<&str>) -> Self {
+        let salt = stored
+            .and_then(|s| s.strip_prefix("v3:"))
+            .and_then(|rest| rest.split(':').next())
+            .filter(|salt| !salt.is_empty())
+            .map_or_else(fresh_salt, str::to_string);
         Self {
-            create_only: digest(
-                create_only
-                    .iter()
-                    .flat_map(|(k, v)| [k.as_str(), v.as_str()]),
-            ),
-            header: digest(desired.authorization_header.as_deref()),
+            create_only: stretched(&salt, create_only(desired)),
+            header: stretched(&salt, desired.authorization_header.as_deref()),
+            salt,
         }
     }
 
     fn encode(&self) -> String {
-        format!("v2:{}:{}", self.create_only, self.header)
+        format!("v3:{}:{}:{}", self.salt, self.create_only, self.header)
     }
 
-    fn compare(&self, stored: Option<&str>, input: &WebhookInput<'_>) -> Change {
-        match stored.and_then(|s| s.strip_prefix("v2:")) {
-            Some(rest) => match rest.split_once(':') {
-                Some((create_only, _)) if create_only != self.create_only => Change::Recreate,
-                Some((_, header)) if header != self.header => Change::Edit,
-                Some(_) => Change::None,
-                None => Change::Recreate,
-            },
-            // Pre-v2 status: unchanged inputs need no call; otherwise which
-            // part changed is unknown, and recreating covers both.
-            None if stored.map(str::to_string) == legacy_hash(input) => Change::None,
+    fn compare(
+        &self,
+        stored: Option<&str>,
+        desired: &DesiredHook,
+        input: &WebhookInput<'_>,
+    ) -> Change {
+        let split = |rest: &str, create_only: &str, header: &str| match rest.split_once(':') {
+            Some((c, _)) if c != create_only => Change::Recreate,
+            Some((_, h)) if h != header => Change::Edit,
+            Some(_) => Change::None,
             None => Change::Recreate,
+        };
+        if let Some(rest) = stored.and_then(|s| s.strip_prefix("v3:")) {
+            return match rest.split_once(':') {
+                Some((_, digests)) => split(digests, &self.create_only, &self.header),
+                None => Change::Recreate,
+            };
+        }
+        if let Some(rest) = stored.and_then(|s| s.strip_prefix("v2:")) {
+            let header = digest(desired.authorization_header.as_deref());
+            return split(rest, &digest(create_only(desired)), &header);
+        }
+        // Pre-v2 status: unchanged inputs need no call; otherwise which
+        // part changed is unknown, and recreating covers both.
+        if stored.map(str::to_string) == legacy_hash(input) {
+            Change::None
+        } else {
+            Change::Recreate
         }
     }
 }
 
+fn fresh_salt() -> String {
+    use rand::Rng;
+    let bytes: [u8; 16] = rand::rng().random();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// `-` for nothing; a length-prefixed SHA-256 of the parts otherwise (so
-/// ("ab", "c") and ("a", "bc") differ).
+/// ("ab", "c") and ("a", "bc") differ). The v2 digest.
 fn digest<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    raw_digest(parts).map_or_else(|| "-".to_string(), |h| hex(&h))
+}
+
+fn raw_digest<'a>(parts: impl IntoIterator<Item = &'a str>) -> Option<[u8; 32]> {
     let mut parts = parts.into_iter().peekable();
-    if parts.peek().is_none() {
-        return "-".to_string();
-    }
+    parts.peek()?;
     let mut h = Sha256::new();
     for part in parts {
         h.update((part.len() as u64).to_be_bytes());
         h.update(part.as_bytes());
     }
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    Some(h.finalize().into())
+}
+
+/// The v3 digest: [`digest`]'s, then `STRETCH_ROUNDS` of SHA-256 over
+/// (salt, previous).
+fn stretched<'a>(salt: &str, parts: impl IntoIterator<Item = &'a str>) -> String {
+    let Some(mut h) = raw_digest(parts) else {
+        return "-".to_string();
+    };
+    for _ in 0..STRETCH_ROUNDS {
+        let mut next = Sha256::new();
+        next.update(salt.as_bytes());
+        next.update(h);
+        h = next.finalize().into();
+    }
+    hex(&h)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The pre-v2 `appliedSecretHash`: `None` when neither input was set.
@@ -511,7 +614,45 @@ mod tests {
         )
         .await;
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
-        assert_eq!(second.secret_hash, first.secret_hash);
+        let upgraded = second.secret_hash.clone().unwrap();
+        assert!(upgraded.starts_with("v3:"), "{upgraded}");
+        // From then on the salted digest is stable.
+        let third = run(
+            &s,
+            first.forgejo.clone(),
+            repo("app"),
+            Some("k"),
+            Some(upgraded.clone()),
+            &fj,
+        )
+        .await;
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+        assert_eq!(third.secret_hash.as_deref(), Some(upgraded.as_str()));
+    }
+
+    #[test]
+    fn digests_are_salted_per_cr() {
+        let hook = DesiredHook {
+            type_: "forgejo".into(),
+            config: BTreeMap::from([("secret".to_string(), "hunter2".to_string())]),
+            events: vec![],
+            branch_filter: String::new(),
+            active: true,
+            authorization_header: None,
+        };
+        let (a, b) = (Applied::of(&hook, None), Applied::of(&hook, None));
+        assert_ne!(a.salt, b.salt);
+        assert_ne!(
+            a.create_only, b.create_only,
+            "same secret, different digests"
+        );
+        assert_ne!(
+            a.create_only,
+            digest(create_only(&hook)),
+            "not the bare SHA-256"
+        );
+        let again = Applied::of(&hook, Some(&a.encode()));
+        assert_eq!(again, a);
     }
 
     #[test]
@@ -563,5 +704,17 @@ mod tests {
         for t in [repo("app"), HookTarget::Organization("weebo".into())] {
             assert_eq!(parse_target(&t.to_string()), Some(t));
         }
+    }
+
+    #[tokio::test]
+    async fn a_twin_hook_is_never_created() {
+        let fj = FakeForgejo::default();
+        let s = spec();
+        let first = run(&s, None, repo("app"), Some("k"), None, &fj).await;
+        assert!(first.ready.is_ok(), "{first:?}");
+        // The status update was lost: the next reconcile knows of no hook.
+        let again = run(&s, None, repo("app"), Some("k"), None, &fj).await;
+        assert_eq!(again.reason(), ReasonCode::ForgejoObjectAlreadyExists);
+        assert_eq!(fj.list_hooks(&repo("app")).await.unwrap().len(), 1);
     }
 }

@@ -56,3 +56,38 @@ async fn one_leader_loss_is_reported_and_the_other_takes_over() {
     let lease = leases.get(NAME).await.unwrap();
     assert_eq!(lease.spec.unwrap().holder_identity.as_deref(), Some("b"));
 }
+
+/// Two standbys racing for the same expired lease: the `resourceVersion`
+/// precondition lets exactly one of them in — never both (split brain).
+#[tokio::test]
+async fn racing_standbys_never_both_acquire() {
+    let cluster = EnvTestCluster::start().await;
+    let client = cluster.client();
+    let name = "race-leader";
+    let gone = leader::lease(client.clone(), "default", name, "gone".into(), TTL);
+    leader::acquire(&gone, RENEW).await;
+    // `gone` stops renewing; both standbys watch the lease expire.
+    let b = leader::lease(client.clone(), "default", name, "b".into(), TTL);
+    let c = leader::lease(client.clone(), "default", name, "c".into(), TTL);
+    assert!(!b.try_acquire_or_renew().await.unwrap());
+    assert!(!c.try_acquire_or_renew().await.unwrap());
+    tokio::time::sleep(TTL + RENEW).await;
+
+    for _ in 0..5 {
+        let (rb, rc) = tokio::join!(b.try_acquire_or_renew(), c.try_acquire_or_renew());
+        let (rb, rc) = (rb.unwrap(), rc.unwrap());
+        assert!(!(rb && rc), "both standbys acquired the lease");
+        if rb || rc {
+            let holder = Api::<Lease>::namespaced(client.clone(), "default")
+                .get(name)
+                .await
+                .unwrap()
+                .spec
+                .unwrap()
+                .holder_identity;
+            assert_eq!(holder.as_deref(), Some(if rb { "b" } else { "c" }));
+            return;
+        }
+    }
+    panic!("neither standby took over the expired lease");
+}

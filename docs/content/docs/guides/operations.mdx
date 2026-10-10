@@ -50,13 +50,15 @@ transition. `kubectl get events -n team-a` shows the history.
 | `TokenSecretNotFound` | The admin token Secret is missing | Fix `tokenSecretRef` or create the Secret |
 | `KubernetesApiError` | The API server failed while resolving the instance | Transient; retried automatically |
 | `UnsupportedForgejoVersion` | Forgejo is older than v16 | Upgrade Forgejo |
-| `ForgejoObjectAlreadyExists` | The name is already used in Forgejo by an object this CR doesn't own | Rename the CR's `spec.name`, or adopt the object with the [importer](/docs/guides/migration) |
+| `ForgejoObjectAlreadyExists` | The name is already used in Forgejo by an object this CR doesn't own — or, for a webhook (same URL) or OAuth2 application (same name), a twin already exists, e.g. after a lost create response | Rename the CR's `spec.name`, delete the twin, or adopt the object with the [importer](/docs/guides/migration) |
 | `ReferenceNotFound` | A `…Ref` names a CR that doesn't exist | Create it or fix the ref |
 | `ReferenceNotReady` | The referenced CR isn't `Ready` | Fix that CR first; this one follows on its own |
 | `UserNotFound` | An observed user hasn't signed in yet | Wait for their first sign-in |
+| `LoginSourceNotFound` | `loginSourceId` matches no authentication source in Forgejo | Fix the id (Site administration → Authentication sources) |
 | `MemberPending` | (advisory) Some team members don't exist yet | Same as above; the others are synced |
 | `DisruptiveUpdateRefused` | The change requires recreating the object | See [Disruptive changes](#disruptive-changes) |
-| `NamespaceNotAllowed` | Refused by a `ForgejoNamespacePolicy` | Adjust the [allow-list](/docs/guides/allow-list) |
+| `NamespaceNotAllowed` | Refused by a `ForgejoNamespacePolicy` (or a site admin's credentials without an explicit rule) | Adjust the [allow-list](/docs/guides/allow-list) |
+| `CrossNamespaceReference` | A `secretTargets` entry names another namespace than the CR's | Write into the CR's own namespace |
 | `SecretTargetFailed` | Writing to a Secret or to Vault failed | Check RBAC or Vault access and the target's namespace/path |
 | `InvalidSpec` | Valid YAML, but it can't be acted on (e.g. both `organizationRef` and `userRef` set) | Fix the spec; the message says what's wrong |
 | `ForgejoApiError` | Forgejo returned another error | Read the message; often a missing token scope |
@@ -87,16 +89,70 @@ kubectl -n team-a annotate fjrepo app forgejo.weebo.io/allow-disruptive-update=t
 | `Delete` | The Forgejo object is deleted | Everything else |
 
 Users are never purged, even with `Delete`. Secrets the operator generated
-are always deleted with their CR.
+are always deleted with their CR — only those it owns (`forgejo.weebo.io/owner`).
+A failed cleanup is retried and reported as a `CleanupFailed` Warning Event;
+`forgejo.weebo.io/force-orphan: "true"` releases the CR without cleanup. A
+`ForgejoInstance` is only deleted once no CR is bound to it any more.
 
 The operator never takes over an object that already exists in Forgejo. To
 bring existing objects under management, see
-[Migrate an existing Forgejo](/docs/guides/migration).
+[High availability & sizing](/docs/guides/high-availability).
 
-## Metrics and traces
+## Metrics and alerts
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` through the chart's `extraEnv` to export
-traces and metrics over OTLP/gRPC:
+### Prometheus
+
+Each replica serves Prometheus metrics in plain HTTP on port `9090`
+(`GET /metrics`), exposed by the `weebo-forgejo-metrics` Service. It's on by
+default (`metrics.prometheus.enabled`). With the prometheus-operator:
+
+```yaml
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack   # whatever your Prometheus selects on
+prometheusRule:
+  enabled: true
+```
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `weebo_forgejo_reconcile_total` | counter | `kind`, `result` (`success`/`error`), `reason` (the `Ready` reason code) |
+| `weebo_forgejo_reconcile_duration_seconds` | histogram | `kind` |
+| `weebo_forgejo_webhook_decisions_total` | counter | `kind`, `result` |
+| `weebo_forgejo_forgejo_requests_total` | counter | `operation` (the gateway call, e.g. `create_repository`), `result` (`ok`, `not_found`, `already_exists`, `unreachable`, `error`) |
+| `weebo_forgejo_forgejo_request_duration_seconds` | histogram | `operation` |
+| `weebo_forgejo_leader` | gauge (0/1) | none: `1` on the replica holding the Lease |
+
+The metrics are recorded through OpenTelemetry. Depending on the exporter
+version, the Prometheus names can carry an extra suffix (a counter's
+`_total`, a histogram's unit, `_ratio` on a unit-less gauge); check
+`/metrics` once (`kubectl -n weebo-forgejo port-forward svc/weebo-forgejo-metrics 9090`)
+before writing your own queries. The chart's alerts match the names with
+regular expressions, so they work either way.
+
+### Built-in alerts
+
+`prometheusRule.enabled` ships these (`prometheusRule.defaultRules: false`
+to drop them, `additionalRules` to add yours):
+
+| Alert | Fires when | Severity |
+| --- | --- | --- |
+| `WeeboForgejoOperatorDown` | No replica answers the scrape for 5 min: the webhook is most likely down too | critical |
+| `WeeboForgejoNoLeader` | No replica reports `weebo_forgejo_leader = 1` for 5 min: nothing reconciles | critical |
+| `WeeboForgejoMultipleLeaders` | More than one leader for 5 min: two releases sharing a Lease name | warning |
+| `WeeboForgejoReconcileErrors` | More than 10 % of a kind's reconciles fail over 15 min (`prometheusRule.reconcileErrorRatio`) | warning |
+| `WeeboForgejoReconcileSlow` | p99 reconcile of a kind above 60 s for 30 min | info |
+| `WeeboForgejoForgejoApiErrors` | More than 20 % of an operation's Forgejo calls fail (5xx, error, timeout) over 15 min | warning |
+
+They filter on the scrape job `weebo-forgejo-metrics` in the release
+namespace, as set up by the ServiceMonitor. A failing reconcile counts as
+`result` `error` (or `failure`/`failed`).
+
+### OTLP traces and metrics
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` through the chart's `extraEnv` to also
+export traces and metrics over OTLP/gRPC:
 
 ```yaml
 extraEnv:
@@ -106,14 +162,8 @@ extraEnv:
     value: info
 ```
 
-| Metric | Labels |
-| --- | --- |
-| `weebo_forgejo_reconcile_total` | `kind`, `result`, `reason` |
-| `weebo_forgejo_reconcile_duration_seconds` | `kind` |
-| `weebo_forgejo_webhook_decisions_total` | `kind`, `result` |
-
-A useful alert is a rising `weebo_forgejo_reconcile_total{result="error"}`,
-grouped by `reason`.
+When something is wrong around the CRs rather than in them (webhook down,
+nothing reconciles), see [Troubleshooting](/docs/guides/troubleshooting).
 
 ## ArgoCD
 

@@ -18,6 +18,7 @@ tracing = { workspace = true }
 rustls = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
+opentelemetry = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

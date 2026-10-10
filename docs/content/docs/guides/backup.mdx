@@ -1,0 +1,119 @@
+---
+title: Backup & disaster recovery
+description: What to back up, and how to restore CRs without the operator recreating or deleting anything in Forgejo.
+---
+
+The operator keeps no state of its own: everything is in the CRs (spec and
+status) and in Forgejo. Two things need a backup, and they must be restored
+**together**.
+
+| What | Holds | Backed up by |
+| --- | --- | --- |
+| Forgejo (database, repositories) | The real objects | Forgejo's own backup (`forgejo dump`, database + data volume snapshots) |
+| The CRs, **with their status** | Which Forgejo object each CR owns (`status.forgejoId`) | Velero, an etcd snapshot, or a `kubectl` export |
+| The Secrets the CRs reference | Instance token, webhook secrets, migration credentials | Same as the CRs (or your secret manager) |
+
+The generated credentials (passwords, tokens, OAuth2 secrets, SSH keys) don't
+need a backup: a restored CR whose target Secret is missing re-issues it.
+
+## Why the status matters
+
+`status.forgejoId` links a CR to *its* Forgejo object. A CR restored
+**without** status is a new CR: the operator tries to create the object,
+finds the name taken, and reports `ForgejoObjectAlreadyExists`. It never
+takes over an existing object on its own. GitOps tools and `kubectl apply`
+don't write `status`, so your Git repository alone is **not** a backup.
+
+## Back up
+
+**Velero** (recommended) backs up CRs with their status subresource:
+
+```bash
+velero backup create forgejo-crs \
+  --include-resources 'forgejo*.forgejo.weebo.io,secrets' \
+  --include-cluster-resources=true
+```
+
+**Plain export**, e.g. a nightly CronJob:
+
+```bash
+kinds=forgejoinstances,forgejousers,forgejouserkeys,forgejoorganizations,forgejoteams,forgejonamespacepolicies,forgejorepositories,forgejowebhooks,forgejodeploykeys,forgejooauth2applications,forgejoaccesstokens
+kubectl get "$kinds" -A -o yaml > forgejo-crs-$(date +%F).yaml
+```
+
+Store it like a secret: it names every managed object, and the CRDs' specs
+can reference Secrets.
+
+## Restore
+
+<Steps>
+<Step>
+
+### Restore Forgejo first
+
+From the **same point in time** as the CRs. A CR whose object no longer
+exists in Forgejo (restored from an older backup) recreates it; an object
+newer than the CR backup is simply unmanaged.
+
+</Step>
+<Step>
+
+### Stop the operator
+
+So nothing reconciles a half-restored set:
+
+```bash
+kubectl -n weebo-forgejo scale deploy weebo-forgejo --replicas=0
+```
+
+With the operator down the webhook is down too: namespaced CRs can't be
+created through it. Either restore them with Velero (it restores the status
+subresource too), or temporarily switch the webhook to `Ignore` as in
+[Troubleshooting](/docs/guides/troubleshooting#emergency-let-writes-through).
+
+</Step>
+<Step>
+
+### Restore the CRs with their status
+
+- **Velero**: `velero restore create --from-backup forgejo-crs`. It
+  restores the status.
+- **From an export**: `kubectl create -f` drops the status. Use the
+  [importer](/docs/guides/migration) instead: it reads the live Forgejo and
+  creates the CRs with their ids already in status. Then re-apply your Git
+  manifests on top, which only touches `spec`.
+
+The CRDs must exist first (`crds.install=true`, or the release's CRD
+bundle).
+
+</Step>
+<Step>
+
+### Start the operator again
+
+```bash
+kubectl -n weebo-forgejo scale deploy weebo-forgejo --replicas=2
+kubectl get fji,fjorg,fjteam,fjuser
+kubectl get fjrepo,fjhook,fjdkey,fjoauth,fjtoken -A
+```
+
+Everything should come back `Ready`. A CR reporting
+`ForgejoObjectAlreadyExists` lost its status: adopt it with the importer.
+
+</Step>
+</Steps>
+
+## Losing the cluster, keeping Forgejo
+
+Rebuild the cluster, [install](/docs/guides/install) the operator, connect
+the instance, then run the [importer](/docs/guides/migration) with `--apply`
+before applying your Git manifests. The importer adopts every existing
+object; your manifests then take over their spec.
+
+OAuth2 applications and access tokens can't be imported (Forgejo never
+returns their secrets): their CRs create new ones, and the old ones stay in
+Forgejo until you delete them.
+
+## Next
+
+[Verify a release](/docs/guides/verify-release).

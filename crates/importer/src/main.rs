@@ -8,7 +8,7 @@ use adapters_outbound::forgejo_http::ForgejoHttpGateway;
 use anyhow::Context;
 use application::use_cases::import::{Existing, ImportOptions, import};
 use clap::Parser;
-use importer::{apply_all, existing, manifests, to_yaml};
+use importer::{apply_all_with, existing, manifests, to_yaml};
 use kube::Client;
 
 #[derive(Parser, Debug)]
@@ -38,10 +38,24 @@ struct Args {
     /// so their password is never reset) instead of `Observe`.
     #[arg(long)]
     manage_users: bool,
+    /// Import teams as `membersPolicy: External` (members synced by
+    /// Forgejo itself, e.g. OIDC group sync) instead of `Managed`.
+    #[arg(long)]
+    external_teams: bool,
     /// Create the CRs in the current kube context and seed their status,
     /// instead of printing them.
     #[arg(long)]
     apply: bool,
+    /// With `--apply`: also take over CRs that exist but own nothing yet.
+    #[arg(long, requires = "apply")]
+    force: bool,
+    /// PEM bundle trusted on top of the system roots (a Forgejo behind a
+    /// private CA).
+    #[arg(long, env = "FORGEJO_CA_FILE")]
+    ca_file: Option<std::path::PathBuf>,
+    /// Skip TLS verification (testing only).
+    #[arg(long)]
+    insecure_skip_verify: bool,
 }
 
 #[tokio::main]
@@ -50,13 +64,29 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let (api_base, web_url) = api::instance::split_urls(&args.url);
+    let mut http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+    if let Some(path) = &args.ca_file {
+        let pem = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem)
+            .with_context(|| format!("parsing {}", path.display()))?;
+        anyhow::ensure!(
+            !certs.is_empty(),
+            "{} holds no PEM certificate",
+            path.display()
+        );
+        for cert in certs {
+            http = http.add_root_certificate(cert);
+        }
+    }
+    if args.insecure_skip_verify {
+        eprintln!("warning: TLS verification disabled");
+        http = http.danger_accept_invalid_certs(true);
+    }
     let gateway = ForgejoHttpGateway::new(
         api_base,
         web_url,
         args.token.trim().to_string(),
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?,
+        http.build()?,
     );
     // With `--apply`, the CRs already there: names stay those of earlier
     // runs and avoid the ones owned by other objects.
@@ -73,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         instance_ref: args.instance_ref,
         owners: args.owners,
         manage_users: args.manage_users,
+        external_teams: args.external_teams,
         existing,
     };
     let imported = import(&gateway, &options)
@@ -84,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
     let crs = manifests(&imported, &args.namespace);
 
     if let Some(client) = client {
-        let s = apply_all(&client, &crs).await;
+        let s = apply_all_with(&client, &crs, args.force).await;
         eprintln!(
             "{} adopted, {} already adopted, {} failed",
             s.adopted, s.skipped, s.failed

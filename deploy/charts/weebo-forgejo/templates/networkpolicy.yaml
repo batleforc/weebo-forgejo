@@ -1,0 +1,65 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy -}}
+{{- if and $np.egress.enabled (not $np.egress.apiServer.to) }}
+{{- fail "networkPolicy.egress.apiServer.to is required when networkPolicy.egress.enabled: the operator cannot work without the API server" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "weebo-forgejo.fullname" . }}
+  labels:
+    {{- include "weebo-forgejo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "weebo-forgejo.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if $np.egress.enabled }}
+    - Egress
+    {{- end }}
+  ingress:
+    # Admission requests from the API server, and the probes (kubelet
+    # traffic is not subject to NetworkPolicy on most CNIs).
+    - ports:
+        - port: webhook
+          protocol: TCP
+      {{- with $np.webhookFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- if include "weebo-forgejo.metricsEnabled" . }}
+    - ports:
+        - port: metrics
+          protocol: TCP
+      {{- with $np.metricsFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+  {{- if $np.egress.enabled }}
+  egress:
+    {{- if $np.egress.dns.enabled }}
+    - to:
+        {{- toYaml $np.egress.dns.to | nindent 8 }}
+      ports:
+        {{- toYaml $np.egress.dns.ports | nindent 8 }}
+    {{- end }}
+    # Watches, Secrets, Leases, Events.
+    - to:
+        {{- toYaml $np.egress.apiServer.to | nindent 8 }}
+      ports:
+        {{- toYaml $np.egress.apiServer.ports | nindent 8 }}
+    {{- with $np.egress.forgejo }}
+    # Forgejo instances.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with $np.egress.vault }}
+    # Vault secret stores.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with $np.egress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

@@ -26,13 +26,14 @@ rules:
       - {{ . }}/finalizers
       {{- end }}
     verbs: ["update"]
-  # Emitted credentials (any namespace a CR targets), the ForgejoInstance
-  # token, webhook secrets and migration credentials: read by name, written
-  # by server-side apply (patch, plus create when the Secret is new) and
-  # deleted with their CR. Never listed or watched.
+  # Emitted credentials (in the emitting CR's namespace, or any namespace a
+  # cluster-scoped CR targets), the ForgejoInstance token, webhook secrets
+  # and migration credentials: read by name, created, replaced whole when
+  # the operator owns them (forgejo.weebo.io/owner annotation) and deleted
+  # with their CR. Never listed or watched.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "create", "patch", "delete"]
+    verbs: ["get", "create", "update", "patch", "delete"]
   # Kubernetes Events on every Ready transition.
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]

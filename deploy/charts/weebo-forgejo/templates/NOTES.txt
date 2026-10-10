@@ -1,4 +1,5 @@
-weebo-forgejo-operator is installed.
+weebo-forgejo-operator {{ .Chart.AppVersion }} is installed ({{ .Values.replicaCount }} replicas, Lease "{{ include "weebo-forgejo.leaseName" . }}").
+{{- if .Values.webhook.certManager.enabled }}
 
 Prerequisite: cert-manager (it issues the admission webhook certificate).
 {{- if .Values.certManager.createIssuer }}
@@ -6,6 +7,21 @@ This release provisions its own self-signed Issuer
 ("{{ include "weebo-forgejo.webhookIssuerName" . }}").
 {{- else }}
 The Issuer/ClusterIssuer "{{ .Values.certManager.issuerRef.name }}" ({{ .Values.certManager.issuerRef.kind }}) must exist.
+{{- end }}
+{{- else }}
+
+Webhook TLS: the Secret "{{ .Values.webhook.tls.secretName }}" must exist in
+{{ .Release.Namespace }} and stay signed by the CA in webhook.caBundle.
+{{- end }}
+{{- if not .Values.crds.install }}
+
+CRDs are NOT managed by this release (crds.install=false): apply the
+crds.yaml of the matching GitHub release before using new fields.
+{{- end }}
+{{- if lt (int .Values.replicaCount) 2 }}
+
+WARNING: a single replica means no admission webhook (and so no namespaced
+CR change, with failurePolicy {{ .Values.webhook.failurePolicy }}) while it restarts.
 {{- end }}
 
 1. Connect a Forgejo (v16 or later) with a site-admin token:

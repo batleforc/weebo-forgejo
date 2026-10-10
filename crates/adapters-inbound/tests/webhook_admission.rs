@@ -36,9 +36,14 @@ fn review(namespace: &str, kind: &str, spec: Value) -> Value {
 }
 
 async fn admit(client: &kube::Client, body: Value) -> (bool, String) {
-    let app = router(WebhookState {
-        policies: Arc::new(KubeClusterReader::new(client.clone())),
-    });
+    let cluster = Arc::new(KubeClusterReader::new(client.clone()));
+    let app = router(
+        WebhookState {
+            policies: cluster.clone(),
+            refs: cluster,
+        },
+        Default::default(),
+    );
     let request = axum::http::Request::post("/validate")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))

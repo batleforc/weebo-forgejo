@@ -1,0 +1,91 @@
+{{- if .Values.prometheusRule.enabled }}
+{{- /*
+Metric names are matched with regexes: the operator exports through
+OpenTelemetry, and the OTel -> Prometheus translation may append `_total`
+to counters, a unit suffix (`_seconds`) to histograms and `_ratio` to
+unit-less gauges, depending on the exporter version. Every series is
+scoped to this release's scrape job.
+*/ -}}
+{{- $sel := printf "namespace=%q, job=%q" .Release.Namespace (printf "%s-metrics" (include "weebo-forgejo.fullname" .)) -}}
+{{- $reconcile := printf "{__name__=~\"weebo_forgejo_reconcile(_total)*\", %s" $sel -}}
+{{- $leader := printf "{__name__=~\"weebo_forgejo_leader(_ratio)?\", %s}" $sel -}}
+{{- $duration := printf "{__name__=~\"weebo_forgejo_reconcile_duration(_seconds)*_bucket\", %s}" $sel -}}
+{{- $requests := printf "{__name__=~\"weebo_forgejo_forgejo_requests(_total)*\", %s" $sel -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "weebo-forgejo.fullname" . }}
+  labels:
+    {{- include "weebo-forgejo.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: weebo-forgejo
+      rules:
+        {{- if .Values.prometheusRule.defaultRules }}
+        - alert: WeeboForgejoOperatorDown
+          # No replica answers the scrape: with failurePolicy Fail, no
+          # namespaced CR can be created or updated either.
+          expr: absent(up{ {{- $sel -}} } == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: No weebo-forgejo operator replica is up in {{ .Release.Namespace }}.
+            description: The admission webhook is likely down too; namespaced Forgejo CRs are refused while it is.
+        - alert: WeeboForgejoNoLeader
+          expr: (sum({{ $leader }}) or vector(0)) < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: No weebo-forgejo replica holds the leader Lease in {{ .Release.Namespace }}.
+            description: Nothing reconciles. Check the Lease {{ include "weebo-forgejo.leaseName" . }} and the operator logs.
+        - alert: WeeboForgejoMultipleLeaders
+          expr: sum({{ $leader }}) > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Several weebo-forgejo replicas report being leader in {{ .Release.Namespace }}.
+            description: Usually two releases sharing one Lease name, or a Lease rename during an upgrade.
+        - alert: WeeboForgejoReconcileErrors
+          expr: |
+            sum by (kind) (rate({{ $reconcile }}, result=~"error|failure|failed"}[15m]))
+              /
+            sum by (kind) (rate({{ $reconcile }}}[15m]))
+              > {{ .Values.prometheusRule.reconcileErrorRatio }}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: {{`'{{ $labels.kind }} reconciles failing ({{ $value | humanizePercentage }})'`}}
+            description: {{`'kubectl get {{ $labels.kind }} -A and read the Ready condition reason (docs: Monitoring & troubleshooting).'`}}
+        - alert: WeeboForgejoReconcileSlow
+          expr: |
+            histogram_quantile(0.99, sum by (le, kind) (rate({{ $duration }}[15m]))) > 60
+          for: 30m
+          labels:
+            severity: info
+          annotations:
+            summary: {{`'p99 reconcile of {{ $labels.kind }} above 60s'`}}
+            description: Forgejo answers slowly or repository migrations are running.
+        - alert: WeeboForgejoForgejoApiErrors
+          expr: |
+            sum by (operation) (rate({{ $requests }}, result=~"unreachable|error"}[15m]))
+              /
+            sum by (operation) (rate({{ $requests }}}[15m]))
+              > 0.2
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: {{`'Forgejo API {{ $labels.operation }} failing ({{ $value | humanizePercentage }})'`}}
+            description: Forgejo is unhealthy or unreachable; affected CRs report InstanceUnreachable.
+        {{- end }}
+        {{- with .Values.prometheusRule.additionalRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

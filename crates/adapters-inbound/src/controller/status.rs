@@ -4,6 +4,7 @@
 //! changes. Only `ReasonCode`s ever reach a condition or an Event.
 
 use std::fmt::Debug;
+use std::time::Duration;
 
 use api::status::{Condition, ForgejoStatus};
 use application::ports::ForgejoRef;
@@ -94,6 +95,18 @@ pub fn conditions(
     )
 }
 
+/// Extra attempts of a failed status patch.
+const STATUS_RETRIES: u32 = 3;
+
+/// Worth retrying: the apiserver unreachable, overloaded or timing out —
+/// not a patch it refuses.
+fn transient(err: &kube::Error) -> bool {
+    match err {
+        kube::Error::Api(e) => e.code == 429 || e.code >= 500,
+        _ => true,
+    }
+}
+
 /// Patches the outcome onto `obj` (freshly read from the API server) and
 /// emits an Event if `Ready`'s status or reason changed. `observedGeneration`
 /// only advances on success. A failed outcome
@@ -144,12 +157,35 @@ where
             serde_json::Value::Null
         };
     }
-    api.patch_status(
-        &obj.name_any(),
-        &PatchParams::apply(FIELD_MANAGER),
-        &Patch::Merge(serde_json::json!({ "status": status })),
-    )
-    .await?;
+    let patch = Patch::Merge(serde_json::json!({ "status": status }));
+    // Retried in place: a lost patch after a create would leave the new
+    // Forgejo object untracked, and the next reconcile would create it again
+    // (or collide with it).
+    let mut attempt = 0;
+    loop {
+        match api
+            .patch_status(&obj.name_any(), &PatchParams::apply(FIELD_MANAGER), &patch)
+            .await
+        {
+            Ok(_) => break,
+            Err(err) if attempt < STATUS_RETRIES && transient(&err) => {
+                attempt += 1;
+                tracing::warn!(error = %err, attempt, "status patch failed, retrying");
+                tokio::time::sleep(Duration::from_millis(250 * 2u64.pow(attempt))).await;
+            }
+            Err(err) => {
+                if let Some(r) = &outcome.forgejo {
+                    tracing::error!(
+                        error = %err,
+                        forgejo_id = r.id,
+                        forgejo_name = %r.name,
+                        "status patch failed: the Forgejo object above is not recorded on the CR"
+                    );
+                }
+                return Err(err);
+            }
+        }
+    }
 
     weebo_kit_runtime::conditions::announce_ready_change(
         recorder,

@@ -26,6 +26,12 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      # The leader drains its in-flight reconciles (repository migrations
+      # included) before exiting.
+      terminationGracePeriodSeconds: {{ .Values.shutdown.terminationGracePeriodSeconds }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -33,8 +39,8 @@ spec:
       containers:
         - name: operator
           # Release images are tagged `v<version>` (cog tag_prefix) while
-          # appVersion carries the bare version.
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default (printf "v%s" .Chart.AppVersion) }}"
+          # appVersion carries the bare version; image.digest wins.
+          image: {{ include "weebo-forgejo.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- with .Values.securityContext }}
           securityContext:
@@ -44,6 +50,11 @@ spec:
             - name: webhook
               containerPort: {{ .Values.webhook.containerPort }}
               protocol: TCP
+            {{- if include "weebo-forgejo.metricsEnabled" . }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.prometheus.port }}
+              protocol: TCP
+            {{- end }}
           env:
             # Scopes the leader-election Lease; HOSTNAME (the pod name) is
             # the holder identity.
@@ -51,8 +62,22 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: LEASE_NAME
+              value: {{ include "weebo-forgejo.leaseName" . | quote }}
             - name: WEBHOOK_PORT
               value: {{ .Values.webhook.containerPort | quote }}
+            - name: WEEBO_SHUTDOWN_DRAIN_SECONDS
+              value: {{ .Values.shutdown.drainSeconds | quote }}
+            - name: WEEBO_RECONCILE_CONCURRENCY
+              value: {{ .Values.reconcileConcurrency | quote }}
+            - name: WEEBO_FORGEJO_MAX_INFLIGHT
+              value: {{ .Values.forgejoMaxInflight | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+            {{- if include "weebo-forgejo.metricsEnabled" . }}
+            - name: WEEBO_METRICS_ADDR
+              value: {{ printf "0.0.0.0:%v" .Values.metrics.prometheus.port | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -66,18 +91,39 @@ spec:
             # under readOnlyRootFilesystem.
             - name: tmp
               mountPath: /tmp
-          livenessProbe:
+          {{- with .Values.probes }}
+          startupProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: webhook
               scheme: HTTPS
-            initialDelaySeconds: 5
+            periodSeconds: {{ .startup.periodSeconds }}
+            timeoutSeconds: {{ .startup.timeoutSeconds }}
+            failureThreshold: {{ .startup.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: webhook
               scheme: HTTPS
-            initialDelaySeconds: 5
+            periodSeconds: {{ .readiness.periodSeconds }}
+            timeoutSeconds: {{ .readiness.timeoutSeconds }}
+            failureThreshold: {{ .readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: webhook
+              scheme: HTTPS
+            periodSeconds: {{ .liveness.periodSeconds }}
+            timeoutSeconds: {{ .liveness.timeoutSeconds }}
+            failureThreshold: {{ .liveness.failureThreshold }}
+          {{- end }}
+          {{- if gt (int .Values.shutdown.preStopSleepSeconds) 0 }}
+          # Native sleep action (Kubernetes 1.30+): the images have no shell.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.shutdown.preStopSleepSeconds }}
+          {{- end }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -99,4 +145,22 @@ spec:
       {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range .Values.topologySpreadConstraints }}
+        {{- $c := deepCopy . }}
+        {{- if not $c.labelSelector }}
+        {{- $_ := set $c "labelSelector" (dict "matchLabels" (include "weebo-forgejo.selectorLabels" $ | fromYaml)) }}
+        {{- end }}
+        - {{ toYaml $c | nindent 10 | trim }}
+        {{- end }}
+      {{- else if .Values.defaultTopologySpread }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "weebo-forgejo.selectorLabels" . | nindent 14 }}
       {{- end }}

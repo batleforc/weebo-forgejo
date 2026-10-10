@@ -11,7 +11,7 @@ use api::{
     ForgejoWebhook,
 };
 use axum::extract::State;
-use axum::routing::{get, post};
+use axum::routing::post;
 use axum::{Json, Router};
 use domain::error::ReasonCode;
 use kube::core::DynamicObject;
@@ -20,9 +20,10 @@ use opentelemetry::KeyValue;
 use opentelemetry::metrics::Counter;
 use serde::de::DeserializeOwned;
 
-use application::ports::PolicySource;
-use application::use_cases::admission::Governed;
+use application::ports::{PolicySource, ReferenceReader};
+use application::use_cases::admission::{Governed, enforce};
 use std::sync::Arc;
+use weebo_kit_runtime::Health;
 
 static DECISIONS: LazyLock<Counter<u64>> = LazyLock::new(|| {
     opentelemetry::global::meter("weebo-forgejo-operator")
@@ -34,13 +35,17 @@ static DECISIONS: LazyLock<Counter<u64>> = LazyLock::new(|| {
 #[derive(Clone)]
 pub struct WebhookState {
     pub policies: Arc<dyn PolicySource>,
+    /// The referenced `ForgejoUser`s (site-admin credentials rule).
+    pub refs: Arc<dyn ReferenceReader>,
 }
 
-pub fn router(state: WebhookState) -> Router {
+/// `POST /validate`, plus the probes: `/readyz` (and its alias
+/// `/healthz`) and `/livez`.
+pub fn router(state: WebhookState, health: Arc<Health>) -> Router {
     Router::new()
         .route("/validate", post(validate))
-        .route("/healthz", get(|| async { "ok" }))
         .with_state(state)
+        .merge(weebo_kit_runtime::health::routes(health))
 }
 
 async fn validate(
@@ -51,7 +56,7 @@ async fn validate(
         return Json(AdmissionResponse::invalid("AdmissionReview without a request").into_review());
     };
     let kind = req.kind.kind.clone();
-    let decision = decide(state.policies.as_ref(), &req).await;
+    let decision = decide(&state, &req).await;
     DECISIONS.add(
         1,
         &[
@@ -72,10 +77,7 @@ async fn validate(
 
 /// `Err` carries the denial message. Anything this webhook can't
 /// understand fails closed.
-async fn decide(
-    policies: &dyn PolicySource,
-    req: &AdmissionRequest<DynamicObject>,
-) -> Result<(), String> {
+async fn decide(state: &WebhookState, req: &AdmissionRequest<DynamicObject>) -> Result<(), String> {
     let namespace = req.namespace.clone().unwrap_or_default();
     let Some(object) = req.object.as_ref() else {
         return Err("request carries no object".into());
@@ -90,35 +92,37 @@ async fn decide(
     {
         return Ok(());
     }
-    let refs = match req.kind.kind.as_str() {
-        "ForgejoRepository" => references::<ForgejoRepository>(object),
-        "ForgejoWebhook" => references::<ForgejoWebhook>(object),
-        "ForgejoDeployKey" => references::<ForgejoDeployKey>(object),
-        "ForgejoOAuth2Application" => references::<ForgejoOAuth2Application>(object),
-        "ForgejoAccessToken" => references::<ForgejoAccessToken>(object),
-        other => return Err(format!("kind {other} is not handled by this webhook")),
-    }?;
-    let (kind, organizations, users) = refs;
-    let policies = policies.policies().await.map_err(|e| {
-        tracing::error!(error = %e, "listing ForgejoNamespacePolicy failed");
-        "ForgejoNamespacePolicy lookup failed".to_string()
-    })?;
-    let request = domain::allow_list::request(&namespace, kind, &organizations, &users);
-    application::use_cases::admission::check(&request, &policies).map_err(|f| f.message)
+    let ns = namespace.as_str();
+    let (policies, refs) = (state.policies.as_ref(), state.refs.as_ref());
+    match req.kind.kind.as_str() {
+        "ForgejoRepository" => check::<ForgejoRepository>(policies, refs, ns, object).await,
+        "ForgejoWebhook" => check::<ForgejoWebhook>(policies, refs, ns, object).await,
+        "ForgejoDeployKey" => check::<ForgejoDeployKey>(policies, refs, ns, object).await,
+        "ForgejoOAuth2Application" => {
+            check::<ForgejoOAuth2Application>(policies, refs, ns, object).await
+        }
+        "ForgejoAccessToken" => check::<ForgejoAccessToken>(policies, refs, ns, object).await,
+        other => Err(format!("kind {other} is not handled by this webhook")),
+    }
 }
 
-type Refs = (domain::allow_list::Kind, Vec<String>, Vec<String>);
-
-fn references<K: Governed + DeserializeOwned>(object: &DynamicObject) -> Result<Refs, String> {
+/// The reconcilers' own admission checks (`enforce`), on the typed object.
+async fn check<K: Governed + DeserializeOwned>(
+    policies: &dyn PolicySource,
+    refs: &dyn ReferenceReader,
+    namespace: &str,
+    object: &DynamicObject,
+) -> Result<(), String> {
     let value = serde_json::to_value(object).map_err(|e| e.to_string())?;
     let typed: K =
         serde_json::from_value(value).map_err(|e| format!("object does not match the CRD: {e}"))?;
-    let (orgs, users) = typed.references();
-    Ok((
-        application::use_cases::admission::kind_of(K::KIND),
-        orgs,
-        users,
-    ))
+    match enforce(policies, refs, namespace, &typed).await {
+        Ok(decision) => decision.map_err(|f| f.message),
+        Err(e) => {
+            tracing::error!(error = %e, "admission lookup failed");
+            Err("ForgejoNamespacePolicy lookup failed".to_string())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -126,7 +130,7 @@ mod tests {
     use super::*;
 
     /// No policy lookup can succeed, as with an unreachable apiserver.
-    fn unreachable_cluster() -> Arc<dyn PolicySource> {
+    fn unreachable_cluster() -> Arc<application::test_support::FakeCluster> {
         let cluster = application::test_support::FakeCluster::default();
         cluster.fail_with("connection refused");
         Arc::new(cluster)
@@ -150,8 +154,10 @@ mod tests {
     }
 
     async fn run(review: AdmissionReview<DynamicObject>) -> AdmissionResponse {
+        let cluster = unreachable_cluster();
         let state = WebhookState {
-            policies: unreachable_cluster(),
+            policies: cluster.clone(),
+            refs: cluster,
         };
         validate(State(state), Json(review))
             .await

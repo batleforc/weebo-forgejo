@@ -3,7 +3,7 @@ use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::user_api as api;
 use forgejo_client::models;
 
-use super::{classify, classify_create, found, missing_id};
+use super::{PAGE_SIZE, all_pages, classify, classify_create, found, missing_id};
 
 fn remote(app: models::OAuth2Application, id: i64) -> RemoteOAuth2App {
     RemoteOAuth2App {
@@ -92,4 +92,22 @@ pub(super) async fn delete(
     api::user_delete_o_auth2_application(config, params)
         .await
         .map_err(classify)
+}
+
+pub(super) async fn list(
+    config: &Configuration,
+    sudo: Option<&str>,
+) -> Result<Vec<RemoteOAuth2App>, GatewayError> {
+    let apps = all_pages(|page| async move {
+        let params = api::UserGetOAuth2ApplicationsParams {
+            page: Some(page),
+            limit: Some(PAGE_SIZE),
+            sudo: sudo.map(str::to_string),
+        };
+        api::user_get_o_auth2_applications(config, params)
+            .await
+            .map_err(classify)
+    })
+    .await?;
+    Ok(apps.into_iter().map(|a| remote(a, 0)).collect())
 }

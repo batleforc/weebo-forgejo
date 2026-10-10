@@ -34,6 +34,7 @@ struct View<'a> {
     status: Option<&'a ForgejoStatus>,
     spec_name: &'a str,
     organization_ref: Option<&'a str>,
+    admin: bool,
 }
 
 async fn read<K>(
@@ -56,6 +57,7 @@ where
         status,
         spec_name,
         organization_ref,
+        admin,
     } = view(&obj);
     // An unparsable id (hand-edited status) reads as "nothing owned yet".
     let forgejo = status.and_then(|s| {
@@ -74,11 +76,103 @@ where
         ready,
         spec_name: Some(spec_name.to_string()),
         organization_ref: organization_ref.map(str::to_string),
+        admin,
     }))
+}
+
+/// `Kind/[namespace/]name` of every `K` bound to `instance`.
+async fn bound<K>(
+    client: &Client,
+    instance: &str,
+    default: bool,
+    instance_ref: fn(&K) -> Option<&String>,
+) -> Result<Vec<String>, ClusterError>
+where
+    K: kube::Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned,
+{
+    let list = Api::<K>::all(client.clone())
+        .list(&Default::default())
+        .await
+        .map_err(|e| ClusterError(format!("listing {}: {e}", K::kind(&()))))?;
+    Ok(list
+        .items
+        .iter()
+        .filter(|o| match instance_ref(o) {
+            Some(name) => name == instance,
+            None => default,
+        })
+        .map(|o| {
+            let meta = o.meta();
+            let name = meta.name.clone().unwrap_or_default();
+            match &meta.namespace {
+                Some(ns) => format!("{}/{ns}/{name}", K::kind(&())),
+                None => format!("{}/{name}", K::kind(&())),
+            }
+        })
+        .collect())
 }
 
 #[async_trait::async_trait]
 impl ReferenceReader for KubeClusterReader {
+    async fn default_instance(&self) -> Result<Option<String>, ClusterError> {
+        let list = Api::<api::ForgejoInstance>::all(self.client.clone())
+            .list(&Default::default())
+            .await
+            .map_err(|e| ClusterError(format!("listing ForgejoInstance: {e}")))?;
+        Ok(match list.items.as_slice() {
+            [only] => only.metadata.name.clone(),
+            _ => None,
+        })
+    }
+
+    async fn instance_dependents(
+        &self,
+        instance: &str,
+        default: bool,
+    ) -> Result<Vec<String>, ClusterError> {
+        use api::{
+            ForgejoAccessToken, ForgejoDeployKey, ForgejoOAuth2Application, ForgejoUserKey,
+            ForgejoWebhook,
+        };
+        let c = &self.client;
+        let mut all = Vec::new();
+        all.extend(
+            bound::<ForgejoUser>(c, instance, default, |o| o.spec.instance_ref.as_ref()).await?,
+        );
+        all.extend(
+            bound::<ForgejoOrganization>(c, instance, default, |o| o.spec.instance_ref.as_ref())
+                .await?,
+        );
+        all.extend(
+            bound::<ForgejoTeam>(c, instance, default, |o| o.spec.instance_ref.as_ref()).await?,
+        );
+        all.extend(
+            bound::<ForgejoRepository>(c, instance, default, |o| o.spec.instance_ref.as_ref())
+                .await?,
+        );
+        all.extend(
+            bound::<ForgejoWebhook>(c, instance, default, |o| o.spec.instance_ref.as_ref()).await?,
+        );
+        all.extend(
+            bound::<ForgejoDeployKey>(c, instance, default, |o| o.spec.instance_ref.as_ref())
+                .await?,
+        );
+        all.extend(
+            bound::<ForgejoUserKey>(c, instance, default, |o| o.spec.instance_ref.as_ref()).await?,
+        );
+        all.extend(
+            bound::<ForgejoOAuth2Application>(c, instance, default, |o| {
+                o.spec.instance_ref.as_ref()
+            })
+            .await?,
+        );
+        all.extend(
+            bound::<ForgejoAccessToken>(c, instance, default, |o| o.spec.instance_ref.as_ref())
+                .await?,
+        );
+        Ok(all)
+    }
+
     async fn referenced(
         &self,
         kind: RefKind,
@@ -93,6 +187,7 @@ impl ReferenceReader for KubeClusterReader {
                     status: o.status.as_ref(),
                     spec_name: &o.spec.username,
                     organization_ref: None,
+                    admin: o.spec.admin,
                 })
                 .await
             }
@@ -102,6 +197,7 @@ impl ReferenceReader for KubeClusterReader {
                     status: o.status.as_ref(),
                     spec_name: &o.spec.name,
                     organization_ref: None,
+                    admin: false,
                 })
                 .await
             }
@@ -111,6 +207,7 @@ impl ReferenceReader for KubeClusterReader {
                     status: o.status.as_ref(),
                     spec_name: &o.spec.name,
                     organization_ref: Some(&o.spec.organization_ref.name),
+                    admin: false,
                 })
                 .await
             }
@@ -121,6 +218,7 @@ impl ReferenceReader for KubeClusterReader {
                     status: o.status.as_ref(),
                     spec_name: &o.spec.name,
                     organization_ref: None,
+                    admin: false,
                 })
                 .await
             }

@@ -7,28 +7,21 @@ use std::time::Instant;
 
 use api::ForgejoNamespacePolicy;
 use application::use_cases::reconcile_namespace_policy::reconcile_namespace_policy;
-use futures::StreamExt;
 use kube::Client;
 use kube::api::Api;
 use kube::runtime::controller::Action;
-use kube::runtime::{Controller, watcher};
 
 use super::{Ctx, Error, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
 
+const KIND: &str = "ForgejoNamespacePolicy";
+
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
-    Controller::new(
-        Api::<ForgejoNamespacePolicy>::all(client),
-        watcher::Config::default(),
-    )
-    .graceful_shutdown_on(ctx.shutdown.wait())
-    .run(reconcile, error_policy, ctx)
-    .for_each(|res| async move {
-        if let Err(err) = res {
-            tracing::debug!(error = %err, "ForgejoNamespacePolicy reconcile failed");
-        }
-    })
-    .await;
+    let health = ctx.health.clone();
+    let results = super::controller(Api::<ForgejoNamespacePolicy>::all(client))
+        .graceful_shutdown_on(ctx.shutdown.wait())
+        .run(reconcile, error_policy, ctx);
+    super::drive(KIND, health, results).await;
 }
 
 async fn reconcile(obj: Arc<ForgejoNamespacePolicy>, ctx: Arc<Ctx>) -> Result<Action, Error> {

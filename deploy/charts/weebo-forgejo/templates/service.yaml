@@ -4,6 +4,7 @@ metadata:
   name: {{ include "weebo-forgejo.fullname" . }}
   labels:
     {{- include "weebo-forgejo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
 spec:
   selector:
     {{- include "weebo-forgejo.selectorLabels" . | nindent 4 }}

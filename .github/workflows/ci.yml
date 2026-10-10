@@ -7,14 +7,17 @@ on:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -43,8 +46,12 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
       # target/ is deliberately not cached: keyed on Cargo.lock only, it
       # never gets evicted and grows until the runner runs out of disk.
@@ -78,8 +85,12 @@ jobs:
   # failing below 85% of lines (`task coverage`).
   coverage:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -113,8 +124,12 @@ jobs:
 
   regen-and-diff:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
       - run: mise install
       # Regenerates the Forgejo client (offline, from the vendored spec) and
@@ -123,41 +138,57 @@ jobs:
       - name: Fail if committed generated files are stale
         run: |
           git diff --exit-code crates/forgejo-client/ deploy/crd/ \
-            deploy/charts/weebo-forgejo/crds/ docs/content/docs/crds/ docs/public/crd-schemas/
+            deploy/charts/weebo-forgejo/templates/crds/ docs/content/docs/crds/ docs/public/crd-schemas/
           # A generated file that's new must be committed too.
           test -z "$(git status --porcelain crates/forgejo-client/ docs/content/docs/crds/ docs/public/crd-schemas/ deploy/)"
 
   docs:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
       - run: mise install
       - run: mise exec -- task docs:build
 
   helm-lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
       - run: mise install
       - run: mise exec -- task lint:helm
 
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
       - run: mise install
       - run: mise exec -- task audit
 
   image-build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         file: [Containerfile, Containerfile.hardened]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # Build-only proof that both images build (no container engine in the
       # dev sandbox); publishing is publish.yml's job.
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2

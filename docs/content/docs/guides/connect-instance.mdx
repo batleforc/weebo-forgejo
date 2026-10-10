@@ -108,6 +108,11 @@ the cluster's **only** `ForgejoInstance` is used. With zero instances, those
 CRs report `InstanceNotFound`. With several, they report
 `AmbiguousDefaultInstance`, so set `instanceRef` on each of them.
 
+`instanceRef` is **immutable**: the API server refuses to change it on an
+existing CR. Decide it when you create the CR; to move a CR to another
+instance, delete it (`deletionPolicy: Orphan` keeps the Forgejo object) and
+create it again. See [Security model](/docs/guides/security#instanceref-is-immutable).
+
 ## Where secrets go
 
 Several kinds generate credentials: local users' passwords, SSH keys, OAuth2

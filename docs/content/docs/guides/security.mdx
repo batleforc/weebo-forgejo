@@ -1,0 +1,168 @@
+---
+title: Security model
+description: What the operator may do in the cluster and in Forgejo, the rules that bound it, and how to fence it with RBAC and a NetworkPolicy.
+---
+
+The operator holds a Forgejo **site-administrator** token and can write
+Secrets anywhere in the cluster. This page explains why, and what stops a
+namespace from turning that power against another one.
+
+## Trust boundaries
+
+| Who | Can | Bounded by |
+| --- | --- | --- |
+| Cluster admins | Create cluster-scoped kinds: instances, users, user keys, organizations, teams, namespace policies | Kubernetes RBAC |
+| Application teams | Create namespaced kinds in their namespaces: repositories, webhooks, deploy keys, OAuth2 applications, access tokens | RBAC **and** the [allow-list](/docs/guides/allow-list) |
+| The operator | Act as a Forgejo site admin; read referenced Secrets, write the credentials it generates | Its ClusterRole, and the rules below |
+
+Grant the cluster-scoped kinds to cluster admins only: a `ForgejoUser` with
+`admin: true` *is* a Forgejo site admin. The chart's
+`rbac.namespacedExample` renders a Role with exactly the namespaced kinds for
+a team.
+
+## The operator's RBAC
+
+| Resource | Verbs | Why |
+| --- | --- | --- |
+| The `forgejo.weebo.io` kinds (+ `/status`, `/finalizers`) | get, list, watch, update, patch | Its own API, cluster-wide: namespaced kinds live in any namespace |
+| `secrets` | get, create, patch, delete | See below. **Never list or watch** |
+| `events.k8s.io` events | create, patch | An Event on every `Ready` transition |
+| `coordination.k8s.io` leases, release namespace only | get, create, update, patch | Leader election (a Role, not a ClusterRole) |
+
+### Why cluster-wide Secrets
+
+The operator *reads* the Secrets a CR references (the instance token, a
+webhook HMAC secret, migration credentials, a Vault CA) and *writes* the
+credentials it generates (passwords, SSH keys, OAuth2 client secrets, access
+tokens) into the namespaces the CRs name. Both sides can be any namespace, so
+a namespaced Role per namespace would mean redeploying RBAC for every new
+team. Instead, Secrets are only ever addressed **by name**, never listed or
+watched, so the operator can't enumerate them, and the rules below bound
+where it writes.
+
+### Where a CR may write Secrets
+
+- A **namespaced** CR (an access token, an OAuth2 application, a deploy key)
+  may only write `secretTargets` into **its own namespace**, and only
+  reference Secrets (a webhook's `secretRef`) in its own namespace. A target
+  naming another namespace is refused before anything is written — by the
+  admission webhook and again by the reconciler — with `CrossNamespaceReference`.
+  On a namespaced CR, a Vault `path` must stay under `<pathPrefix>/<namespace>/`.
+  Vault values record their owner in the KV custom metadata (`owner`) and are
+  never overwritten nor deleted by another CR.
+- The operator only overwrites or deletes a Secret it **owns**: one labelled
+  `app.kubernetes.io/managed-by: weebo-forgejo` **and** annotated
+  `forgejo.weebo.io/owner: <Kind>/<namespace>/<name>` naming the CR (`<Kind>/<name>` for cluster-scoped ones; a CR re-created under the same name takes its Secrets back). Secrets emitted by 0.1.0 carry the label only: the first CR writing one adopts it. A target naming an existing
+  Secret it doesn't own (your database password, another CR's token) fails
+  (`SecretTargetFailed`) and the Secret is left untouched.
+- **Cluster-scoped** CRs (`ForgejoUser`, `ForgejoUserKey`) are created by
+  cluster admins and must name a namespace for each Kubernetes target; the
+  same ownership rule applies.
+
+So a team can neither exfiltrate a credential into a namespace it doesn't
+own, nor clobber a Secret it didn't create through the operator.
+
+### Tokens and OAuth2 applications for administrators
+
+An access token, or an OAuth2 application owned by a user, acts **as** that
+user. For a `ForgejoUser` with `admin: true` that is full control of
+Forgejo. So a `ForgejoAccessToken` or `ForgejoOAuth2Application` referencing
+an admin user is refused **unless a `ForgejoNamespacePolicy` rule explicitly
+lists that user in `allowedUsers`** for the CR's namespace and kind, and
+this holds **even when no policy exists at all** (normally "no policy" means
+"allow everything"). An unset `allowedUsers` ("any user") doesn't count.
+The same goes for an OAuth2 application **without `ownerRef`**: it belongs
+to the operator's own admin account, so it needs a rule listing
+`@instance-admin`.
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoNamespacePolicy
+metadata:
+  name: platform-admin-token
+spec:
+  rules:
+    - namespaces: [platform-ci]
+      allowedKinds: [ForgejoAccessToken]
+      allowedUsers: [admin-bot]   # explicit: admin-bot is a site admin
+```
+
+### `instanceRef` is immutable
+
+A CR's `spec.instanceRef` can't be changed once the CR exists: the API
+server refuses the update. Moving a CR to another Forgejo would otherwise
+leave its object behind in the first one, and let a CR re-point at an
+instance its namespace wasn't meant to reach. To move a CR, delete it (with
+`deletionPolicy: Orphan` if the object must stay) and create it again.
+
+## Admission webhook
+
+- The `failurePolicy` is `Fail`: while no replica answers, namespaced CRs
+  can't be created or updated. Don't switch it to `Ignore`; the reconcilers
+  would still refuse disallowed CRs, but only after they're stored. See
+  [Troubleshooting](/docs/guides/troubleshooting#the-webhook-is-down) for
+  what to do when it's down.
+- It never sees deletes, so revoking access never blocks cleanup.
+- `webhook.namespaceSelector` / `objectSelector` can exclude objects (e.g.
+  system namespaces). Excluded CRs are still checked by the reconcilers.
+
+## Network policy
+
+`networkPolicy.enabled=true` renders a NetworkPolicy for the operator pods.
+
+**Ingress** is limited to the webhook port (8443) and, when metrics are on,
+the metrics port (9090). The API server's source address depends on the
+cluster (host network, managed control plane), so `webhookFrom` defaults to
+any source; restrict it when you know it. Restrict `metricsFrom` to your
+Prometheus namespace.
+
+**Egress** is only restricted with `networkPolicy.egress.enabled=true`. The
+operator then needs, and you must list:
+
+| Destination | Value | Default |
+| --- | --- | --- |
+| Cluster DNS | `egress.dns` | kube-dns in `kube-system`, port 53 UDP/TCP |
+| The API server | `egress.apiServer.to` | **required**: the `kubernetes` endpoints' addresses |
+| Every Forgejo a `ForgejoInstance` points at | `egress.forgejo` | none |
+| Vault, if a secret store uses it | `egress.vault` | none |
+| Anything else (OTLP collector, …) | `egress.extra` | none |
+
+```yaml
+networkPolicy:
+  enabled: true
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  egress:
+    enabled: true
+    apiServer:
+      # kubectl get endpoints kubernetes -o jsonpath='{.subsets[*].addresses[*].ip}'
+      to:
+        - ipBlock: { cidr: 10.0.0.10/32 }
+    forgejo:
+      - to:
+          - namespaceSelector:
+              matchLabels: { kubernetes.io/metadata.name: forgejo }
+        ports:
+          - { port: 3000, protocol: TCP }
+    vault:
+      - to:
+          - ipBlock: { cidr: 192.0.2.20/32 }
+        ports:
+          - { port: 8200, protocol: TCP }
+```
+
+A blocked Forgejo shows up as `InstanceUnreachable` on the
+`ForgejoInstance`; a blocked API server makes the pods fail their probes.
+
+## Supply chain
+
+Release images and charts are built in GitHub Actions, carry an SBOM and SLSA
+provenance, and are signed keylessly with cosign. See
+[Verify a release](/docs/guides/verify-release). Vulnerabilities are reported
+privately, see the repository's `SECURITY.md`.
+
+## Next
+
+[Troubleshooting](/docs/guides/troubleshooting).

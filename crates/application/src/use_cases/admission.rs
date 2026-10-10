@@ -1,8 +1,15 @@
-//! The allow-list check shared by the admission webhook and every
-//! namespaced reconciler — same rules, same `ReasonCode`
-//! (`NamespaceNotAllowed`) whichever side refuses: what each namespaced
-//! kind references ([`Governed`]), and the decision against the policies
-//! read through the [`PolicySource`] port.
+//! The admission checks shared by the admission webhook and every
+//! namespaced reconciler — same rules, same `ReasonCode` whichever side
+//! refuses:
+//!
+//! - `secretTargets` stay in the CR's namespace (`CrossNamespaceReference`);
+//! - the allow-list: what each namespaced kind references ([`Governed`]),
+//!   against the policies read through the [`PolicySource`] port
+//!   (`NamespaceNotAllowed`);
+//! - credentials of a site admin — a token or an OAuth2 application of a
+//!   `ForgejoUser` with `admin: true`, or of the operator's own admin
+//!   account — need an `Allow` rule naming that user in `allowedUsers`,
+//!   even while no policy exists (`NamespaceNotAllowed`).
 
 use api::namespace_policy::{Effect as ApiEffect, NamespaceRule, NamespacedKind};
 use api::{
@@ -12,14 +19,25 @@ use api::{
 use domain::allow_list::{self, Decision, Effect, Kind, Request, Rule};
 use domain::error::ReasonCode;
 
-use crate::ports::{ClusterError, PolicySource};
-use crate::use_cases::Failure;
+use api::common::SecretTarget;
+
+use crate::ports::{ClusterError, PolicySource, RefKind, ReferenceReader, SecretOwner};
+use crate::use_cases::{Failure, emit};
 
 /// A namespaced kind governed by `ForgejoNamespacePolicy`.
 pub trait Governed {
     const KIND: NamespacedKind;
     /// `(ForgejoOrganization names, ForgejoUser names)` this CR references.
     fn references(&self) -> (Vec<String>, Vec<String>);
+    /// Where the CR writes the secrets it emits.
+    fn secret_targets(&self) -> &[SecretTarget] {
+        &[]
+    }
+    /// The users whose credentials the CR mints (`ForgejoUser` names, or
+    /// [`allow_list::INSTANCE_ADMIN`]).
+    fn credential_users(&self) -> Vec<String> {
+        vec![]
+    }
 }
 
 fn names<'a>(refs: impl IntoIterator<Item = Option<&'a api::common::ObjectRef>>) -> Vec<String> {
@@ -49,6 +67,9 @@ impl Governed for ForgejoDeployKey {
         // Only a same-namespace repository, itself governed.
         (vec![], vec![])
     }
+    fn secret_targets(&self) -> &[SecretTarget] {
+        &self.spec.key.secret_targets
+    }
 }
 
 impl Governed for ForgejoOAuth2Application {
@@ -56,30 +77,101 @@ impl Governed for ForgejoOAuth2Application {
     fn references(&self) -> (Vec<String>, Vec<String>) {
         // Without an owner the app belongs to the operator's admin account:
         // that is a user too, or `allowedUsers` would vacuously cover it.
-        let owner = match &self.spec.owner_ref {
+        (vec![], self.credential_users())
+    }
+    fn secret_targets(&self) -> &[SecretTarget] {
+        &self.spec.secret_targets
+    }
+    fn credential_users(&self) -> Vec<String> {
+        vec![match &self.spec.owner_ref {
             Some(r) => r.name.clone(),
             None => allow_list::INSTANCE_ADMIN.to_string(),
-        };
-        (vec![], vec![owner])
+        }]
     }
 }
 
 impl Governed for ForgejoAccessToken {
     const KIND: NamespacedKind = NamespacedKind::ForgejoAccessToken;
     fn references(&self) -> (Vec<String>, Vec<String>) {
-        (vec![], names([Some(&self.spec.user_ref)]))
+        (vec![], self.credential_users())
+    }
+    fn secret_targets(&self) -> &[SecretTarget] {
+        &self.spec.secret_targets
+    }
+    fn credential_users(&self) -> Vec<String> {
+        names([Some(&self.spec.user_ref)])
     }
 }
 
-/// Checks `obj` (in `namespace`) against the current policies.
+/// Every admission check of `obj` (in `namespace`), in order: its secret
+/// targets, the allow-list, then the site-admin credentials rule.
 pub async fn enforce<K: Governed>(
     policies: &dyn PolicySource,
+    refs: &dyn ReferenceReader,
     namespace: &str,
     obj: &K,
 ) -> Result<Result<(), Failure>, ClusterError> {
+    let owner = SecretOwner::namespaced("", namespace, "");
+    if let Err(f) = emit::check_targets(obj.secret_targets(), &owner) {
+        return Ok(Err(f));
+    }
     let (organizations, users) = obj.references();
     let request = allow_list::request(namespace, kind_of(K::KIND), &organizations, &users);
-    Ok(check(&request, &policies.policies().await?))
+    let policies = policies.policies().await?;
+    if let Err(f) = check(&request, &policies) {
+        return Ok(Err(f));
+    }
+    let mut admins = Vec::new();
+    for user in obj.credential_users() {
+        if user == allow_list::INSTANCE_ADMIN
+            || refs
+                .referenced(RefKind::User, namespace, &user)
+                .await?
+                .is_some_and(|u| u.admin)
+        {
+            admins.push(user);
+        }
+    }
+    Ok(check_admin_credentials(
+        namespace,
+        kind_of(K::KIND),
+        &admins,
+        &policies,
+    ))
+}
+
+/// `admins`: the site-admin users whose credentials a CR mints. Each must
+/// be named in the `allowedUsers` of an `Allow` rule covering the CR's
+/// namespace and kind — a rule allowing any user doesn't count, and the
+/// rule applies even while no policy exists: anyone allowed to create a
+/// token in some namespace must not get a site-admin token by default.
+pub fn check_admin_credentials(
+    namespace: &str,
+    kind: Kind,
+    admins: &[String],
+    policies: &[Vec<NamespaceRule>],
+) -> Result<(), Failure> {
+    if admins.is_empty() {
+        return Ok(());
+    }
+    let explicit: Vec<Rule> = policies
+        .iter()
+        .flatten()
+        .filter(|r| r.effect == ApiEffect::Deny || r.allowed_users.is_some())
+        .map(rule_of)
+        .collect();
+    let request = allow_list::request(namespace, kind, &[], admins);
+    match allow_list::evaluate(&request, &explicit, true) {
+        Decision::Allowed => Ok(()),
+        Decision::Denied(_) => Err(Failure::new(
+            ReasonCode::NamespaceNotAllowed,
+            format!(
+                "credentials of site admin(s) {} need a ForgejoNamespacePolicy Allow rule \
+                 for namespace {namespace:?} naming them in allowedUsers",
+                admins.join(", ")
+            ),
+        )),
+    }
 }
 
 pub fn kind_of(kind: NamespacedKind) -> Kind {
@@ -183,19 +275,132 @@ mod tests {
         assert_eq!(decide(&app(None), None), Decision::Allowed);
     }
 
+    fn token(user: &str, targets: serde_json::Value) -> ForgejoAccessToken {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoAccessToken",
+            "metadata": {"name": "t", "namespace": "team-a"},
+            "spec": {"userRef": {"name": user}, "scopes": ["read:user"], "secretTargets": targets},
+        }))
+        .unwrap()
+    }
+
+    fn allow_tokens(users: Option<Vec<String>>) -> Vec<Vec<NamespaceRule>> {
+        vec![vec![NamespaceRule {
+            namespaces: vec!["team-a".into()],
+            allowed_kinds: vec![
+                NamespacedKind::ForgejoAccessToken,
+                NamespacedKind::ForgejoOAuth2Application,
+            ],
+            allowed_organizations: None,
+            allowed_users: users,
+            effect: ApiEffect::Allow,
+        }]]
+    }
+
     #[tokio::test]
     async fn enforce_reads_the_policies_through_the_port() {
         let cluster = crate::test_support::FakeCluster::default();
+        let app = app(Some("sso-bot"));
         assert!(
-            enforce(&cluster, "team-a", &app(None))
+            enforce(&cluster, &cluster, "team-a", &app)
                 .await
                 .unwrap()
                 .is_ok()
         );
         cluster.set_policies(vec![vec![]]);
-        let denied = enforce(&cluster, "team-a", &app(None)).await.unwrap();
+        let denied = enforce(&cluster, &cluster, "team-a", &app).await.unwrap();
         assert_eq!(denied.unwrap_err().reason, ReasonCode::NamespaceNotAllowed);
         cluster.fail_with("apiserver down");
-        assert!(enforce(&cluster, "team-a", &app(None)).await.is_err());
+        assert!(enforce(&cluster, &cluster, "team-a", &app).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn secret_targets_stay_in_the_namespace() {
+        let cluster = crate::test_support::FakeCluster::default();
+        let own = token(
+            "ci-bot",
+            serde_json::json!([{"name": "a", "namespace": "team-a"}]),
+        );
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &own)
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        let foreign = token(
+            "ci-bot",
+            serde_json::json!([{"name": "a", "namespace": "kube-system"}]),
+        );
+        let denied = enforce(&cluster, &cluster, "team-a", &foreign)
+            .await
+            .unwrap();
+        assert_eq!(
+            denied.unwrap_err().reason,
+            ReasonCode::CrossNamespaceReference
+        );
+    }
+
+    #[tokio::test]
+    async fn site_admin_credentials_need_an_explicit_allow() {
+        let cluster = crate::test_support::FakeCluster::default();
+        cluster.put(
+            RefKind::User,
+            "",
+            "root",
+            crate::ports::ReferencedCr {
+                admin: true,
+                ..Default::default()
+            },
+        );
+        let admin = token("root", serde_json::json!([]));
+        // Even without any policy...
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &admin)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &app(None))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        // ...and with a rule allowing any user.
+        cluster.set_policies(allow_tokens(None));
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &admin)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            enforce(
+                &cluster,
+                &cluster,
+                "team-a",
+                &token("ci-bot", serde_json::json!([]))
+            )
+            .await
+            .unwrap()
+            .is_ok()
+        );
+        // Named explicitly: allowed.
+        cluster.set_policies(allow_tokens(Some(vec![
+            "root".into(),
+            allow_list::INSTANCE_ADMIN.into(),
+        ])));
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &admin)
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &app(None))
+                .await
+                .unwrap()
+                .is_ok()
+        );
     }
 }

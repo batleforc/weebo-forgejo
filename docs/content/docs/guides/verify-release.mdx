@@ -1,0 +1,101 @@
+---
+title: Verify a release
+description: Check the cosign signatures, SBOM and provenance of the images, the chart and the CRD bundle before you deploy them.
+---
+
+Every release is built and published by the repository's `publish.yml`
+workflow on GitHub Actions, and signed **keylessly** with
+[cosign](https://docs.sigstore.dev/): there is no long-lived key; each
+signature carries a certificate that names the workflow and the tag that
+produced it, recorded in the public Rekor transparency log.
+
+You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 2.x or later.
+
+## The identity to expect
+
+| Field | Value |
+| --- | --- |
+| OIDC issuer | `https://token.actions.githubusercontent.com` |
+| Identity | `https://github.com/batleforc/weebo-forgejo/.github/workflows/publish.yml@refs/tags/vX.Y.Z` |
+
+A release made through the *Release* workflow (or a manual re-publish) runs
+`publish.yml` as a reusable workflow from `main`: the identity is then
+`…/publish.yml@refs/heads/main`. The regular expression below accepts both.
+
+```bash
+export COSIGN_ID='^https://github.com/batleforc/weebo-forgejo/\.github/workflows/publish\.yml@refs/(tags/v.*|heads/main)$'
+export COSIGN_ISSUER=https://token.actions.githubusercontent.com
+```
+
+## Images
+
+```bash
+IMAGE=ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z   # or vX.Y.Z-hardened
+cosign verify "$IMAGE" \
+  --certificate-identity-regexp "$COSIGN_ID" \
+  --certificate-oidc-issuer "$COSIGN_ISSUER"
+```
+
+Verification succeeds for the multi-arch index and each platform image.
+Then pin what you verified by **digest**:
+
+```bash
+DIGEST=$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -r .digest)
+helm upgrade --install weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
+  --version X.Y.Z -n weebo-forgejo --set image.digest="$DIGEST"
+```
+
+To enforce signatures at admission, use a policy engine (Sigstore
+policy-controller, Kyverno `verifyImages`, …) with the same identity and
+issuer.
+
+### SBOM and provenance
+
+Both are BuildKit attestations attached to the image index:
+
+```bash
+# SPDX SBOM of the amd64 image
+docker buildx imagetools inspect "$IMAGE" --format '{{json (index .SBOM "linux/amd64").SPDX}}'
+# SLSA provenance (mode=max: build args, sources, steps)
+docker buildx imagetools inspect "$IMAGE" --format '{{json (index .Provenance "linux/amd64").SLSA}}'
+```
+
+## Helm chart
+
+The chart is an OCI artifact signed the same way:
+
+```bash
+cosign verify ghcr.io/batleforc/charts/weebo-forgejo:X.Y.Z \
+  --certificate-identity-regexp "$COSIGN_ID" \
+  --certificate-oidc-issuer "$COSIGN_ISSUER"
+```
+
+Note the chart tag has no `v` prefix.
+
+## CRD bundle
+
+`weebo-forgejo-crds.yaml` on the GitHub Release comes with its Sigstore
+bundle:
+
+```bash
+cosign verify-blob weebo-forgejo-crds.yaml \
+  --bundle weebo-forgejo-crds.yaml.sigstore.json \
+  --certificate-identity-regexp "$COSIGN_ID" \
+  --certificate-oidc-issuer "$COSIGN_ISSUER"
+```
+
+## What the pipeline checks before signing
+
+- The chart version and `appVersion` (and the Cargo workspace version) equal
+  the tag.
+- The kind end-to-end suite passes on the tagged code, both images,
+  including an upgrade from the previous release.
+- Each image is scanned by trivy (no HIGH/CRITICAL) and smoke-run, before
+  the push for amd64 and on the pushed digest for every platform.
+
+Only then are the image, the chart and the CRD bundle signed and the GitHub
+Release created.
+
+## Next
+
+[Migrate an existing Forgejo](/docs/guides/migration).

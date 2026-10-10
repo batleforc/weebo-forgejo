@@ -9,11 +9,15 @@ use api::common::DeletionPolicy;
 use api::oauth2::ForgejoOAuth2ApplicationSpec;
 use domain::error::ReasonCode;
 
-use crate::ports::{DesiredOAuth2App, ForgejoGateway, ForgejoRef, RemoteOAuth2App, SecretStore};
+use crate::ports::{
+    DesiredOAuth2App, ForgejoGateway, ForgejoRef, RemoteOAuth2App, SecretOwner, SecretStore,
+};
 use crate::use_cases::emit::{self, rotation_requested};
 use crate::use_cases::{
     CleanupGateway, Failure, Outcome, gone_ok, owner_login_now, previous_owner,
 };
+
+pub const KIND: &str = "ForgejoOAuth2Application";
 
 pub struct OAuth2Input<'a> {
     pub spec: &'a ForgejoOAuth2ApplicationSpec,
@@ -58,8 +62,11 @@ async fn sync(
 ) -> Outcome {
     let desired = desired_app(&input);
     let owner_name = input.owner.clone().unwrap_or_default();
+    let owner = SecretOwner::namespaced(KIND, input.namespace, input.cr_name);
+    if let Err(f) = emit::check_targets(&input.spec.secret_targets, &owner) {
+        return Outcome::failed(input.current, f);
+    }
     let targets = emit::targets(&input.spec.secret_targets, input.cr_name, secrets);
-    let ns = Some(input.namespace);
 
     // An application can't change owner: delete under the old one, then
     // create under the new one (new client id). A renamed owner is still
@@ -107,15 +114,38 @@ async fn sync(
     };
 
     let (app, secret) = match remote {
-        None => match gateway
-            .create_oauth2_app(input.owner.as_deref(), &desired)
-            .await
-        {
-            Ok((app, secret)) => (app, Some(secret)),
-            Err(e) => return Outcome::failed(None, e),
-        },
+        None => {
+            // Names aren't unique: an application of this name on the
+            // account is one whose create response was lost, or someone
+            // else's — never a reason to add a second one.
+            match gateway.list_oauth2_apps(input.owner.as_deref()).await {
+                Ok(apps) => {
+                    if let Some(twin) = apps.iter().find(|a| a.name == desired.name) {
+                        return Outcome::failed(
+                            None,
+                            Failure::new(
+                                ReasonCode::ForgejoObjectAlreadyExists,
+                                format!(
+                                    "the account already has OAuth2 application {} named {:?}; \
+                                     delete it or rename this one (spec.name)",
+                                    twin.id, desired.name
+                                ),
+                            ),
+                        );
+                    }
+                }
+                Err(e) => return Outcome::failed(None, e),
+            }
+            match gateway
+                .create_oauth2_app(input.owner.as_deref(), &desired)
+                .await
+            {
+                Ok((app, secret)) => (app, Some(secret)),
+                Err(e) => return Outcome::failed(None, e),
+            }
+        }
         Some(remote) => {
-            let lost = match emit::any_missing(&targets, ns, secrets).await {
+            let lost = match emit::any_missing(&targets, &owner, secrets).await {
                 Ok(lost) => lost,
                 Err(f) => return Outcome::failed(current, f),
             };
@@ -151,7 +181,7 @@ async fn sync(
         ]);
         // On failure the secret is lost and the targets that exist hold the
         // previous, now invalid one: regenerate on the next reconcile.
-        if let Err(f) = emit::write_all(&targets, ns, &data, secrets).await {
+        if let Err(f) = emit::write_all(&targets, &owner, &data, secrets).await {
             let mut failed = Outcome::failed(current, f);
             failed.secret_pending = Some(true);
             return failed;
@@ -183,7 +213,8 @@ pub async fn cleanup_oauth2(
         }
     }
     let targets = emit::targets(&spec.secret_targets, cr_name, secrets);
-    emit::delete_all(&targets, Some(namespace), secrets).await
+    let owner = SecretOwner::namespaced(KIND, namespace, cr_name);
+    emit::delete_all(&targets, &owner, secrets).await
 }
 
 /// `status.forgejoName` holds the owner login, empty for the admin.
@@ -373,5 +404,17 @@ mod tests {
             .unwrap();
         assert_ne!(Some(moved.id), current.map(|c| c.id));
         assert_eq!(fj.oauth2_app(moved.id).unwrap().0, "sso-bot");
+    }
+
+    #[tokio::test]
+    async fn a_twin_application_is_never_created() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let s = spec();
+        let first = reconcile_oauth2(input(&s, None, None), &fj, &secrets).await;
+        assert!(first.ready.is_ok(), "{first:?}");
+        // The status update was lost: the next reconcile knows of no app.
+        let again = reconcile_oauth2(input(&s, None, None), &fj, &secrets).await;
+        assert_eq!(again.reason(), ReasonCode::ForgejoObjectAlreadyExists);
+        assert_eq!(fj.oauth2_apps_of("admin").len(), 1);
     }
 }

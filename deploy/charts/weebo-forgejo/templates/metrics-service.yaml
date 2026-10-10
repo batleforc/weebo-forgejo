@@ -1,0 +1,19 @@
+{{- if include "weebo-forgejo.metricsEnabled" . }}
+# Plain-HTTP Prometheus endpoint, kept off the webhook Service so the API
+# server's only path to the pods stays the TLS webhook port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "weebo-forgejo.fullname" . }}-metrics
+  labels:
+    {{- include "weebo-forgejo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    {{- include "weebo-forgejo.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.prometheus.port }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

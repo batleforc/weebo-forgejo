@@ -8,7 +8,9 @@ use api::common::DeletionPolicy;
 use api::token::ForgejoAccessTokenSpec;
 use domain::error::ReasonCode;
 
-use crate::ports::{DesiredToken, ForgejoGateway, ForgejoRef, RemoteToken, SecretStore};
+use crate::ports::{
+    DesiredToken, ForgejoGateway, ForgejoRef, RemoteToken, SecretOwner, SecretStore,
+};
 use crate::use_cases::emit::{self, rotation_requested};
 use crate::use_cases::reconcile_repository::go_duration_secs;
 use crate::use_cases::{
@@ -39,10 +41,30 @@ pub struct TokenInput<'a> {
     pub now: i64,
 }
 
+pub const KIND: &str = "ForgejoAccessToken";
+
 pub fn token_name(spec: &ForgejoAccessTokenSpec, namespace: &str, cr_name: &str) -> String {
     spec.name
         .clone()
         .unwrap_or_else(|| format!("{namespace}-{cr_name}"))
+}
+
+/// Token names are unique per user, yet a rotation must issue the new
+/// token before revoking the old one (consumers keep a working token until
+/// the new one reached every target): the token alternates between its
+/// name and this one.
+pub fn rotated_name(name: &str) -> String {
+    format!("{name}-next")
+}
+
+/// The name a token replacing `current` (named `current_name`) is issued
+/// under.
+fn next_name(base: &str, current_name: Option<&str>) -> String {
+    if current_name == Some(base) {
+        rotated_name(base)
+    } else {
+        base.to_string()
+    }
 }
 
 /// The only scopes Forgejo accepts on a token limited to repositories.
@@ -101,13 +123,16 @@ async fn issue(
             ),
         );
     }
-    let desired = DesiredToken {
+    let owner = SecretOwner::namespaced(KIND, input.namespace, input.cr_name);
+    if let Err(f) = emit::check_targets(&spec.secret_targets, &owner) {
+        return Outcome::failed(input.current, f);
+    }
+    let mut desired = DesiredToken {
         name: token_name(spec, input.namespace, input.cr_name),
         scopes: sorted(&spec.scopes),
         repositories: sorted(&input.repositories),
     };
     let targets = emit::targets(&spec.secret_targets, input.cr_name, secrets);
-    let ns = Some(input.namespace);
 
     // A changed userRef: the old user's token is revoked below and a new
     // one issued — same disruption as a scope change. A renamed user is
@@ -167,9 +192,9 @@ async fn issue(
             .as_deref()
             .and_then(go_duration_secs)
             .zip(r.created_at)
-            .map(|(period, created)| created + period as i64);
+            .and_then(|(period, created)| created.checked_add(i64::try_from(period).ok()?));
         let expired = expires_at.is_some_and(|at| at <= input.now);
-        let lost = match emit::any_missing(&targets, ns, secrets).await {
+        let lost = match emit::any_missing(&targets, &owner, secrets).await {
             Ok(lost) => lost,
             Err(f) => return Outcome::failed(input.current.clone(), f),
         };
@@ -186,43 +211,56 @@ async fn issue(
             });
             let mut outcome = Outcome::synced(current, "token valid");
             // Come back when it expires, not at the next 300 s requeue.
-            outcome.due_in = expires_at.map(|at| (at - input.now).max(1) as u64);
+            outcome.due_in = expires_at.map(|at| {
+                u64::try_from(at.saturating_sub(input.now))
+                    .unwrap_or(0)
+                    .max(1)
+            });
             return outcome;
         }
     }
 
-    // Names are unique per user: revoke before issuing. Also drops the
-    // previous user's token after a userRef change. A renamed user is
-    // addressed by its new login.
-    if let Some(c) = &input.current
-        && let Err(e) = gone_ok(
-            gateway
-                .delete_access_token(previous.as_deref().unwrap_or(&input.user), c.id)
-                .await,
-        )
-    {
-        return Outcome::failed(input.current.clone(), e);
-    }
-    let (token, value) = match gateway.create_access_token(&input.user, &desired).await {
+    // Issue the replacement first, under the name the current token
+    // doesn't use, then fan it out, then revoke the old one: consumers
+    // never hold a revoked token while the operator can help it. After a
+    // userRef change the old token lives on another user: no name clash.
+    let old_user = previous.clone().unwrap_or_else(|| input.user.clone());
+    let base = desired.name.clone();
+    desired.name = next_name(&base, remote.as_ref().map(|r| r.name.as_str()));
+    let (token, value) = match create_token(gateway, &input.user, &desired, remote.as_ref()).await {
         Ok(t) => t,
-        Err(e) => return Outcome::failed(None, e),
+        Err(e) => return Outcome::failed(input.current.clone(), e),
     };
-    let current = Some(ForgejoRef {
+    let issued = ForgejoRef {
         id: token.id,
         name: input.user.clone(),
-    });
+    };
     let data = BTreeMap::from([
         ("FORGEJO_TOKEN".to_string(), value),
         ("FORGEJO_USERNAME".to_string(), input.user.clone()),
         ("FORGEJO_URL".to_string(), gateway.web_url().to_string()),
     ]);
-    if let Err(f) = emit::write_all(&targets, ns, &data, secrets).await {
-        // The value is lost and earlier targets may hold the revoked one:
-        // issue again next time, whether the targets exist or not.
-        let mut outcome = Outcome::failed(current, f);
+    if let Err(f) = emit::write_all(&targets, &owner, &data, secrets).await {
+        // Keep the old token (consumers may still hold it) and revoke the
+        // new one, whose value is lost: the next reconcile issues again
+        // under the then free name, whether the targets exist or not.
+        let mut outcome = match gone_ok(gateway.delete_access_token(&input.user, token.id).await) {
+            Ok(()) => Outcome::failed(input.current.clone(), f),
+            // Can't revoke it: track it so it's the one replaced next time.
+            Err(_) => Outcome::failed(Some(issued), f),
+        };
         outcome.secret_pending = Some(true);
         return outcome;
     }
+    // Every target holds the new token: revoke the old one. A failure
+    // leaves it to expire or to the next rotation — never block on it.
+    if let Some(c) = &input.current
+        && c.id != token.id
+        && let Err(e) = gone_ok(gateway.delete_access_token(&old_user, c.id).await)
+    {
+        tracing::warn!(error = %e, token = c.id, "revoking the replaced token failed");
+    }
+    let current = Some(issued);
     let mut outcome = Outcome::synced(current, "token issued");
     outcome.secret_pending = Some(false);
     outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
@@ -257,7 +295,34 @@ pub async fn cleanup_token(
         }
     }
     let targets = emit::targets(&spec.secret_targets, cr_name, secrets);
-    emit::delete_all(&targets, Some(namespace), secrets).await
+    let owner = SecretOwner::namespaced(KIND, namespace, cr_name);
+    emit::delete_all(&targets, &owner, secrets).await
+}
+
+/// Issues `desired`. A token already holding its name that isn't the one
+/// being replaced is ours from an earlier attempt whose response was lost
+/// (the name is derived from the CR): revoked, then issued again.
+async fn create_token(
+    gateway: &dyn ForgejoGateway,
+    user: &str,
+    desired: &DesiredToken,
+    replacing: Option<&RemoteToken>,
+) -> Result<(ForgejoRef, String), Failure> {
+    match gateway.create_access_token(user, desired).await {
+        Err(e) if e.reason() == ReasonCode::ForgejoObjectAlreadyExists => {
+            let stale = gateway
+                .list_access_tokens(user)
+                .await?
+                .into_iter()
+                .find(|t| t.name == desired.name && Some(t.id) != replacing.map(|r| r.id));
+            let Some(stale) = stale else {
+                return Err(e.into());
+            };
+            gone_ok(gateway.delete_access_token(user, stale.id).await)?;
+            Ok(gateway.create_access_token(user, desired).await?)
+        }
+        other => Ok(other?),
+    }
 }
 
 fn sorted(v: &[String]) -> Vec<String> {
@@ -268,8 +333,11 @@ fn sorted(v: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// `d.name` is the base name: a rotated token carries [`rotated_name`].
 fn token_differs(d: &DesiredToken, r: &RemoteToken) -> bool {
-    d.name != r.name || d.scopes != sorted(&r.scopes) || d.repositories != sorted(&r.repositories)
+    (d.name != r.name && rotated_name(&d.name) != r.name)
+        || d.scopes != sorted(&r.scopes)
+        || d.repositories != sorted(&r.repositories)
 }
 
 #[cfg(test)]
@@ -416,8 +484,8 @@ mod tests {
             .await
             .forgejo;
 
-        // A rotation whose write fails: the target still exists, holding
-        // the token that was just revoked.
+        // A rotation whose write fails: the old token stays valid (the
+        // target still holds it), the new one is revoked again.
         secrets.fail_writes(true);
         let mut rotate = input(&s, first.clone(), 0);
         rotate.rotate_nonce = Some("1".into());
@@ -425,7 +493,13 @@ mod tests {
         assert_eq!(failed.reason(), ReasonCode::SecretTargetFailed);
         assert_eq!(failed.secret_pending, Some(true));
         let issued = failed.forgejo.unwrap();
-        assert_ne!(fj.token(issued.id).unwrap().1, value(&secrets), "stale");
+        assert_eq!(Some(&issued), first.as_ref(), "the old token is kept");
+        assert_eq!(
+            fj.token(issued.id).unwrap().1,
+            value(&secrets),
+            "still valid"
+        );
+        assert_eq!(fj.tokens_of("ci-bot").len(), 1, "the new token is revoked");
 
         secrets.fail_writes(false);
         let mut retry = input(&s, Some(issued.clone()), 0);

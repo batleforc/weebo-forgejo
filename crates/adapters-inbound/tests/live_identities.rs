@@ -643,17 +643,20 @@ async fn external_team_members_are_left_to_forgejo() {
         vec![synced.clone()]
     );
 
-    // memberRefs contradicts External.
-    merge(
-        &teams,
-        "ext",
-        json!({"spec": {"memberRefs": [{"name": "nobody"}]}}),
-    )
-    .await;
-    wait_for(&teams, "ext", |t| {
-        failed_with(t.status.as_ref(), "InvalidSpec")
-    })
-    .await;
+    // memberRefs contradicts External: the API server refuses it (CRD
+    // validation rule), Forgejo is left alone.
+    let refused = teams
+        .patch(
+            "ext",
+            &PatchParams::default(),
+            &Patch::Merge(json!({"spec": {"memberRefs": [{"name": "nobody"}]}})),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("membersPolicy is External"),
+        "{refused}"
+    );
     assert_eq!(
         l.fj.list_team_members(id).await.unwrap(),
         vec![synced.clone()]

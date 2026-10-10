@@ -6,28 +6,27 @@ use application::ports::{ForgejoRef, RefKind};
 use application::use_cases::reconcile_team::{Member, TeamInput, cleanup_team, reconcile_team};
 use application::use_cases::refs::{resolve_member, resolve_required};
 use application::use_cases::{Failure, Outcome};
-use futures::StreamExt;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::{Controller, watcher};
+use kube::runtime::watcher;
 use kube::{Client, ResourceExt};
 
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
 
+const KIND: &str = "ForgejoTeam";
+
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
-    let controller = Controller::new(
-        Api::<ForgejoTeam>::all(client.clone()),
-        watcher::Config::default(),
-    );
+    let health = ctx.health.clone();
+    let controller = super::controller(Api::<ForgejoTeam>::all(client.clone()));
     // Teams react to their organization and members changing state: an
     // observed OIDC user appearing in Forgejo joins its teams right away.
     let by_org = controller.store();
     let by_member = controller.store();
-    controller
+    let results = controller
         .watches(
             Api::<ForgejoOrganization>::all(client.clone()),
             watcher::Config::default(),
@@ -55,13 +54,8 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
             },
         )
         .graceful_shutdown_on(ctx.shutdown.wait())
-        .run(reconcile, error_policy, ctx)
-        .for_each(|res| async move {
-            if let Err(err) = res {
-                tracing::debug!(error = %err, "ForgejoTeam reconcile failed");
-            }
-        })
-        .await;
+        .run(reconcile, error_policy, ctx);
+    super::drive(KIND, health, results).await;
 }
 
 async fn reconcile(obj: Arc<ForgejoTeam>, ctx: Arc<Ctx>) -> Result<Action, Error> {
@@ -72,7 +66,9 @@ async fn reconcile(obj: Arc<ForgejoTeam>, ctx: Arc<Ctx>) -> Result<Action, Error
     finalizer(&api, FINALIZER, obj, |event| async {
         match event {
             FinalizerEvent::Apply(team) => apply(&api, &team, &ctx).await,
-            FinalizerEvent::Cleanup(team) => cleanup(&team, &ctx).await,
+            FinalizerEvent::Cleanup(team) => {
+                super::finalize(team.as_ref(), &ctx, cleanup(&team, &ctx)).await
+            }
         }
     })
     .await

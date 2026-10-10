@@ -72,13 +72,27 @@ Legend: `[x]` done · `[ ]` to do · `[~]` partially done / blocked (reason give
 - [~] kind e2e workflow (`.github/workflows/e2e.yml`, weekly + manual; `task e2e`, `deploy/e2e/run.sh`) — written, shellcheck/actionlint clean, manifests checked against the CRDs; **never run yet** (kind can't boot on local rootless podman): trigger it once on GitHub
   - [x] kind + cert-manager + Forgejo in-cluster + operator image (both variants) + chart
   - [x] golden path: instance → users → org → team → repo → hook/keys → oauth2/token → policy denials
-  - [x] chart/webhook TLS/RBAC exercised (denials go through the webhook, secrets written cross-namespace), leader failover, deletion policies
+  - [x] chart/webhook TLS/RBAC exercised (denials go through the webhook, cluster-scoped CRs write secrets cross-namespace), leader failover, deletion policies
 - [x] Leader-election test (envtest, `crates/operator/tests/leader_election.rs`) + failover step in the e2e
 - [~] Release pipeline: fixed (release → publish via `workflow_call`, bump hook works on a clean runner, images smoke-run in CI and after push); **first `cog bump` is yours** (signed commits) — see docs "Releasing"
 - [x] Docs: migration guide (importer), release guide
 - [x] Coverage gate: `task coverage` (all layers incl. live suites and the binaries) fails under 85% lines; CI job `coverage` with a disposable Forgejo (`task forgejo:container:start`)
 - [x] Every feature end to end on real controllers + envtest + Forgejo: `live_identities.rs`, `live_repositories.rs`, `live_credentials.rs`, `instance_tls.rs`, operator/importer/crdgen binary tests
 - [x] Fixed: `rotationPeriod` renewals could lag up to the 300 s requeue (`Outcome::due_in`)
+
+## Prod readiness (review of 2026-10-10)
+
+See `.prompt/plan.md`, "Durcissement « prod ready »" for the decisions.
+
+- [x] Security: secretTargets confined to the CR's namespace (and Vault prefix); stores only touch Secrets/paths they own (`forgejo.weebo.io/owner`); site-admin credentials need an explicit `allowedUsers` rule
+- [x] Integrity: users/orgs resolved and deleted by id; `instanceRef` immutable (CEL); split-brain-free leader election (kit); token issued before the old one is revoked; key `secretPending`; no twin webhook/OAuth2 app; status patch retried
+- [x] Resilience: bounded reconcile concurrency, per-instance Forgejo in-flight limit, predicates, jittered back-off, reflector back-off, cached HTTP clients, lazy Vault login with negative cache, graceful webhook drain, `/readyz` `/livez`, instance finalizer + `force-orphan`, `CleanupFailed` Events
+- [x] Observability: Prometheus `/metrics`, Forgejo call metrics, leader gauge, JSON logs, telemetry flush, sanitized error bodies
+- [x] Chart/CI/docs: CRDs as templates, resources/spread/PDB, NetworkPolicy, ServiceMonitor/PrometheusRule, cert-manager optional, values schema, multi-arch signed images + SBOM/provenance, GitHub Release, e2e gate + upgrade test, SECURITY/CONTRIBUTING, ops docs
+- [x] Live suites green against Forgejo 16.0.5 (podman via a `docker` shim); envtest suites green
+- [x] weebo-operator-kit v0.2.0 released (tag pushed, CI green); `Cargo.toml` depends on `tag = "v0.2.0"`
+- [ ] Run `e2e.yml` once on GitHub (kind can't run here), then the first signed `cog bump` of weebo-forgejo
+- [ ] Optional: enums on free-form strings (webhook `type`, token scopes) — left out, Forgejo adds values over releases
 
 ## Later (post-v1)
 

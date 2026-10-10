@@ -41,6 +41,10 @@ pub struct ImportOptions {
     /// local account becomes `bot: true` so its password is never reset
     /// (the operator can't know it).
     pub manage_users: bool,
+    /// Import teams as `membersPolicy: External` (members synced from
+    /// outside the operator, e.g. OIDC group sync) instead of `Managed`,
+    /// whose first reconcile would remove anyone added later.
+    pub external_teams: bool,
     /// The CRs already in the cluster: an object adopted by an earlier run
     /// keeps its CR name, and a name owned by another object is never
     /// reused — so names don't depend on this run's `owners` selection.
@@ -336,8 +340,17 @@ fn team_spec(
         units_map: team.units_map,
         includes_all_repositories: team.includes_all_repositories,
         can_create_org_repo: team.can_create_org_repo,
-        members_policy: MembersPolicy::Managed,
-        member_refs,
+        members_policy: if options.external_teams {
+            MembersPolicy::External
+        } else {
+            MembersPolicy::Managed
+        },
+        // External teams list no members (the CRD refuses them).
+        member_refs: if options.external_teams {
+            vec![]
+        } else {
+            member_refs
+        },
         deletion_policy: DeletionPolicy::Orphan,
     }
 }
@@ -1026,5 +1039,22 @@ mod tests {
             .unwrap();
         assert_eq!(same.name, "adopted");
         assert!(again.repositories.iter().all(|r| r.name != natural));
+    }
+
+    #[tokio::test]
+    async fn teams_can_be_imported_as_externally_managed() {
+        let f = fixture().await;
+        let out = import(
+            &f,
+            &ImportOptions {
+                external_teams: true,
+                ..options()
+            },
+        )
+        .await
+        .unwrap();
+        let team = &out.teams[0].spec;
+        assert_eq!(team.members_policy, MembersPolicy::External);
+        assert!(team.member_refs.is_empty());
     }
 }

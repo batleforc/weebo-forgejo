@@ -19,7 +19,8 @@ object instead of trying to create a new one.
   is [connected](/docs/guides/connect-instance).
 - A **site-administrator token** for the importer (read access is enough).
 - For `--apply`, a kube context allowed to create the CRs and patch their
-  `status` (typically cluster-admin).
+  `status`: cluster-admin, or the [least-privilege role](#importer-rbac)
+  below.
 - If a [`ForgejoNamespacePolicy`](/docs/guides/allow-list) exists, the
   import namespace must be allowed for the imported organizations.
 
@@ -159,6 +160,74 @@ rather than from a fresh print.
 
 </Accordion>
 </Accordions>
+
+## Importer RBAC
+
+Without `--apply` the importer never talks to the cluster. With it, it
+reads the existing CRs (to keep names stable), creates the new ones by
+server-side apply, seeds their `status` and removes the pause annotation.
+It never reads or writes Secrets. A dedicated identity needs no more than:
+
+```yaml
+# Cluster-scoped kinds: users, organizations, teams.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weebo-forgejo-importer
+rules:
+  - apiGroups: ["forgejo.weebo.io"]
+    resources: [forgejousers, forgejoorganizations, forgejoteams]
+    verbs: ["get", "list", "create", "patch"]
+  - apiGroups: ["forgejo.weebo.io"]
+    resources: [forgejousers/status, forgejoorganizations/status, forgejoteams/status]
+    verbs: ["patch"]
+---
+# Namespaced kinds, bound only in the import namespace (--namespace).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weebo-forgejo-importer-namespaced
+rules:
+  - apiGroups: ["forgejo.weebo.io"]
+    resources: [forgejorepositories, forgejowebhooks, forgejodeploykeys]
+    verbs: ["get", "list", "create", "patch"]
+  - apiGroups: ["forgejo.weebo.io"]
+    resources: [forgejorepositories/status, forgejowebhooks/status, forgejodeploykeys/status]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: weebo-forgejo-importer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: weebo-forgejo-importer
+subjects:
+  - kind: ServiceAccount        # or the User/Group running the importer
+    name: weebo-forgejo-importer
+    namespace: forgejo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: weebo-forgejo-importer
+  namespace: forgejo            # the --namespace you import into
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: weebo-forgejo-importer-namespaced
+subjects:
+  - kind: ServiceAccount
+    name: weebo-forgejo-importer
+    namespace: forgejo
+```
+
+Patching `status` is what lets it adopt an object: keep this role off
+anyone who shouldn't be able to point a CR at an arbitrary Forgejo object,
+and remove the binding once the migration is done. Namespaced CRs still go
+through the admission webhook, so the [allow-list](/docs/guides/allow-list)
+applies to the import namespace.
 
 ## Finish by hand
 

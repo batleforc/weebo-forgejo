@@ -447,6 +447,16 @@ spec:
         - spec
         title: ForgejoRepository
         type: object
+        x-kubernetes-validations:
+        - message: 'spec.instanceRef is immutable: ids in status belong to the instance they were created on'
+          reason: FieldValueForbidden
+          rule: '(has(self.spec.instanceRef) ? self.spec.instanceRef : '''') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '''')'
+        - message: set exactly one of spec.organizationRef and spec.userRef
+          rule: has(self.spec.organizationRef) != has(self.spec.userRef)
+        - message: set at most one of spec.init, spec.fromTemplate and spec.migrate
+          rule: '(has(self.spec.init) ? 1 : 0) + (has(self.spec.fromTemplate) ? 1 : 0) + (has(self.spec.migrate) ? 1 : 0) <= 1'
+        - message: spec.teamRefs only applies to organization-owned repositories
+          rule: '!has(self.spec.userRef) || !has(self.spec.teamRefs) || size(self.spec.teamRefs) == 0'
     served: true
     storage: true
     subresources:

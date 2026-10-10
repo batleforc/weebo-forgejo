@@ -156,10 +156,16 @@ pub struct Summary {
 }
 
 /// Adopts every CR in dependency order; a failure is reported and the rest
-/// carry on.
+/// carry on. A CR already in the cluster that owns nothing yet is refused
+/// (the operator may be creating its object right now).
 pub async fn apply_all(client: &Client, i: &Manifests) -> Summary {
+    apply_all_with(client, i, false).await
+}
+
+/// [`apply_all`]; `force` also takes over CRs that own nothing yet.
+pub async fn apply_all_with(client: &Client, i: &Manifests, force: bool) -> Summary {
     let mut summary = Summary::default();
-    for_each!(i, |cr| match adopt(client, cr).await {
+    for_each!(i, |cr| match adopt(client, cr, force).await {
         Ok(true) => summary.adopted += 1,
         Ok(false) => summary.skipped += 1,
         Err(e) => {
@@ -215,7 +221,7 @@ fn describe<K: Resource<DynamicType = ()>>(cr: &K) -> String {
 /// create a duplicate (webhooks have no name to collide on). `Ok(false)`:
 /// the CR already owns this object (still paused from a run that failed
 /// after seeding: unpaused now). A CR owning another one is an error.
-async fn adopt<K>(client: &Client, cr: &K) -> anyhow::Result<bool>
+async fn adopt<K>(client: &Client, cr: &K, force: bool) -> anyhow::Result<bool>
 where
     K: Resource<DynamicType = ()> + Seeded + Clone + Debug + Serialize + DeserializeOwned,
 {
@@ -240,7 +246,15 @@ where
                 "already owns Forgejo id {owned}, not {}",
                 id.unwrap_or_default()
             ),
-            None => {}
+            // Paused by an earlier run of ours: safe to finish.
+            None if existing
+                .annotations()
+                .contains_key(api::IMPORT_PENDING_ANNOTATION) => {}
+            None if force => {}
+            None => anyhow::bail!(
+                "exists but owns nothing yet — the operator may be creating its object \
+                 right now; delete it, or re-run with --force to take it over"
+            ),
         }
     }
 

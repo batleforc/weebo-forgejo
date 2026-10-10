@@ -21,6 +21,14 @@ namespaced kind, referencing any organization or user. As soon as **one**
 policy exists, the default becomes **deny**.
 </Callout>
 
+<Callout type="warn" title="Administrators always need an explicit rule">
+An access token or an OAuth2 application for a `ForgejoUser` with
+`admin: true` acts with site-admin rights. Such a CR is refused **unless a
+rule explicitly lists that user in `allowedUsers`** for the namespace and
+kind, even while no policy exists. An unset `allowedUsers` doesn't count.
+See [Security model](/docs/guides/security#tokens-and-oauth2-applications-for-administrators).
+</Callout>
+
 ## Write a policy
 
 With at least one policy in place, a CR is accepted only if:
@@ -72,6 +80,11 @@ A rule must cover what the CR points at:
 the operator's own admin account. For the allow-list, it references the
 special user `@instance-admin`. A rule that restricts `allowedUsers` only
 allows such an application if it lists `@instance-admin`.
+
+**Site-admin credentials.** A token or OAuth2 application of a `ForgejoUser`
+with `admin: true`, or of `@instance-admin`, always needs an `Allow` rule
+naming that user in `allowedUsers` — even while no policy exists. See
+[Security model](/docs/guides/security#tokens-and-oauth2-applications-for-administrators).
 
 ## Where it's enforced
 

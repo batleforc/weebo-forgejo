@@ -162,28 +162,36 @@ async fn sync_members(
     members: &[Member],
     gateway: &dyn ForgejoGateway,
 ) -> Result<(), GatewayError> {
-    let wanted: BTreeSet<&str> = members
+    // Forgejo logins are case-insensitive: compared lowercased, so
+    // `Alice` in a spec never removes and re-adds `alice`.
+    let fold = |l: &str| l.to_lowercase();
+    let wanted: BTreeSet<String> = members
         .iter()
         .filter_map(|m| match m {
-            Member::Ready(login) => Some(login.as_str()),
+            Member::Ready(login) => Some(fold(login)),
             Member::Pending { .. } => None,
         })
         .collect();
-    let kept: BTreeSet<&str> = members
+    let kept: BTreeSet<String> = members
         .iter()
         .filter_map(|m| match m {
-            Member::Pending { login, .. } => login.as_deref(),
+            Member::Pending { login, .. } => login.as_deref().map(fold),
             Member::Ready(_) => None,
         })
         .collect();
     let actual = gateway.list_team_members(team).await?;
-    let actual: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
+    let present: BTreeSet<String> = actual.iter().map(|l| fold(l)).collect();
 
-    for login in wanted.difference(&actual) {
-        gateway.add_team_member(team, login).await?;
+    for m in members {
+        if let Member::Ready(login) = m
+            && !present.contains(&fold(login))
+        {
+            gateway.add_team_member(team, login).await?;
+        }
     }
-    for login in actual.difference(&wanted) {
-        if !kept.contains(login) {
+    for login in &actual {
+        let key = fold(login);
+        if !wanted.contains(&key) && !kept.contains(&key) {
             gateway.remove_team_member(team, login).await?;
         }
     }

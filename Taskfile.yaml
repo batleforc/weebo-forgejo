@@ -7,6 +7,7 @@ includes:
   gen: ./.tasks/gen.yaml
   forgejo: ./.tasks/forgejo.yaml
   e2e: ./.tasks/e2e.yaml
+  helm: ./.tasks/helm.yaml
   tests:
     taskfile: ./.tasks/test.yaml
     flatten: true
@@ -48,8 +49,9 @@ tasks:
     cmds:
       - task: gen:client
       - mise exec -- cargo run -q -p crdgen -- --out deploy/crd/
-      # Helm's crds/ is a plain copy, kept in sync here so it can't drift.
-      - rm -f deploy/charts/weebo-forgejo/crds/*.yaml && cp deploy/crd/*.yaml deploy/charts/weebo-forgejo/crds/
+      # The chart ships the CRDs as templates (Helm never upgrades crds/),
+      # wrapped in `crds.install` + `helm.sh/resource-policy: keep`.
+      - deploy/scripts/sync-chart-crds.sh
       # CRD reference pages + form schemas of the docs site.
       - task: docs:deps
       - rm -f docs/content/docs/crds/*.mdx docs/public/crd-schemas/*.json
@@ -86,11 +88,10 @@ tasks:
       - mise exec -- npm run build
 
   lint:helm:
-    desc: "helm lint + a template smoke render of the operator chart"
+    desc: "helm lint + template smoke renders of the operator chart (see .tasks/helm.yaml)"
     cmds:
-      - mise exec -- helm lint deploy/charts/weebo-forgejo
-      - mise exec -- helm template smoke deploy/charts/weebo-forgejo > /dev/null
-      - mise exec -- helm template smoke deploy/charts/weebo-forgejo --set certManager.createIssuer=false --set certManager.issuerRef.name=ca > /dev/null
+      - task: helm:lint
+      - task: helm:smoke
 
   audit:
     desc: "Check dependencies and Containerfiles for CVE (cargo-deny + trivy)"

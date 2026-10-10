@@ -185,6 +185,7 @@ async fn binary_serves_the_webhook_leads_reconciles_and_exits_on_lease_loss() {
 /// ignored until the SIGKILL — and hands the lease over at once.
 #[tokio::test]
 async fn binary_stops_on_sigterm_and_releases_the_lease() {
+    let metrics_port = free_port();
     let cluster = EnvTestCluster::start().await;
     let client = cluster.client();
     let dir = std::env::temp_dir().join(format!("operator-sigterm-{}", std::process::id()));
@@ -199,6 +200,7 @@ async fn binary_stops_on_sigterm_and_releases_the_lease() {
             .env("HOSTNAME", "operator-under-test")
             // No certificate: the webhook is skipped.
             .env("WEBHOOK_TLS_CERT_FILE", dir.join("absent.crt"))
+            .env("WEEBO_METRICS_ADDR", format!("127.0.0.1:{metrics_port}"))
             .env("RUST_LOG", "info")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -218,6 +220,21 @@ async fn binary_stops_on_sigterm_and_releases_the_lease() {
     };
     eventually("the leader lease", Duration::from_secs(30), || async {
         holder().await.as_deref() == Some("operator-under-test")
+    })
+    .await;
+    // Prometheus metrics, the leader gauge included.
+    let metrics = format!("http://127.0.0.1:{metrics_port}/metrics");
+    eventually("the leader gauge at 1", Duration::from_secs(15), || {
+        let get = reqwest::get(metrics.clone());
+        async move {
+            match get.await {
+                Ok(r) => r.text().await.is_ok_and(|body| {
+                    body.lines()
+                        .any(|l| l.starts_with("weebo_forgejo_leader") && l.ends_with(" 1"))
+                }),
+                Err(_) => false,
+            }
+        }
     })
     .await;
 

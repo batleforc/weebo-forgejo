@@ -22,6 +22,8 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoUser",
+    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    validation = kube::core::Rule::new("(has(self.spec.managementPolicy) && self.spec.managementPolicy == 'Observe') || has(self.spec.email)").message("spec.email is required unless managementPolicy is Observe"),
     plural = "forgejousers",
     shortname = "fjuser",
     status = "ForgejoStatus",

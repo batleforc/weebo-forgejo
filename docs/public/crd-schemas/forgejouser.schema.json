@@ -105,12 +105,12 @@
             "type": "string"
           },
           "namespace": {
-            "description": "Kubernetes `Secret` namespace (Vault: the namespace segment of the\ndefault path). Defaults to the CR's own namespace; required on\ncluster-scoped CRs.",
+            "description": "Kubernetes `Secret` namespace (Vault: the namespace segment of the\ndefault path). Defaults to the CR's own namespace; required on\ncluster-scoped CRs. A namespaced CR may only name its own namespace.",
             "nullable": true,
             "type": "string"
           },
           "path": {
-            "description": "Vault only: explicit KV v2 path under the instance's mount.",
+            "description": "Vault only: explicit KV v2 path under the instance's mount. On a\nnamespaced CR it must stay under `<pathPrefix>/<namespace>/`.",
             "nullable": true,
             "type": "string"
           }

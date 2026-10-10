@@ -10,4 +10,7 @@ misconfigurations:
       webhook and migration Secrets they reference — cluster-wide Secret
       access is the feature, not an accident. The ForgejoNamespacePolicy
       allow-list and namespaced RBAC on the CRs bound who can make it
-      write where.
+      write where; a namespaced CR may only write into its own namespace,
+      and only into Secrets the operator owns (managed-by label +
+      forgejo.weebo.io/owner-uid annotation). Secrets are never listed or
+      watched. Reviewed for the templated chart (docs: "Security model").

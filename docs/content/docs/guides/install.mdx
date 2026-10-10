@@ -8,9 +8,11 @@ Deployment and its admission webhook. Forgejo itself is not part of it.
 
 ## Before you begin
 
-- **Kubernetes 1.30+**, with `kubectl` and `helm` 3.8+ (for OCI charts).
-- **[cert-manager](https://cert-manager.io/docs/installation/)**. It issues
-  the admission webhook's TLS certificate.
+- **Kubernetes 1.30+** (the chart refuses older clusters), with `kubectl`
+  and `helm` 3.8+ (for OCI charts).
+- **[cert-manager](https://cert-manager.io/docs/installation/)**, which
+  issues the admission webhook's TLS certificate. You can do without it and
+  [bring your own certificate](#without-cert-manager).
 - **Forgejo v16 or later**. Older versions lack the admin token API the
   operator relies on, and their `ForgejoInstance` reports
   `UnsupportedForgejoVersion`.
@@ -19,11 +21,13 @@ Deployment and its admission webhook. Forgejo itself is not part of it.
 
 ```bash
 helm install weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
-  --namespace weebo-forgejo --create-namespace
+  --namespace weebo-forgejo --create-namespace --version X.Y.Z
 ```
 
-Add `--version X.Y.Z` to pin a release. Versions are listed on the
-[releases page](https://github.com/batleforc/weebo-forgejo/releases).
+Versions are listed on the
+[releases page](https://github.com/batleforc/weebo-forgejo/releases). Every
+image and chart is signed; see [Verify a release](/docs/guides/verify-release)
+to check them before installing.
 
 ### Check the install
 
@@ -48,26 +52,81 @@ helm install weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
   --set certManager.issuerRef.kind=ClusterIssuer
 ```
 
+### Without cert-manager
+
+Set `webhook.certManager.enabled=false` and provide the certificate
+yourself:
+
+1. A `kubernetes.io/tls` Secret in the release namespace, valid for
+   `<release>-weebo-forgejo.<namespace>.svc` (or `weebo-forgejo.<namespace>.svc`
+   when the release is called `weebo-forgejo`).
+2. The CA that signed it, base64-encoded, as `webhook.caBundle`. The API
+   server uses it to trust the webhook.
+
+```bash
+# Example with a throwaway CA; use your PKI in production.
+SVC=weebo-forgejo.weebo-forgejo.svc
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj "/CN=weebo-ca" \
+  -keyout ca.key -out ca.crt
+openssl req -newkey rsa:2048 -nodes -subj "/CN=$SVC" -keyout tls.key -out tls.csr
+openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 \
+  -extfile <(printf "subjectAltName=DNS:%s,DNS:%s.cluster.local" "$SVC" "$SVC") -out tls.crt
+kubectl -n weebo-forgejo create secret tls weebo-forgejo-webhook-tls --cert tls.crt --key tls.key
+
+helm install weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
+  --namespace weebo-forgejo \
+  --set webhook.certManager.enabled=false \
+  --set webhook.tls.secretName=weebo-forgejo-webhook-tls \
+  --set webhook.caBundle="$(base64 -w0 < ca.crt)"
+```
+
+The operator reloads the certificate every 60 s: renew the Secret in place
+before it expires, with the same CA (or update `webhook.caBundle` first).
+
 ## What gets deployed
 
 | Object | Why |
 | --- | --- |
-| Deployment (2 replicas) | One replica is elected leader and does the work; every replica answers the webhook |
+| CRDs (11) | The API. Templated, so upgrades update them; never deleted by Helm (see [CRDs](#crds)) |
+| Deployment (2 replicas) | One replica is elected leader and does the work; every replica answers the webhook. See [High availability](/docs/guides/high-availability) |
 | PodDisruptionBudget | Keeps a webhook replica up during node drains |
 | ValidatingWebhookConfiguration | Checks the [allow-list](/docs/guides/allow-list) when namespaced kinds are created or updated (never on delete) |
 | Certificate (+ Issuer) | Webhook TLS, rotated by cert-manager and reloaded every 60 s |
-| ClusterRole (+ Binding) | The operator's own permissions |
+| ClusterRole (+ Binding), Role (+ Binding) | The operator's own permissions; the Role covers its leader-election Lease. See [Security model](/docs/guides/security) |
+| Services `weebo-forgejo`, `weebo-forgejo-metrics` | The webhook (HTTPS), and Prometheus metrics (HTTP, when enabled) |
 | ConfigMap `weebo-forgejo-argocd-health` | A health check for ArgoCD; see [ArgoCD](/docs/guides/operations#argocd) |
+| Optional: ServiceMonitor, PrometheusRule, NetworkPolicy | See [Monitoring](/docs/guides/operations#metrics-and-alerts) and [Security model](/docs/guides/security#network-policy) |
 
 ## Main values
 
+Every value is validated against the chart's `values.schema.json`: a typo
+or an invalid enum fails the install instead of being ignored. `helm show
+values oci://ghcr.io/batleforc/charts/weebo-forgejo` prints them all with
+their comments.
+
 | Value | Default | Description |
 | --- | --- | --- |
-| `replicaCount` | `2` | Operator replicas |
+| `replicaCount` | `2` | Operator replicas. Keep at least 2 |
 | `image.tag` | `v` + chart `appVersion` | Add `-hardened` for the Red Hat hardened image, e.g. `vX.Y.Z-hardened` |
+| `image.digest` | | `sha256:…`: pull `repository@digest`, ignoring `tag` |
+| `crds.install` | `true` | Install and upgrade the CRDs with the chart |
+| `leaderElection.leaseName` | `weebo-forgejo-operator-leader` | The leader-election Lease (distinct per release sharing a namespace) |
 | `webhook.failurePolicy` | `Fail` | Keep `Fail`: the allow-list is a security boundary, and `Ignore` would skip it while the webhook is down |
+| `webhook.timeoutSeconds` | `5` | How long the API server waits for an admission answer |
+| `webhook.namespaceSelector` / `objectSelector` | `{}` | Restrict which objects the webhook sees (the reconcilers still enforce the allow-list) |
+| `webhook.certManager.enabled` | `true` | `false`: set `webhook.tls.secretName` and `webhook.caBundle` |
 | `certManager.createIssuer` | `true` | Create a self-signed `Issuer` for the webhook |
 | `certManager.issuerRef.*` | | The issuer to use when `createIssuer` is `false` |
+| `metrics.prometheus.enabled` | `true` | Prometheus endpoint on port `9090` |
+| `serviceMonitor.enabled` / `prometheusRule.enabled` | `false` | prometheus-operator objects |
+| `resources` | requests `50m`/`64Mi`, limit `256Mi` | See [sizing](/docs/guides/high-availability#sizing) |
+| `priorityClassName` | | e.g. a class above your workloads': the webhook gates CR writes |
+| `defaultTopologySpread` / `topologySpreadConstraints` | soft spread per node | Replace with your own constraints (zones, …) |
+| `probes.*` | | Startup, readiness (`/readyz`) and liveness (`/livez`) probe timings |
+| `shutdown.terminationGracePeriodSeconds` | `960` | Lets an in-flight repository migration finish |
+| `shutdown.drainSeconds` | `5` | The webhook keeps answering this long after `SIGTERM` |
+| `shutdown.preStopSleepSeconds` | `0` | A native `preStop` sleep before `SIGTERM` (the images have no shell) |
+| `networkPolicy.enabled` | `false` | See [Network policy](/docs/guides/security#network-policy) |
 | `rbac.namespacedExample.*` | disabled | An example Role letting a team manage the namespaced kinds in its own namespace |
 | `extraEnv` | `[]` | Extra environment variables, e.g. `OTEL_EXPORTER_OTLP_ENDPOINT` or `RUST_LOG` |
 
@@ -75,12 +134,32 @@ helm install weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
 
 | Artifact | Where |
 | --- | --- |
-| Helm chart | `oci://ghcr.io/batleforc/charts/weebo-forgejo`, version `X.Y.Z` |
-| Operator image (distroless) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (and `latest`) |
-| Operator image (Red Hat hardened) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z-hardened` (and `hardened`) |
+| Helm chart | `oci://ghcr.io/batleforc/charts/weebo-forgejo`, version `X.Y.Z` (also attached to the GitHub Release) |
+| Operator image (distroless) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (and `latest`), `linux/amd64` + `linux/arm64` |
+| Operator image (Red Hat hardened) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z-hardened` (and `hardened`), same platforms |
+| CRD bundle | `weebo-forgejo-crds.yaml` on the [GitHub Release](https://github.com/batleforc/weebo-forgejo/releases) |
 
 Both images also contain `weebo-forgejo-importer`, used to
-[migrate an existing Forgejo](/docs/guides/migration).
+[migrate an existing Forgejo](/docs/guides/migration). They carry an SBOM and
+SLSA provenance, and are signed with cosign.
+
+## CRDs
+
+The chart renders the CRDs as regular templates (`templates/crds/`), not
+from Helm's `crds/` directory, which Helm installs once and never upgrades.
+So `helm upgrade` upgrades the CRDs too. Each CRD carries
+`helm.sh/resource-policy: keep`: `helm uninstall`, or switching
+`crds.install` off, never deletes them, and with them every CR.
+
+If you manage CRDs separately (GitOps with a dedicated CRD stage, or a
+cluster where only admins may write CRDs), install with
+`crds.install=false` and apply the release's bundle yourself, **before**
+each chart upgrade:
+
+```bash
+kubectl apply --server-side \
+  -f https://github.com/batleforc/weebo-forgejo/releases/download/vX.Y.Z/weebo-forgejo-crds.yaml
+```
 
 ## Upgrade
 
@@ -89,15 +168,29 @@ helm upgrade weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
   --namespace weebo-forgejo --version X.Y.Z
 ```
 
-<Callout type="warn" title="CRDs are not upgraded by Helm">
-Helm installs the chart's `crds/` directory on the first install only. When
-a release changes the CRDs, apply them yourself before upgrading:
+The CRDs are upgraded with the chart. Read the release notes first: they
+list any CRD or value change.
+
+### Upgrading from chart 0.1.0
+
+Chart 0.1.0 installed the CRDs from `crds/`, outside the Helm release.
+The first upgrade to a chart that templates them fails with
+`invalid ownership metadata` unless the existing CRDs are handed over to
+the release first (nothing is deleted or recreated):
 
 ```bash
-helm pull oci://ghcr.io/batleforc/charts/weebo-forgejo --version X.Y.Z --untar
-kubectl apply --server-side -f weebo-forgejo/crds/
+RELEASE=weebo-forgejo NAMESPACE=weebo-forgejo
+for crd in $(kubectl get crd -o name | grep '\.forgejo\.weebo\.io$'); do
+  kubectl label "$crd" app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl annotate "$crd" meta.helm.sh/release-name="$RELEASE" \
+    meta.helm.sh/release-namespace="$NAMESPACE" --overwrite
+done
 ```
-</Callout>
+
+The leader-election Lease keeps its name, `weebo-forgejo-operator-leader`:
+old and new replicas compete for the same Lease during the rolling update,
+so there is never more than one leader. Only a second release in the same
+namespace needs its own (`--set leaderElection.leaseName=…`).
 
 ## Uninstall
 
@@ -108,7 +201,17 @@ helm uninstall weebo-forgejo --namespace weebo-forgejo
 This removes the operator but **keeps the CRDs and your CRs**, so nothing in
 Forgejo is touched. Deleting the CRDs deletes every CR. Only do that after
 the operator has cleaned up whatever it should (see
-[Deletion](/docs/guides/operations#deletion)).
+[Deletion](/docs/guides/operations#deletion)): delete your CRs first, then
+the `ForgejoInstance`s — an instance's finalizer holds it while CRs are
+still bound to it, since their own cleanup needs it.
+
+A CR whose cleanup can't succeed any more (its instance or token already
+gone) stays in `Terminating` with a `CleanupFailed` Warning Event. Release it
+without touching Forgejo or its Secrets:
+
+```bash
+kubectl annotate forgejorepository app forgejo.weebo.io/force-orphan=true
+```
 
 ## Next
 

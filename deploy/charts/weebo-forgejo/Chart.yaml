@@ -4,6 +4,29 @@ description: Kubernetes operator managing Forgejo users, organizations, teams, r
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/batleforc/weebo-forgejo
+# Native `preStop: sleep` and the admission/policy APIs used here.
+kubeVersion: ">=1.30.0-0"
+home: https://batleforc.github.io/weebo-forgejo
+# The documentation site's icon (docs/src/app/icon.png).
+icon: https://batleforc.github.io/weebo-forgejo/icon.png
 sources:
   - https://github.com/batleforc/weebo-forgejo
+keywords:
+  - forgejo
+  - gitea
+  - git
+  - operator
+  - kubernetes-operator
+  - gitops
+  - crd
+maintainers:
+  - name: batleforc
+    url: https://github.com/batleforc
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/operator: "true"
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://batleforc.github.io/weebo-forgejo
+    - name: Source
+      url: https://github.com/batleforc/weebo-forgejo

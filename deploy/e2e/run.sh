@@ -5,17 +5,31 @@
 # → hook/keys → OAuth2/token → policy denials — and checks leader election
 # and deletion policies on the real deployment.
 #
+# With a previously published chart, it first installs that release, creates
+# the golden-path CRs with it, then upgrades to this checkout's chart and
+# checks they stay Ready (skipped when no release exists yet).
+#
 # Env: IMAGE (operator image already loaded in the cluster, default
-# weebo-forgejo-operator:e2e), CERT_MANAGER_VERSION (default latest).
+# weebo-forgejo-operator:e2e), CERT_MANAGER_VERSION (default: the pinned
+# release below; its manifest is checksum-verified only for the pinned one),
+# UPGRADE_FROM (previous chart version to upgrade from: empty = the latest
+# published one, `none` = skip the upgrade test).
 # -E: functions (ready, ...) inherit the ERR trap that dumps diagnostics.
 set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHART="$HERE/../charts/weebo-forgejo"
 IMAGE="${IMAGE:-weebo-forgejo-operator:e2e}"
-CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-latest}"
+# Pinned: bump both together (sha256 of the release's cert-manager.yaml).
+CERT_MANAGER_PINNED=v1.21.2
+CERT_MANAGER_SHA256=e03b668ec8675214af6b0a671699d088f2601fa3878e0dbe1b41d3feafd1879f
+CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-$CERT_MANAGER_PINNED}"
+CHART_OCI=oci://ghcr.io/batleforc/charts/weebo-forgejo
+UPGRADE_FROM="${UPGRADE_FROM:-}"
 OPERATOR_NS=weebo-forgejo-system
 RELEASE=weebo-forgejo
+# The chart's default Lease name (leaderElection.leaseName).
+LEASE=weebo-forgejo-operator-leader
 WAIT=180s
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
@@ -44,13 +58,24 @@ forgejo_api() {
   curl -fsS -H "Authorization: token $ADMIN_TOKEN" "http://127.0.0.1:13000/api/v1$1"
 }
 
+# Every CR of the golden path must be Ready.
+all_ready() {
+  ready forgejoinstance/main
+  ready forgejouser/alice forgejouser/ci-bot forgejoorganization/weebo forgejoteam/weebo-devs forgejouserkey/ci-bot
+  ready -n team-a forgejorepository/app forgejowebhook/app-ci forgejodeploykey/app-ci \
+    forgejooauth2application/grafana forgejoaccesstoken/ci
+}
+
+ensure_ns() { kubectl create namespace "$1" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; }
+
 step "cert-manager ($CERT_MANAGER_VERSION)"
-if [ "$CERT_MANAGER_VERSION" = latest ]; then
-  url=https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
-else
-  url="https://github.com/cert-manager/cert-manager/releases/download/$CERT_MANAGER_VERSION/cert-manager.yaml"
+manifest="$(mktemp)"
+curl -fsSLo "$manifest" \
+  "https://github.com/cert-manager/cert-manager/releases/download/$CERT_MANAGER_VERSION/cert-manager.yaml"
+if [ "$CERT_MANAGER_VERSION" = "$CERT_MANAGER_PINNED" ]; then
+  echo "$CERT_MANAGER_SHA256  $manifest" | sha256sum -c - >/dev/null || fail "cert-manager.yaml checksum mismatch"
 fi
-kubectl apply -f "$url"
+kubectl apply -f "$manifest"
 kubectl -n cert-manager wait --for=condition=Available --timeout="$WAIT" deploy --all
 
 step "Forgejo"
@@ -66,6 +91,47 @@ kubectl -n forgejo port-forward svc/forgejo 13000:3000 >/dev/null 2>&1 &
 PORT_FORWARD=$!
 trap 'kill "$PORT_FORWARD" 2>/dev/null || true' EXIT
 
+# ── Upgrade test, part 1: the previous release ────────────────────────────
+head_version="$(awk '/^version:/ {print $2}' "$CHART/Chart.yaml")"
+previous=""
+if [ "$UPGRADE_FROM" != none ]; then
+  if [ -n "$UPGRADE_FROM" ]; then
+    previous="$UPGRADE_FROM"
+  else
+    previous="$(helm show chart "$CHART_OCI" 2>/dev/null | awk '/^version:/ {print $2}' || true)"
+  fi
+  if [ -z "$previous" ]; then
+    echo "no published chart at $CHART_OCI: upgrade test skipped"
+  elif [ "$previous" = "$head_version" ]; then
+    echo "latest published chart is this version ($head_version): upgrade test skipped"
+    previous=""
+  fi
+fi
+
+if [ -n "$previous" ]; then
+  step "upgrade test: install the published chart $previous"
+  # Its own release image, pulled from ghcr.io.
+  helm install "$RELEASE" "$CHART_OCI" --version "$previous" \
+    --namespace "$OPERATOR_NS" --create-namespace \
+    --set extraEnv[0].name=RUST_LOG --set extraEnv[0].value=info \
+    --wait --timeout 5m
+  ensure_ns team-a
+  ensure_ns other
+  kubectl apply -f "$HERE/golden-path.yaml"
+  # The namespaced kinds go through the old release's webhook: retry while
+  # cert-manager injects its CA.
+  for _ in $(seq 1 30); do kubectl apply -f "$HERE/team-a.yaml" && break; sleep 2; done
+  all_ready
+  # Charts up to 0.1.0 shipped the CRDs in crds/, outside the release:
+  # adopt them so the templated CRDs of this chart can take over.
+  for crd in $(kubectl get crd -o name | grep '\.forgejo\.weebo\.io$'); do
+    kubectl label "$crd" app.kubernetes.io/managed-by=Helm --overwrite >/dev/null
+    kubectl annotate "$crd" meta.helm.sh/release-name="$RELEASE" \
+      meta.helm.sh/release-namespace="$OPERATOR_NS" --overwrite >/dev/null
+  done
+  step "upgrade test: upgrade $previous -> $head_version (this checkout)"
+fi
+
 step "operator chart ($IMAGE)"
 helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$OPERATOR_NS" --create-namespace \
@@ -73,10 +139,23 @@ helm upgrade --install "$RELEASE" "$CHART" \
   --set image.pullPolicy=Never \
   --set extraEnv[0].name=RUST_LOG --set extraEnv[0].value=info \
   --wait --timeout 5m
+kubectl -n "$OPERATOR_NS" rollout status "deploy/$RELEASE" --timeout="$WAIT"
+
+if [ -n "$previous" ]; then
+  step "upgrade test: CRs created by $previous stay Ready"
+  # The new leader re-reconciles everything; give it one pass, then every
+  # CR must (still) be Ready and the CRDs must carry the keep policy.
+  sleep 15
+  all_ready
+  for crd in $(kubectl get crd -o name | grep '\.forgejo\.weebo\.io$'); do
+    [ "$(kubectl get "$crd" -o jsonpath='{.metadata.annotations.helm\.sh/resource-policy}')" = keep ] \
+      || fail "$crd lacks helm.sh/resource-policy: keep after the upgrade"
+  done
+fi
 
 step "golden path: cluster-scoped kinds"
-kubectl create namespace team-a
-kubectl create namespace other
+ensure_ns team-a
+ensure_ns other
 kubectl apply -f "$HERE/golden-path.yaml"
 ready forgejoinstance/main
 ready forgejouser/alice forgejouser/ci-bot forgejoorganization/weebo forgejoteam/weebo-devs forgejouserkey/ci-bot
@@ -110,7 +189,7 @@ for n in 0 1; do
 done
 
 step "leader election"
-lease() { kubectl -n "$OPERATOR_NS" get lease weebo-forgejo-operator-leader -o jsonpath='{.spec.holderIdentity}'; }
+lease() { kubectl -n "$OPERATOR_NS" get lease "$LEASE" -o jsonpath='{.spec.holderIdentity}'; }
 leader="$(lease)"
 [ -n "$leader" ] || fail "nobody holds the lease"
 acquired="$(kubectl -n "$OPERATOR_NS" logs -l app.kubernetes.io/name=weebo-forgejo --prefix --tail=-1 \
@@ -119,7 +198,7 @@ acquired="$(kubectl -n "$OPERATOR_NS" logs -l app.kubernetes.io/name=weebo-forge
 restarts() { kubectl -n "$OPERATOR_NS" get pod "$leader" -o jsonpath='{.status.containerStatuses[0].restartCount}'; }
 before="$(restarts)"
 # Steal the lease: the leader must notice on its next renewal and exit.
-kubectl -n "$OPERATOR_NS" patch lease weebo-forgejo-operator-leader --type merge \
+kubectl -n "$OPERATOR_NS" patch lease "$LEASE" --type merge \
   -p "{\"spec\":{\"holderIdentity\":\"e2e-intruder\",\"renewTime\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)\"}}"
 for _ in $(seq 1 30); do
   [ "$(restarts)" -gt "$before" ] && break

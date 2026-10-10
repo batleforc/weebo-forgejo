@@ -19,6 +19,9 @@ spec:
     - jsonPath: .spec.url
       name: URL
       type: string
+    - jsonPath: .status.forgejoId
+      name: ID
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -223,6 +226,12 @@ spec:
         - spec
         title: ForgejoWebhook
         type: object
+        x-kubernetes-validations:
+        - message: 'spec.instanceRef is immutable: ids in status belong to the instance they were created on'
+          reason: FieldValueForbidden
+          rule: '(has(self.spec.instanceRef) ? self.spec.instanceRef : '''') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '''')'
+        - message: set exactly one of spec.repositoryRef and spec.organizationRef
+          rule: has(self.spec.repositoryRef) != has(self.spec.organizationRef)
     served: true
     storage: true
     subresources:

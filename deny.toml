@@ -38,7 +38,9 @@ expression = "MIT"
 license-files = []
 
 [bans]
-multiple-versions = "allow"
+# Duplicates (base64, thiserror, darling, ... pulled at two majors by the
+# ecosystem) are reported so they get noticed, but do not fail the check.
+multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 

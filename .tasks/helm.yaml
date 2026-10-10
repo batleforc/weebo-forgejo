@@ -1,0 +1,46 @@
+version: "3"
+
+# Operator chart checks (`task lint:helm` runs them all, CI job helm-lint).
+# Offline: no cluster, no network.
+
+vars:
+  CHART: "{{.ROOT_DIR}}/deploy/charts/weebo-forgejo"
+
+tasks:
+  lint:
+    desc: "helm lint the operator chart (values validated against values.schema.json)"
+    cmds:
+      - mise exec -- helm lint {{.CHART}}
+
+  smoke:
+    desc: "Render the operator chart with the main value combinations, and check that invalid ones are refused"
+    cmds:
+      - mise exec -- helm template smoke {{.CHART}} > /dev/null
+      # Existing cert-manager issuer.
+      - mise exec -- helm template smoke {{.CHART}} --set certManager.createIssuer=false --set certManager.issuerRef.name=ca > /dev/null
+      # Everything optional switched on, cert-manager off, digest pinning.
+      - >-
+        mise exec -- helm template smoke {{.CHART}}
+        --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+        --set webhook.certManager.enabled=false --set webhook.tls.secretName=tls --set webhook.caBundle=Q0E=
+        --set serviceMonitor.enabled=true --set prometheusRule.enabled=true
+        --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+        --set 'networkPolicy.egress.apiServer.to[0].ipBlock.cidr=10.0.0.1/32'
+        --set shutdown.preStopSleepSeconds=5 --set priorityClassName=high
+        --set crds.install=false --set replicaCount=1
+        --set rbac.namespacedExample.enabled=true > /dev/null
+      # Metrics off: no metrics port, Service or env.
+      - >-
+        mise exec -- helm template smoke {{.CHART}} --set metrics.prometheus.enabled=false
+        | (! grep -q WEEBO_METRICS_ADDR)
+      # Refused: schema enum, missing TLS Secret without cert-manager,
+      # egress without the API server, ServiceMonitor without metrics.
+      - "! mise exec -- helm template smoke {{.CHART}} --set webhook.failurePolicy=Nope > /dev/null 2>&1"
+      - "! mise exec -- helm template smoke {{.CHART}} --set webhook.certManager.enabled=false > /dev/null 2>&1"
+      - "! mise exec -- helm template smoke {{.CHART}} --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true > /dev/null 2>&1"
+      - "! mise exec -- helm template smoke {{.CHART}} --set serviceMonitor.enabled=true --set metrics.prometheus.enabled=false > /dev/null 2>&1"
+      # The CRDs ship as templates, with the keep policy.
+      - >-
+        test "$(mise exec -- helm template smoke {{.CHART}} | grep -c 'helm.sh/resource-policy: keep')"
+        = "$(find {{.ROOT_DIR}}/deploy/crd -name '*.yaml' | wc -l)"
+      - test -z "$(mise exec -- helm template smoke {{.CHART}} --set crds.install=false | grep CustomResourceDefinition)"

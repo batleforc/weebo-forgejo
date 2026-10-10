@@ -151,6 +151,7 @@ pub async fn live_with(options: Options) -> Live {
             },
         ),
         shutdown: Shutdown::never(),
+        health: Default::default(),
     });
     tokio::spawn(controller::instance::run(client.clone(), ctx.clone()));
     tokio::spawn(controller::user::run(client.clone(), ctx.clone()));

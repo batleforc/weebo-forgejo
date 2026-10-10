@@ -113,6 +113,13 @@ impl ForgejoGateway for ForgejoHttpGateway {
     ) -> Result<ForgejoRef, GatewayError> {
         organizations::create(&self.config, owner, org).await
     }
+    async fn organization_name(&self, id: i64) -> Result<Option<String>, GatewayError> {
+        Ok(inventory::list_organizations(&self.config)
+            .await?
+            .into_iter()
+            .find(|o| o.id == id)
+            .map(|o| o.name))
+    }
     async fn edit_organization(
         &self,
         name: &str,
@@ -335,6 +342,15 @@ impl ForgejoGateway for ForgejoHttpGateway {
     async fn delete_oauth2_app(&self, sudo: Option<&str>, id: i64) -> Result<(), GatewayError> {
         oauth2::delete(&self.config, sudo, id).await
     }
+    async fn list_oauth2_apps(
+        &self,
+        sudo: Option<&str>,
+    ) -> Result<Vec<RemoteOAuth2App>, GatewayError> {
+        oauth2::list(&self.config, sudo).await
+    }
+    async fn list_hooks(&self, target: &HookTarget) -> Result<Vec<RemoteHook>, GatewayError> {
+        inventory::list_hooks(&self.config, target).await
+    }
 
     async fn list_access_tokens(&self, username: &str) -> Result<Vec<RemoteToken>, GatewayError> {
         tokens::list(&self.config, username).await
@@ -369,9 +385,6 @@ impl ForgejoInventory for ForgejoHttpGateway {
     ) -> Result<Vec<RemoteRepository>, GatewayError> {
         inventory::list_repositories(&self.config, owner, owner_is_org).await
     }
-    async fn list_hooks(&self, target: &HookTarget) -> Result<Vec<RemoteHook>, GatewayError> {
-        inventory::list_hooks(&self.config, target).await
-    }
     async fn list_deploy_keys(&self, full_name: &str) -> Result<Vec<RemoteKey>, GatewayError> {
         inventory::list_deploy_keys(&self.config, full_name).await
     }
@@ -397,16 +410,20 @@ pub(crate) fn classify_create<T: std::fmt::Debug>(err: Error<T>) -> GatewayError
 fn classify_as<T: std::fmt::Debug>(err: Error<T>, claims_name: bool) -> GatewayError {
     match err {
         Error::ResponseError(resp) => {
-            let body = resp.content;
+            let raw = resp.content;
+            let refused = token_refused(&raw);
+            let collision = raw.contains("already");
+            // What reaches a CR's status: never a whole proxy error page
+            // (which may also differ on every response and defeat the
+            // status' change detection).
+            let body = summarize(&raw);
             match resp.status.as_u16() {
                 409 => GatewayError::AlreadyExists(body),
-                400 | 422 if claims_name && body.contains("already") => {
-                    GatewayError::AlreadyExists(body)
-                }
+                400 | 422 if claims_name && collision => GatewayError::AlreadyExists(body),
                 404 => GatewayError::NotFound(body),
                 s @ (408 | 429) => GatewayError::Unreachable(format!("{s}: {body}")),
                 s if s >= 500 => GatewayError::Unreachable(format!("{s}: {body}")),
-                s @ (401 | 403) if s == 401 || token_refused(&body) => GatewayError::Api(format!(
+                s @ (401 | 403) if s == 401 || refused => GatewayError::Api(format!(
                     "{s}: the instance's admin token was refused (revoked, or missing a scope): {body}"
                 )),
                 // The token is fine, the object isn't its to touch (e.g. a
@@ -419,6 +436,29 @@ fn classify_as<T: std::fmt::Debug>(err: Error<T>, claims_name: bool) -> GatewayE
         }
         Error::Reqwest(e) => GatewayError::Unreachable(e.to_string()),
         other => GatewayError::Api(other.to_string()),
+    }
+}
+
+/// Longest error detail kept from a Forgejo response.
+const MAX_DETAIL: usize = 256;
+
+/// The `message` of a Forgejo JSON error, else the body itself — unless it
+/// is markup (a proxy's error page) — cut to [`MAX_DETAIL`] characters.
+fn summarize(body: &str) -> String {
+    let detail = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => match v.get("message").and_then(|m| m.as_str()) {
+            Some(m) => m.to_string(),
+            None => body.to_string(),
+        },
+        Err(_) if body.trim_start().starts_with('<') => {
+            format!("non-JSON response ({} bytes)", body.len())
+        }
+        Err(_) => body.to_string(),
+    };
+    let detail = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    match detail.char_indices().nth(MAX_DETAIL) {
+        Some((cut, _)) => format!("{}…", &detail[..cut]),
+        None => detail,
     }
 }
 
@@ -456,6 +496,7 @@ listed_by_id!(
     models::AccessToken,
     models::DeployKey,
     models::Hook,
+    models::OAuth2Application,
     models::Organization,
     models::PublicKey,
     models::Repository,
@@ -700,5 +741,33 @@ mod paging_tests {
         .unwrap();
         assert_eq!(hit, Some(60));
         assert_eq!(calls.into_inner().unwrap(), 2);
+    }
+}
+
+#[cfg(test)]
+mod summarize_tests {
+    use super::*;
+
+    #[test]
+    fn json_errors_keep_their_message() {
+        assert_eq!(
+            summarize(
+                r#"{"message":"user does not exist [uid: 0, name: x]","url":"https://f/api/swagger"}"#
+            ),
+            "user does not exist [uid: 0, name: x]"
+        );
+    }
+
+    #[test]
+    fn markup_and_long_bodies_are_cut() {
+        let page = "<html><body>502 Bad Gateway, request id 1234</body></html>";
+        assert_eq!(
+            summarize(page),
+            format!("non-JSON response ({} bytes)", page.len())
+        );
+        let long = "é".repeat(1000);
+        let cut = summarize(&long);
+        assert_eq!(cut.chars().count(), MAX_DETAIL + 1);
+        assert!(cut.ends_with('…'));
     }
 }

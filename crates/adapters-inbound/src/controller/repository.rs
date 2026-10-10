@@ -12,24 +12,23 @@ use application::use_cases::reconcile_repository::{
 use application::use_cases::refs::{read_secret_key, resolve_required, resolve_team};
 use application::use_cases::{Failure, Outcome};
 use domain::error::ReasonCode;
-use futures::StreamExt;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::{Controller, watcher};
+use kube::runtime::watcher;
 use kube::{Client, ResourceExt};
 
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
 
+const KIND: &str = "ForgejoRepository";
+
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
+    let health = ctx.health.clone();
     let client_for_policies = client.clone();
-    let controller = Controller::new(
-        Api::<ForgejoRepository>::all(client.clone()),
-        watcher::Config::default(),
-    );
+    let controller = super::controller(Api::<ForgejoRepository>::all(client.clone()));
     // A policy change may allow or forbid any CR of this kind: re-check
     // them all (policies change rarely, and the check is a local list).
     let by_policy = controller.store();
@@ -39,7 +38,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let by_user = controller.store();
     let by_team = controller.store();
     let by_template = controller.store();
-    controller
+    let results = controller
         .watches(
             Api::<ForgejoOrganization>::all(client.clone()),
             watcher::Config::default(),
@@ -115,13 +114,8 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
             },
         )
         .graceful_shutdown_on(ctx.shutdown.wait())
-        .run(reconcile, error_policy, ctx)
-        .for_each(|res| async move {
-            if let Err(err) = res {
-                tracing::debug!(error = %err, "ForgejoRepository reconcile failed");
-            }
-        })
-        .await;
+        .run(reconcile, error_policy, ctx);
+    super::drive(KIND, health, results).await;
 }
 
 async fn reconcile(obj: Arc<ForgejoRepository>, ctx: Arc<Ctx>) -> Result<Action, Error> {
@@ -133,7 +127,9 @@ async fn reconcile(obj: Arc<ForgejoRepository>, ctx: Arc<Ctx>) -> Result<Action,
     finalizer(&api, FINALIZER, obj, |event| async {
         match event {
             FinalizerEvent::Apply(repo) => apply(&api, &repo, &ctx).await,
-            FinalizerEvent::Cleanup(repo) => cleanup(&repo, &ctx).await,
+            FinalizerEvent::Cleanup(repo) => {
+                super::finalize(repo.as_ref(), &ctx, cleanup(&repo, &ctx)).await
+            }
         }
     })
     .await
@@ -150,7 +146,14 @@ async fn apply(
     let owned = current_ref(&current);
 
     let namespace = current.namespace().unwrap_or_default();
-    let outcome = match enforce(ctx.policies.as_ref(), &namespace, &current).await? {
+    let outcome = match enforce(
+        ctx.policies.as_ref(),
+        ctx.refs.as_ref(),
+        &namespace,
+        &current,
+    )
+    .await?
+    {
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
         Ok(()) => match resolve_inputs(&current, owned.is_none(), ctx).await? {

@@ -12,26 +12,34 @@ commit), and `cog bump --auto` derives the next version from them.
 
 ## What a release produces
 
-For a tag `vX.Y.Z`, `publish.yml` pushes:
+For a tag `vX.Y.Z`, `publish.yml`:
 
-| Artifact | Where |
+| Step | Gate / output |
 | --- | --- |
-| Operator image (distroless) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (+ `latest`) |
-| Operator image (Red Hat hardened) | `…:vX.Y.Z-hardened` (+ `hardened`) |
-| Helm chart | `oci://ghcr.io/batleforc/charts/weebo-forgejo`, version `X.Y.Z` |
+| `version-check` | `Chart.yaml` `version` and `appVersion` and the Cargo workspace version equal the tag |
+| `e2e` | The kind e2e (`e2e.yml`, reusable) on the tagged code, both images; nothing is pushed unless it passes |
+| `image` (×2) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (+ `latest`) and `…:vX.Y.Z-hardened` (+ `hardened`), `linux/amd64` + `linux/arm64`, with SBOM and SLSA provenance (`mode=max`), cosign-signed by digest |
+| `chart` | `oci://ghcr.io/batleforc/charts/weebo-forgejo`, version `X.Y.Z`, cosign-signed by digest |
+| `github-release` | The GitHub Release: `cog changelog` notes, the chart `.tgz`, `weebo-forgejo-crds.yaml` and its Sigstore bundle |
 
-Both images also contain `weebo-forgejo-importer`
-([Migrating](/docs/guides/migration)). `latest`/`hardened` only move when
-the tag is the highest version. Each pushed image is scanned by trivy
-(HIGH/CRITICAL fail the job) and smoke-run before the job succeeds.
+Each image is first built for amd64 and loaded locally, scanned by trivy
+(HIGH/CRITICAL fail the job) and smoke-run; only then is the multi-arch image
+pushed, and its pushed digest is scanned and smoke-run again for every
+platform (arm64 under QEMU) before it's signed. `latest`/`hardened` only move
+when the tag is the highest version. arm64 is compiled under QEMU, so the
+image job is slow (expect an hour or more).
+
+Users verify all of it as described in
+[Verify a release](/docs/guides/verify-release).
 
 ## Bumping
 
 `cog bump` runs `.hooks/bump-versions.sh`, which writes the version into
 `Cargo.toml` (`[workspace.package]`), `Cargo.lock` and `Chart.yaml`
 (`version` and `appVersion`), commits, tags and updates `CHANGELOG.md`.
+Bumps are only allowed on `main` (`branch_whitelist` in `cog.toml`).
 
-**Locally (signed commits)** — the default when `main` requires signed
+**Locally (signed commits)**: the default when `main` requires signed
 commits:
 
 ```bash
@@ -40,29 +48,45 @@ cog bump --auto             # bump commit + tag, signed by your git config
 git push origin main --follow-tags
 ```
 
-The pushed tag triggers `publish.yml`.
+The pushed tag triggers `publish.yml`, e2e gate included. Run the *E2E*
+workflow on `main` first if you want to know before tagging.
 
-**From GitHub** — run the *Release* workflow manually. It bumps with the
-workflow's token, pushes the commit and tag, then calls `publish.yml` for
-that tag (a tag pushed with the workflow token triggers no other
-workflow). This only works if `main` accepts the bot's unsigned commit.
+**From GitHub**: run the *Release* workflow manually. It runs the e2e on
+`main` first (so a failure leaves no tag behind), bumps with the workflow's
+token, pushes the commit and tag, then calls `publish.yml` for that tag
+without running the e2e a second time. This only works if `main` accepts the
+bot's unsigned commit.
 
 To publish an existing tag again (e.g. after a registry hiccup), run
-`publish.yml` manually with that tag.
+`publish.yml` manually with that tag; it updates the existing GitHub Release
+instead of failing.
 
 ## Before releasing
 
 | Check | Where |
 | --- | --- |
-| Lint, unit, contract and envtest tests, generated files up to date, chart lint, audit, both images build and run | `ci.yml`, every push |
-| kind end to end with both images: golden path, admission denials, leader failover, deletion policies | `e2e.yml`, weekly and on demand — run it before a release |
+| Lint, unit, contract and envtest tests, generated files up to date, chart lint and smoke renders, audit, both images build and run | `ci.yml`, every push |
+| kind end to end with both images: upgrade from the last published chart, golden path, admission denials, leader failover, deletion policies | `e2e.yml`: PRs touching `crates/`, `deploy/` or the Containerfiles, weekly, on demand, and as the release gate |
 | Every layer under coverage, live suites included (≥ 85% of lines) | `ci.yml` job `coverage`, every push |
 | Against a real Forgejo: gateway, controllers, importer | `task test:live-forgejo` |
 
 The kind e2e runs locally too with a working container engine:
-`task e2e` (`ENGINE=podman` to build with podman). For the live suites and
-coverage: `task forgejo:container:start ENGINE=podman` (writes
-`.forgejo-test.env`), then `task coverage` or `task test:live-forgejo`.
+`task e2e` (`ENGINE=podman` to build with podman; `UPGRADE_FROM=none` skips
+the upgrade test, `UPGRADE_FROM=X.Y.Z` picks the version to upgrade from).
+cert-manager and Forgejo are pinned in `deploy/e2e/` (cert-manager's
+manifest by checksum): bump them there. For the live suites and coverage:
+`task forgejo:container:start ENGINE=podman` (writes `.forgejo-test.env`),
+then `task coverage` or `task test:live-forgejo`.
+
+## Changing the chart
+
+- The CRDs under `deploy/charts/weebo-forgejo/templates/crds/` are generated
+  by `task recu` (`deploy/scripts/sync-chart-crds.sh`) from `deploy/crd/`:
+  never edit them.
+- Every new value goes into `values.yaml` **and** `values.schema.json`
+  (`additionalProperties: false` rejects unknown keys).
+- `task lint:helm` lints and renders the main value combinations, and checks
+  that invalid ones are refused (`.tasks/helm.yaml`).
 
 ## The documentation site
 

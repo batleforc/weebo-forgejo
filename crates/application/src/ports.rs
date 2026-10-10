@@ -52,7 +52,7 @@ pub struct ForgejoRef {
 
 /// Everything `POST /admin/users` + `PATCH /admin/users/{u}` can set. Some
 /// fields only exist on edit, so a create is always followed by an edit.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct DesiredUser {
     pub username: String,
     pub email: String,
@@ -190,7 +190,7 @@ pub struct GenerateOptions {
 
 /// `POST /repos/migrate`, with the credentials already read from their
 /// Secret by the controller.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct MigrateOptions {
     pub clone_addr: String,
     pub service: String,
@@ -286,7 +286,7 @@ impl std::fmt::Display for HookTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct DesiredHook {
     pub type_: String,
     /// `url`, `content_type`, `http_method`, `secret` and type-specific keys.
@@ -403,6 +403,10 @@ pub trait ForgejoGateway: Send + Sync {
         name: &str,
         org: &DesiredOrganization,
     ) -> Result<(), GatewayError>;
+    /// Current name of the organization with this id (`None`: deleted).
+    /// Only called when the stored name no longer leads to it — a rename
+    /// outside the operator — so it may list every organization.
+    async fn organization_name(&self, id: i64) -> Result<Option<String>, GatewayError>;
     async fn rename_organization(&self, name: &str, new_name: &str) -> Result<(), GatewayError>;
     async fn delete_organization(&self, name: &str) -> Result<(), GatewayError>;
 
@@ -501,6 +505,9 @@ pub trait ForgejoGateway: Send + Sync {
         hook: &DesiredHook,
     ) -> Result<(), GatewayError>;
     async fn delete_hook(&self, target: &HookTarget, id: i64) -> Result<(), GatewayError>;
+    /// Every hook of `target` — before a create, to never add a twin of a
+    /// hook whose create response was lost.
+    async fn list_hooks(&self, target: &HookTarget) -> Result<Vec<RemoteHook>, GatewayError>;
 
     async fn get_deploy_key(
         &self,
@@ -550,6 +557,11 @@ pub trait ForgejoGateway: Send + Sync {
         app: &DesiredOAuth2App,
     ) -> Result<String, GatewayError>;
     async fn delete_oauth2_app(&self, sudo: Option<&str>, id: i64) -> Result<(), GatewayError>;
+    /// Every OAuth2 application of the account (`sudo`, or the admin).
+    async fn list_oauth2_apps(
+        &self,
+        sudo: Option<&str>,
+    ) -> Result<Vec<RemoteOAuth2App>, GatewayError>;
 
     async fn list_access_tokens(&self, username: &str) -> Result<Vec<RemoteToken>, GatewayError>;
     /// Returns the token and its value (shown only now).
@@ -576,7 +588,6 @@ pub trait ForgejoInventory: ForgejoGateway {
         owner: &str,
         owner_is_org: bool,
     ) -> Result<Vec<RemoteRepository>, GatewayError>;
-    async fn list_hooks(&self, target: &HookTarget) -> Result<Vec<RemoteHook>, GatewayError>;
     async fn list_deploy_keys(&self, full_name: &str) -> Result<Vec<RemoteKey>, GatewayError>;
 }
 
@@ -626,7 +637,9 @@ pub trait GatewayFactory: Send + Sync {
 
 /// Secret stores are the kit's: Kubernetes `Secret`s and Vault KV, routed
 /// per target (`weebo_kit_adapters`).
-pub use weebo_kit_application::ports::{SecretStore, SecretStoreError, SecretStoreFactory};
+pub use weebo_kit_application::ports::{
+    SecretOwner, SecretStore, SecretStoreError, SecretStoreFactory,
+};
 
 // ── Cluster reads ─────────────────────────────────────────────────────────────
 
@@ -675,6 +688,9 @@ pub struct ReferencedCr {
     pub spec_name: Option<String>,
     /// A team's `spec.organizationRef`.
     pub organization_ref: Option<String>,
+    /// A user's `spec.admin`: credentials minted for it are site-admin
+    /// credentials.
+    pub admin: bool,
 }
 
 /// Read access to what the `*Ref` fields of a CR point at.
@@ -688,6 +704,17 @@ pub trait ReferenceReader: Send + Sync {
         namespace: &str,
         name: &str,
     ) -> Result<Option<ReferencedCr>, ClusterError>;
+    /// The name of the cluster's only `ForgejoInstance` — what an empty
+    /// `instanceRef` means — or `None` when there are none or several.
+    async fn default_instance(&self) -> Result<Option<String>, ClusterError>;
+    /// The CRs (`Kind/[namespace/]name`) bound to ForgejoInstance
+    /// `instance`: naming it, or — when `default` (it is the only one) —
+    /// naming none.
+    async fn instance_dependents(
+        &self,
+        instance: &str,
+        default: bool,
+    ) -> Result<Vec<String>, ClusterError>;
     /// One key of a `Secret` in `namespace`. `Ok(None)` when the Secret or
     /// the key is missing.
     async fn secret_key(
@@ -704,4 +731,114 @@ pub trait ReferenceReader: Send + Sync {
 #[async_trait::async_trait]
 pub trait PolicySource: Send + Sync {
     async fn policies(&self) -> Result<Vec<Vec<NamespaceRule>>, ClusterError>;
+}
+
+// ── Debug without secrets ─────────────────────────────────────────────────────
+
+/// `Some("<redacted>")` / `None`: whether a secret is set, never its value.
+fn redacted(v: &Option<String>) -> Option<&'static str> {
+    v.as_ref().map(|_| "<redacted>")
+}
+
+impl std::fmt::Debug for DesiredUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesiredUser")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("full_name", &self.full_name)
+            .field("password", &redacted(&self.password))
+            .field("must_change_password", &self.must_change_password)
+            .field("source_id", &self.source_id)
+            .field("login_name", &self.login_name)
+            .field("admin", &self.admin)
+            .field("restricted", &self.restricted)
+            .field("visibility", &self.visibility)
+            .field("active", &self.active)
+            .field("prohibit_login", &self.prohibit_login)
+            .field("allow_create_organization", &self.allow_create_organization)
+            .field("max_repo_creation", &self.max_repo_creation)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for MigrateOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MigrateOptions")
+            .field("clone_addr", &self.clone_addr)
+            .field("service", &self.service)
+            .field("mirror", &self.mirror)
+            .field("mirror_interval", &self.mirror_interval)
+            .field("lfs", &self.lfs)
+            .field("wiki", &self.wiki)
+            .field("issues", &self.issues)
+            .field("pull_requests", &self.pull_requests)
+            .field("releases", &self.releases)
+            .field("labels", &self.labels)
+            .field("milestones", &self.milestones)
+            .field("auth_username", &self.auth_username)
+            .field("auth_password", &redacted(&self.auth_password))
+            .field("auth_token", &redacted(&self.auth_token))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for DesiredHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let config: BTreeMap<&String, &str> = self
+            .config
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    if k == "secret" {
+                        "<redacted>"
+                    } else {
+                        v.as_str()
+                    },
+                )
+            })
+            .collect();
+        f.debug_struct("DesiredHook")
+            .field("type_", &self.type_)
+            .field("config", &config)
+            .field("events", &self.events)
+            .field("branch_filter", &self.branch_filter)
+            .field("active", &self.active)
+            .field(
+                "authorization_header",
+                &redacted(&self.authorization_header),
+            )
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn secrets_never_show_in_debug() {
+        let user = DesiredUser {
+            password: Some("hunter2".into()),
+            ..Default::default()
+        };
+        let migrate = MigrateOptions {
+            auth_password: Some("hunter2".into()),
+            auth_token: Some("hunter2".into()),
+            ..Default::default()
+        };
+        let hook = DesiredHook {
+            config: BTreeMap::from([("secret".to_string(), "hunter2".to_string())]),
+            authorization_header: Some("Bearer hunter2".into()),
+            ..Default::default()
+        };
+        for shown in [
+            format!("{user:?}"),
+            format!("{migrate:?}"),
+            format!("{hook:?}"),
+        ] {
+            assert!(!shown.contains("hunter2"), "{shown}");
+            assert!(shown.contains("<redacted>"), "{shown}");
+        }
+    }
 }

@@ -11,7 +11,7 @@ vars:
 
 tasks:
   default:
-    desc: "Full kind e2e: cluster, operator image, golden path, teardown"
+    desc: "Full kind e2e: cluster, operator image, upgrade test, golden path, teardown (usage: task e2e [UPGRADE_FROM=none|X.Y.Z])"
     cmds:
       - task: up
       - defer: { task: down }
@@ -32,9 +32,11 @@ tasks:
       - mise exec -- kind load docker-image {{.IMAGE}} --name {{.CLUSTER}}
 
   run:
-    desc: "Deploy cert-manager, Forgejo and the chart into the kind cluster, then walk the golden path"
+    desc: "Deploy cert-manager, Forgejo and the chart into the kind cluster (upgrading from the last published chart when there is one), then walk the golden path (usage: task e2e:run [UPGRADE_FROM=none|X.Y.Z])"
     env:
       IMAGE: "{{.IMAGE}}"
+      # Empty: the latest published chart; `none`: skip the upgrade test.
+      UPGRADE_FROM: "{{.UPGRADE_FROM}}"
     cmds:
       - mise exec -- kubectl config use-context kind-{{.CLUSTER}}
       - mise exec -- deploy/e2e/run.sh

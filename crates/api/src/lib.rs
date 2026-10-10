@@ -44,3 +44,15 @@ pub const IMPORT_PENDING_ANNOTATION: &str = "forgejo.weebo.io/import-pending";
 /// owner's CR may be gone by the time the key's finalizer runs (a
 /// namespace deletion, an `Orphan` repository or user).
 pub const KEY_OWNER_ANNOTATION: &str = "forgejo.weebo.io/key-owner";
+
+/// On every `Secret` the operator emits: the emitting CR, as
+/// `<Kind>/<namespace>/<name>` (`<Kind>/<name>` when cluster-scoped). A
+/// `Secret` without it (and without the `managed-by` label) or naming
+/// another CR is never overwritten nor deleted.
+pub const SECRET_OWNER_ANNOTATION: &str = "forgejo.weebo.io/owner";
+
+/// `"true"` on a CR being deleted: release its finalizer without touching
+/// Forgejo or the emitted secrets — the escape hatch when cleanup can't
+/// succeed (its `ForgejoInstance` or token already gone). Everything the
+/// CR owned is left behind, as with `deletionPolicy: Orphan`.
+pub const FORCE_ORPHAN_ANNOTATION: &str = "forgejo.weebo.io/force-orphan";

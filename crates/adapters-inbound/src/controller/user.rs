@@ -4,27 +4,23 @@ use std::time::Instant;
 use api::ForgejoUser;
 use application::use_cases::Outcome;
 use application::use_cases::reconcile_user::{UserInput, cleanup_user, reconcile_user};
-use futures::StreamExt;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
-use kube::runtime::{Controller, watcher};
 use kube::{Client, ResourceExt};
 
 use super::status::{current_ref, secret_pending, spec_changed};
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
 
+const KIND: &str = "ForgejoUser";
+
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
-    Controller::new(Api::<ForgejoUser>::all(client), watcher::Config::default())
+    let health = ctx.health.clone();
+    let results = super::controller(Api::<ForgejoUser>::all(client))
         .graceful_shutdown_on(ctx.shutdown.wait())
-        .run(reconcile, error_policy, ctx)
-        .for_each(|res| async move {
-            if let Err(err) = res {
-                tracing::debug!(error = %err, "ForgejoUser reconcile failed");
-            }
-        })
-        .await;
+        .run(reconcile, error_policy, ctx);
+    super::drive(KIND, health, results).await;
 }
 
 async fn reconcile(obj: Arc<ForgejoUser>, ctx: Arc<Ctx>) -> Result<Action, Error> {
@@ -35,7 +31,9 @@ async fn reconcile(obj: Arc<ForgejoUser>, ctx: Arc<Ctx>) -> Result<Action, Error
     finalizer(&api, FINALIZER, obj, |event| async {
         match event {
             FinalizerEvent::Apply(user) => apply(&api, &user, &ctx).await,
-            FinalizerEvent::Cleanup(user) => cleanup(&user, &ctx).await,
+            FinalizerEvent::Cleanup(user) => {
+                super::finalize(user.as_ref(), &ctx, cleanup(&user, &ctx)).await
+            }
         }
     })
     .await
@@ -52,8 +50,10 @@ async fn apply(api: &Api<ForgejoUser>, user: &ForgejoUser, ctx: &Ctx) -> Result<
 
     let outcome = match super::backends(ctx, current.spec.instance_ref.as_deref()).await {
         Ok((gateway, secrets)) => {
+            let name = current.name_any();
             let input = UserInput {
                 spec: &current.spec,
+                cr_name: &name,
                 current: current_ref(&current),
                 spec_changed: spec_changed(&current),
                 secret_pending: secret_pending(&current.status),
@@ -74,6 +74,7 @@ async fn cleanup(user: &ForgejoUser, ctx: &Ctx) -> Result<Action, Error> {
     let secrets = super::cleanup_secrets(ctx, instance).await;
     cleanup_user(
         &user.spec,
+        &user.name_any(),
         current_ref(user).as_ref(),
         gateway.as_deref(),
         secrets.as_ref(),

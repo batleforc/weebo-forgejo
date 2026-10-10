@@ -212,6 +212,12 @@ spec:
         - spec
         title: ForgejoTeam
         type: object
+        x-kubernetes-validations:
+        - message: 'spec.instanceRef is immutable: ids in status belong to the instance they were created on'
+          reason: FieldValueForbidden
+          rule: '(has(self.spec.instanceRef) ? self.spec.instanceRef : '''') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '''')'
+        - message: spec.memberRefs must be empty when membersPolicy is External
+          rule: '!has(self.spec.membersPolicy) || self.spec.membersPolicy != ''External'' || !has(self.spec.memberRefs) || size(self.spec.memberRefs) == 0'
     served: true
     storage: true
     subresources:

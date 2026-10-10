@@ -16,6 +16,9 @@ spec:
     - jsonPath: .spec.userRef.name
       name: User
       type: string
+    - jsonPath: .status.forgejoId
+      name: ID
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -35,7 +38,9 @@ spec:
 
               Token values can't be read back: a lost target, a new
               `forgejo.weebo.io/rotate-secret` nonce or an elapsed `rotationPeriod`
-              issues a new token (the old one is revoked first, as names are unique).
+              issues a new token. The new token is issued and written to every target
+              before the old one is revoked; as names are unique per user, a rotated
+              token alternates between `name` and `name-next`.
             properties:
               deletionPolicy:
                 default: Delete
@@ -112,11 +117,13 @@ spec:
                       description: |-
                         Kubernetes `Secret` namespace (Vault: the namespace segment of the
                         default path). Defaults to the CR's own namespace; required on
-                        cluster-scoped CRs.
+                        cluster-scoped CRs. A namespaced CR may only name its own namespace.
                       nullable: true
                       type: string
                     path:
-                      description: 'Vault only: explicit KV v2 path under the instance''s mount.'
+                      description: |-
+                        Vault only: explicit KV v2 path under the instance's mount. On a
+                        namespaced CR it must stay under `<pathPrefix>/<namespace>/`.
                       nullable: true
                       type: string
                   required:
@@ -222,6 +229,10 @@ spec:
         - spec
         title: ForgejoAccessToken
         type: object
+        x-kubernetes-validations:
+        - message: 'spec.instanceRef is immutable: ids in status belong to the instance they were created on'
+          reason: FieldValueForbidden
+          rule: '(has(self.spec.instanceRef) ? self.spec.instanceRef : '''') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '''')'
     served: true
     storage: true
     subresources:

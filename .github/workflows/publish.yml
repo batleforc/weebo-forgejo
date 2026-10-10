@@ -1,8 +1,15 @@
 name: Publish
 
-# Builds, scans, smoke-runs and then pushes both operator images (`vX.Y.Z`
-# distroless, `vX.Y.Z-hardened` Red Hat hardened; both ship the importer)
-# and pushes the Helm chart (OCI, ghcr.io/batleforc/charts).
+# Publishes a release tag `vX.Y.Z`:
+#   1. gates — the chart version matches the tag, and the kind e2e
+#      (e2e.yml) passes on that tag;
+#   2. both operator images (`vX.Y.Z` distroless, `vX.Y.Z-hardened` Red Hat
+#      hardened; both ship the importer), multi-arch (amd64 + arm64), with
+#      SLSA provenance (mode=max) and an SBOM attached, keyless-signed with
+#      cosign (GitHub OIDC);
+#   3. the Helm chart (OCI, ghcr.io/batleforc/charts), signed the same way;
+#   4. the GitHub Release: changelog notes (cog), the CRD bundle and the
+#      chart archive.
 #
 # Triggered by a pushed `v*` tag (a bump made locally with `cog bump`), or
 # called by release.yml: a tag pushed with GITHUB_TOKEN never triggers
@@ -16,24 +23,85 @@ on:
         description: Release tag (vX.Y.Z) to publish.
         required: true
         type: string
+      run-e2e:
+        description: Run the kind e2e gate (release.yml already ran it on the bumped commit's parent).
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       tag:
         description: Release tag (vX.Y.Z) to (re)publish.
         required: true
         type: string
+      run-e2e:
+        description: Run the kind e2e gate first.
+        required: false
+        type: boolean
+        default: true
+
+# Every job declares what it needs.
+permissions: {}
 
 env:
   IMAGE: ghcr.io/batleforc/weebo-forgejo-operator
+  CHART_REPO: ghcr.io/batleforc/charts
   # The tag being published, whatever the trigger.
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  image:
+  version-check:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: Chart version and appVersion match the tag
+        env:
+          REF_NAME: ${{ env.TAG }}
+        run: |
+          case "$REF_NAME" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::$REF_NAME is not a vX.Y.Z tag" >&2; exit 1 ;;
+          esac
+          want="${REF_NAME#v}"
+          chart=deploy/charts/weebo-forgejo/Chart.yaml
+          version="$(awk '/^version:/ {print $2}' "$chart")"
+          app="$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}' "$chart")"
+          cargo="$(awk '/^\[workspace\.package\]/{p=1; next} /^\[/{p=0} p && /^version = / {gsub(/"/, "", $3); print $3}' Cargo.toml)"
+          for pair in "Chart.yaml version:$version" "Chart.yaml appVersion:$app" "Cargo.toml workspace version:$cargo"; do
+            if [ "${pair##*:}" != "$want" ]; then
+              echo "::error::${pair%:*} is '${pair##*:}', the tag says $want (bump with cog)" >&2
+              exit 1
+            fi
+          done
+
+  e2e:
+    if: ${{ inputs.run-e2e != false }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/e2e.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+
+  image:
+    # Nothing reaches the registry unless the gates passed (e2e may be
+    # skipped only through the run-e2e input).
+    needs: [version-check, e2e]
+    if: >-
+      ${{ !cancelled() && needs.version-check.result == 'success'
+      && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    # arm64 is compiled under QEMU emulation: slow, but one runner type.
+    timeout-minutes: 240
+    permissions:
+      contents: read
       packages: write
+      # Keyless cosign signatures and the provenance attestation.
+      id-token: write
     strategy:
       matrix:
         include:
@@ -45,11 +113,17 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.TAG }}
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
-      - run: mise install
+      - run: mise install trivy
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Compute tags (:latest only for the highest version tag)
-        id: tags
+      - name: Compute tags and labels (:latest only for the highest version tag)
+        id: meta
         env:
           # Through env, never interpolated into the script: a tag name may
           # contain shell metacharacters.
@@ -68,30 +142,44 @@ jobs:
             echo "tags<<EOF"
             echo "$tags"
             echo "EOF"
-            echo "scan=${IMAGE}:${REF_NAME}${SUFFIX}"
+            echo "labels<<EOF"
+            echo "org.opencontainers.image.version=${REF_NAME#v}"
+            echo "org.opencontainers.image.revision=$(git rev-parse HEAD)"
+            # The commit time, not the build time: rebuilding a tag yields
+            # the same label.
+            echo "org.opencontainers.image.created=$(git log -1 --format=%cI)"
+            echo "org.opencontainers.image.ref.name=${REF_NAME}${SUFFIX}"
+            echo "EOF"
+            echo "scan=weebo-forgejo-operator:scan${SUFFIX}"
           } >> "$GITHUB_OUTPUT"
 
-      # Built into the local daemon only: nothing reaches the registry
-      # until the scan and the smoke run below pass.
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      # Gate 1, before anything is pushed: the amd64 image, loaded into the
+      # local daemon, is scanned and smoke-run. Its layers are cached for
+      # the multi-arch build below.
+      - name: Build the amd64 image for the pre-push scan
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ${{ matrix.file }}
+          platforms: linux/amd64
           push: false
           load: true
-          tags: ${{ steps.tags.outputs.scan }}
+          provenance: false
+          tags: ${{ steps.meta.outputs.scan }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.file }}
+          cache-from: type=gha,scope=${{ matrix.file }}
 
       # `task audit` only sees the build files; this scans what ships.
       - name: Scan the image
         env:
-          SCAN: ${{ steps.tags.outputs.scan }}
+          SCAN: ${{ steps.meta.outputs.scan }}
         run: mise exec -- trivy image --exit-code 1 --severity HIGH,CRITICAL "$SCAN"
 
       # Proves the image actually runs (glibc ABI of each base): the
       # importer answers --version without needing a cluster.
       - name: Smoke-run the image
         env:
-          SCAN: ${{ steps.tags.outputs.scan }}
+          SCAN: ${{ steps.meta.outputs.scan }}
         run: docker run --rm --entrypoint /usr/local/bin/weebo-forgejo-importer "$SCAN" --version
 
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -100,37 +188,159 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Pushes exactly the image that was scanned, under every computed tag.
-      - name: Push the scanned image
+      - name: Build and push the multi-arch image
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.file }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.file }}
+
+      # Gate 2, on what was pushed (by digest): every platform scans clean
+      # and runs (arm64 through QEMU). A failure here leaves the image
+      # unsigned and the chart unpublished.
+      - name: Scan and smoke-run the pushed digest, per platform
         env:
-          SCAN: ${{ steps.tags.outputs.scan }}
-          TAGS: ${{ steps.tags.outputs.tags }}
+          REF: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
         run: |
-          printf '%s\n' "$TAGS" | while read -r tag; do
-            [ -n "$tag" ] || continue
-            [ "$tag" = "$SCAN" ] || docker tag "$SCAN" "$tag"
-            docker push "$tag"
+          for platform in linux/amd64 linux/arm64; do
+            echo "::group::$platform"
+            mise exec -- trivy image --platform "$platform" --exit-code 1 --severity HIGH,CRITICAL "$REF"
+            docker run --rm --platform "$platform" --entrypoint /usr/local/bin/weebo-forgejo-importer "$REF" --version
+            echo "::endgroup::"
           done
 
+      # Keyless: the certificate binds the signature to this workflow run
+      # (docs: "Verify a release"). --recursive also signs each platform
+      # manifest of the index.
+      - name: Sign the image with cosign
+        env:
+          REF: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+        run: cosign sign --yes --recursive "$REF"
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### ${IMAGE}"
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            printf '%s\n' "$TAGS" | while read -r tag; do
+              if [ -n "$tag" ]; then echo "- \`$tag\`"; fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
   chart:
-    # Never publish a chart whose images failed to build, scan or push.
+    # Never publish a chart whose images failed to build, scan, push or sign.
     needs: image
+    if: ${{ !cancelled() && needs.image.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.TAG }}
+          persist-credentials: false
       - uses: ./.github/actions/setup-mise
-      - run: mise install
+      - run: mise install helm
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: helm registry login
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
         run: echo "$TOKEN" | mise exec -- helm registry login ghcr.io -u "$ACTOR" --password-stdin
       - name: Package and push the chart
+        id: push
         run: |
-          mise exec -- helm package deploy/charts/weebo-forgejo
-          mise exec -- helm push weebo-forgejo-*.tgz oci://ghcr.io/batleforc/charts
+          mkdir -p dist
+          mise exec -- helm package deploy/charts/weebo-forgejo --destination dist
+          out="$(mise exec -- helm push dist/weebo-forgejo-*.tgz "oci://${CHART_REPO}" 2>&1)"
+          echo "$out"
+          digest="$(printf '%s\n' "$out" | awk '/^Digest:/ {print $2}')"
+          [ -n "$digest" ] || { echo "::error::no digest in helm push output" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Sign the chart with cosign
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          REF: ${{ env.CHART_REPO }}/weebo-forgejo@${{ steps.push.outputs.digest }}
+        run: |
+          echo "$TOKEN" | cosign login ghcr.io -u "$ACTOR" --password-stdin
+          cosign sign --yes "$REF"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chart
+          path: dist/weebo-forgejo-*.tgz
+          if-no-files-found: error
+
+  github-release:
+    needs: chart
+    if: ${{ !cancelled() && needs.chart.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release create/upload.
+      contents: write
+      # cosign sign-blob of the CRD bundle.
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+          # cog changelog walks the history between tags.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-mise
+      - run: mise install cocogitto
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: chart
+          path: dist
+      - name: Release notes, CRD bundle
+        env:
+          REF_NAME: ${{ env.TAG }}
+        run: |
+          {
+            mise exec -- cog changelog --at "$REF_NAME"
+            echo
+            echo "## Install"
+            echo
+            echo '```bash'
+            echo "helm install weebo-forgejo oci://${CHART_REPO}/weebo-forgejo --version ${REF_NAME#v} \\"
+            echo "  --namespace weebo-forgejo --create-namespace"
+            echo '```'
+            echo
+            echo "Images: \`${IMAGE}:${REF_NAME}\` and \`${IMAGE}:${REF_NAME}-hardened\` (linux/amd64, linux/arm64)."
+            echo "Signatures, SBOM and provenance: see the docs, \"Verify a release\"."
+          } > dist/notes.md
+          # Every CRD in one file, for `kubectl apply --server-side -f` and
+          # for installs with crds.install=false.
+          for f in deploy/crd/*.yaml; do echo "---"; cat "$f"; done > dist/weebo-forgejo-crds.yaml
+          cosign sign-blob --yes --bundle dist/weebo-forgejo-crds.yaml.sigstore.json dist/weebo-forgejo-crds.yaml
+      - name: Create (or update) the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ env.TAG }}
+        run: |
+          assets=(dist/weebo-forgejo-*.tgz dist/weebo-forgejo-crds.yaml dist/weebo-forgejo-crds.yaml.sigstore.json)
+          if gh release view "$REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A re-publish of an existing tag: refresh notes and assets.
+            gh release edit "$REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file dist/notes.md
+            gh release upload "$REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+          else
+            gh release create "$REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$REF_NAME" --notes-file dist/notes.md "${assets[@]}"
+          fi

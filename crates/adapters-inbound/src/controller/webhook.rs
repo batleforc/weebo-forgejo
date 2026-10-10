@@ -7,32 +7,31 @@ use application::use_cases::admission::enforce;
 use application::use_cases::reconcile_webhook::{
     WebhookInput, cleanup_webhook, reconcile_webhook, validate,
 };
-use application::use_cases::refs::{read_secret_key, resolve_required};
+use application::use_cases::refs::{read_secret_key, recorded_name, resolve_required};
 use application::use_cases::{Failure, Outcome};
-use futures::StreamExt;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::{Controller, watcher};
+use kube::runtime::watcher;
 use kube::{Client, ResourceExt};
 
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
 
+const KIND: &str = "ForgejoWebhook";
+
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
+    let health = ctx.health.clone();
     let client_for_policies = client.clone();
-    let controller = Controller::new(
-        Api::<ForgejoWebhook>::all(client.clone()),
-        watcher::Config::default(),
-    );
+    let controller = super::controller(Api::<ForgejoWebhook>::all(client.clone()));
     // A policy change may allow or forbid any CR of this kind: re-check
     // them all (policies change rarely, and the check is a local list).
     let by_policy = controller.store();
     let by_repo = controller.store();
     let by_org = controller.store();
-    controller
+    let results = controller
         .watches(
             Api::<ForgejoRepository>::all(client.clone()),
             watcher::Config::default(),
@@ -82,13 +81,8 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
             },
         )
         .graceful_shutdown_on(ctx.shutdown.wait())
-        .run(reconcile, error_policy, ctx)
-        .for_each(|res| async move {
-            if let Err(err) = res {
-                tracing::debug!(error = %err, "ForgejoWebhook reconcile failed");
-            }
-        })
-        .await;
+        .run(reconcile, error_policy, ctx);
+    super::drive(KIND, health, results).await;
 }
 
 async fn reconcile(obj: Arc<ForgejoWebhook>, ctx: Arc<Ctx>) -> Result<Action, Error> {
@@ -100,7 +94,9 @@ async fn reconcile(obj: Arc<ForgejoWebhook>, ctx: Arc<Ctx>) -> Result<Action, Er
     finalizer(&api, FINALIZER, obj, |event| async {
         match event {
             FinalizerEvent::Apply(hook) => apply(&api, &hook, &ctx).await,
-            FinalizerEvent::Cleanup(hook) => cleanup(&hook, &ctx).await,
+            FinalizerEvent::Cleanup(hook) => {
+                super::finalize(hook.as_ref(), &ctx, cleanup(&hook, &ctx)).await
+            }
         }
     })
     .await
@@ -117,7 +113,14 @@ async fn apply(
     let owned = current_ref(&current);
 
     let namespace = current.namespace().unwrap_or_default();
-    let outcome = match enforce(ctx.policies.as_ref(), &namespace, &current).await? {
+    let outcome = match enforce(
+        ctx.policies.as_ref(),
+        ctx.refs.as_ref(),
+        &namespace,
+        &current,
+    )
+    .await?
+    {
         // Re-checked here too: a policy may have changed since admission.
         Err(f) => Outcome::failed(current_ref(&current), f),
         Ok(()) => match resolve_inputs(&current, ctx).await? {
@@ -206,9 +209,44 @@ async fn resolve_inputs(
 }
 
 async fn cleanup(hook: &ForgejoWebhook, ctx: &Ctx) -> Result<Action, Error> {
-    let gateway = super::cleanup_gateway(ctx, hook.spec.instance_ref.as_deref()).await;
-    cleanup_webhook(&hook.spec, current_ref(hook).as_ref(), gateway.as_deref())
-        .await
-        .map_err(|f| Error::Cleanup(f.message))?;
+    let instance = hook.spec.instance_ref.as_deref();
+    let ns = hook.namespace().unwrap_or_default();
+    // Where the target lives now (a rename since the last reconcile).
+    let now = match (&hook.spec.repository_ref, &hook.spec.organization_ref) {
+        (Some(r), _) => recorded_name(
+            ctx.refs.as_ref(),
+            RefKind::Repository,
+            &ns,
+            &r.name,
+            instance,
+        )
+        .await?
+        .and_then(|full| {
+            let (owner, name) = full.split_once('/')?;
+            Some(HookTarget::Repository {
+                owner: owner.to_string(),
+                name: name.to_string(),
+            })
+        }),
+        (None, Some(o)) => recorded_name(
+            ctx.refs.as_ref(),
+            RefKind::Organization,
+            &ns,
+            &o.name,
+            instance,
+        )
+        .await?
+        .map(HookTarget::Organization),
+        (None, None) => None,
+    };
+    let gateway = super::cleanup_gateway(ctx, instance).await;
+    cleanup_webhook(
+        &hook.spec,
+        current_ref(hook).as_ref(),
+        now,
+        gateway.as_deref(),
+    )
+    .await
+    .map_err(|f| Error::Cleanup(f.message))?;
     Ok(Action::await_change())
 }

@@ -1,0 +1,117 @@
+---
+title: High availability & sizing
+description: How the replicas share the work, what keeps the webhook up, and how to size the operator.
+---
+
+## How the replicas share the work
+
+The operator runs as a Deployment of identical replicas (2 by default), each
+doing two jobs:
+
+| Job | Runs on | Why it matters |
+| --- | --- | --- |
+| Admission webhook (`/validate`, HTTPS) | **Every** replica, behind the `weebo-forgejo` Service | With `failurePolicy: Fail`, namespaced CRs can't be created or updated while no replica answers |
+| Reconcilers (every kind) | **Only the leader** | One writer per Forgejo object, no conflicting updates |
+
+The leader holds a `coordination.k8s.io` Lease in the release namespace,
+`weebo-forgejo-operator-leader` (`leaderElection.leaseName`). It renews it
+every 5 s; the Lease expires 15 s after the last renewal, and another
+replica takes over. Every Lease write is guarded by its `resourceVersion`,
+so two standbys racing for an expired Lease never both win, and expiry is
+judged on each replica's own monotonic clock, so skewed node clocks don't
+matter. A leader that can't renew in time exits before the Lease can
+expire, so two leaders never reconcile at once.
+
+More replicas therefore add **webhook** availability, not reconcile
+throughput. Two is the right number for almost every cluster; three spreads
+the webhook over three nodes or zones.
+
+## What keeps it available
+
+| Mechanism | Default | Notes |
+| --- | --- | --- |
+| `replicaCount` | `2` | One replica means no webhook while it restarts |
+| PodDisruptionBudget | `minAvailable: 1` | Rendered with 2+ replicas; a drain never removes the last webhook replica |
+| Topology spread | soft, per node | `topologySpreadConstraints` replaces it, e.g. per zone with `DoNotSchedule` |
+| `priorityClassName` | none | Give it a class above ordinary workloads: the webhook gates writes |
+| Startup probe | `/readyz`, up to 120 s | Covers the certificate load before the other probes start |
+| Readiness probe | `/readyz` every 10 s | A replica that can't answer admissions leaves the Service |
+| Liveness probe | `/livez` every 20 s, 3 failures | Fails (503) when the leader's controllers stop making progress: the wedged leader is restarted and another replica takes over |
+
+`/healthz` remains an alias of the readiness check for older tooling.
+
+```yaml
+# values.yaml: three replicas over three zones, high priority.
+replicaCount: 3
+priorityClassName: system-cluster-critical   # or your own class
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+```
+
+The chart adds the pod selector to each constraint's `labelSelector` when you
+leave it out.
+
+## Graceful shutdown
+
+On `SIGTERM` (rollout, drain, eviction) a replica:
+
+1. keeps serving the webhook for `shutdown.drainSeconds` (5 s), while the
+   endpoint removal reaches every API server;
+2. stops its reconcilers, letting in-flight reconciles finish, and releases
+   the Lease so another replica takes over at once.
+
+`terminationGracePeriodSeconds` is 960 s because one reconcile can be a long
+one: a `ForgejoRepository` migration (clone of a large mirror) can take up to
+15 minutes, and interrupting it leaves a half-imported repository. Lower it
+if you don't migrate repositories.
+
+If your load balancers or service mesh need more time to stop sending
+traffic, set `shutdown.preStopSleepSeconds`. The chart uses the native
+`preStop: sleep` action (Kubernetes 1.30+): the images have no shell, so an
+`exec` hook running `sleep` would not work.
+
+## Sizing
+
+The operator keeps an in-memory cache of every CR it watches (all eleven
+kinds, cluster-wide). It never lists or watches Secrets, only reads them by
+name, so their number doesn't matter.
+
+| Size | CRs | Suggested resources |
+| --- | --- | --- |
+| Small | up to ~500 | the defaults: requests `50m` / `64Mi`, limit `256Mi` |
+| Medium | ~500 to 5 000 | requests `100m` / `128Mi`, limit `512Mi` |
+| Large | more | measure, starting from `200m` / `256Mi`, limit `1Gi` |
+
+These are starting points, not measurements: check the real usage with
+`kubectl top pod -n weebo-forgejo` (or the `container_memory_working_set_bytes`
+metric) after the first full resync and adjust. Only the leader's memory
+grows with the reconcile work; the followers mostly hold the cache.
+
+There is deliberately **no CPU limit**: CFS throttling would slow admission
+answers, and a slow webhook (`webhook.timeoutSeconds`, 5 s) fails writes.
+
+The operator's load on **Forgejo** is driven by the number of CRs and their
+periodic resync (every ~5 min per CR, jittered ±20% so CRs created together
+don't stay in lockstep). Two knobs bound it:
+
+| Value | Default | Effect |
+| --- | --- | --- |
+| `reconcileConcurrency` | `4` | Reconciles running at once, per kind |
+| `forgejoMaxInflight` | `8` | Forgejo API calls in flight at once, per `ForgejoInstance`, whatever the number of reconciles |
+
+The startup sweep (every CR reconciled once) and a `ForgejoNamespacePolicy`
+change (which re-checks every namespaced CR) are spread by these limits
+instead of hitting Forgejo all at once. If Forgejo still rate-limits the
+operator (HTTP 429), CRs report `InstanceUnreachable` and retry; raise
+Forgejo's limits for the operator's token rather than adding replicas.
+Failures only a change can clear (`InvalidSpec`, `NamespaceNotAllowed`,
+`DisruptiveUpdateRefused`, …) are retried every ~5 min, not every 30 s.
+
+## Next
+
+[Security model](/docs/guides/security).

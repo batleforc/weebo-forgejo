@@ -1,0 +1,144 @@
+---
+title: Troubleshooting
+description: What to do when the admission webhook is down, the operator doesn't reconcile, or an upgrade is refused.
+---
+
+Start with the CR's `Ready` condition: its reason is listed in
+[Monitoring & troubleshooting](/docs/guides/operations#reason-codes). This
+page covers the failures that happen *around* the CRs.
+
+## The webhook is down
+
+**Symptom.** Creating or updating a namespaced CR fails with:
+
+```text
+Error from server (InternalError): Internal error occurred: failed calling webhook
+"validate.forgejo.weebo.io": failed to call webhook: Post
+"https://weebo-forgejo.weebo-forgejo.svc:443/validate?timeout=5s": ...
+```
+
+With `failurePolicy: Fail` (the default), no replica answering means these
+writes are refused. Cluster-scoped kinds and deletes are not affected.
+
+<Steps>
+<Step>
+
+### Are the pods ready?
+
+```bash
+kubectl -n weebo-forgejo get pods,endpoints
+kubectl -n weebo-forgejo describe pod -l app.kubernetes.io/name=weebo-forgejo
+kubectl -n weebo-forgejo logs -l app.kubernetes.io/name=weebo-forgejo --prefix --tail=100
+```
+
+No ready endpoint means the readiness probe (`/readyz`) fails: usually a
+missing or invalid certificate (next step), or pods that can't schedule.
+
+</Step>
+<Step>
+
+### Is the certificate there and trusted?
+
+```bash
+kubectl -n weebo-forgejo get certificate,secret | grep webhook
+kubectl get validatingwebhookconfiguration weebo-forgejo \
+  -o jsonpath='{.webhooks[0].clientConfig.caBundle}' | base64 -d | openssl x509 -noout -subject -enddate
+```
+
+- `Certificate` not `Ready`: check cert-manager (`kubectl describe
+  certificate -n weebo-forgejo`).
+- Empty `caBundle`: cert-manager's CA injector hasn't filled it (it needs the
+  `cert-manager.io/inject-ca-from` annotation and a running `cainjector`).
+  Without cert-manager, check `webhook.caBundle`.
+- `x509: certificate signed by unknown authority` in the error: the
+  `caBundle` doesn't match the Secret's issuer.
+
+</Step>
+<Step>
+
+### Can the API server reach the pods?
+
+`context deadline exceeded` or `connection refused` with ready pods points
+at the network: a NetworkPolicy (the chart's own, see
+[Network policy](/docs/guides/security#network-policy), or a namespace-wide
+default deny), or, on managed clusters with a private control plane, a
+firewall between the control plane and the nodes on port 8443.
+
+</Step>
+</Steps>
+
+### Emergency: let writes through
+
+If you must apply namespaced CRs **now** and can't fix the webhook, you can
+temporarily stop admission checks. The reconcilers still enforce the
+allow-list, so a disallowed CR is stored but never acted on
+(`NamespaceNotAllowed`).
+
+```bash
+kubectl patch validatingwebhookconfiguration weebo-forgejo --type json \
+  -p '[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Ignore"}]'
+# ...fix the webhook, then restore it (a helm upgrade does too):
+kubectl patch validatingwebhookconfiguration weebo-forgejo --type json \
+  -p '[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Fail"}]'
+```
+
+Never leave it on `Ignore`. Removing the operator for good? `helm uninstall`
+deletes the webhook configuration with it.
+
+## Nothing reconciles
+
+CRs stay at their old status and nothing changes in Forgejo.
+
+```bash
+kubectl -n weebo-forgejo get lease weebo-forgejo-operator-leader -o yaml   # who leads, last renewal
+kubectl -n weebo-forgejo logs <leader-pod> --tail=200
+```
+
+- **No holder, or a holder that's gone**: the Lease expires after 15 s and a
+  replica takes it. If none does, check the replicas' logs for API errors
+  (RBAC on `leases` in the release namespace).
+- **The leader restarts in a loop**: its liveness probe (`/livez`) fails when
+  its controllers stop making progress; the logs say which.
+- **CRs report `InstanceUnreachable`**: the operator can't reach Forgejo
+  (DNS, TLS, NetworkPolicy egress). See
+  [Connect a Forgejo](/docs/guides/connect-instance).
+
+## A CR won't delete
+
+A CR stuck in `Terminating` still has the operator's finalizer: the operator
+must clean up in Forgejo first. Look at its condition: an unreachable
+instance or a refused API call blocks the cleanup. Fix the cause; the
+finalizer is then removed on its own.
+
+Only if the Forgejo object is already gone, or you accept leaving it
+behind, remove the finalizer by hand:
+
+```bash
+kubectl -n team-a patch fjrepo app --type merge -p '{"metadata":{"finalizers":null}}'
+```
+
+## `helm upgrade` refuses the CRDs
+
+```text
+Error: UPGRADE FAILED: ... CustomResourceDefinition "forgejousers.forgejo.weebo.io"
+exists and cannot be imported into the current release: invalid ownership metadata
+```
+
+The CRDs were installed outside this release (chart 0.1.0's `crds/`, or
+applied by hand). Hand them over to the release, see
+[Upgrading from chart 0.1.0](/docs/guides/install#upgrading-from-chart-010),
+or install with `crds.install=false` and keep managing them yourself.
+
+## Values are refused
+
+```text
+Error: values don't meet the specifications of the schema(s) ...
+```
+
+The chart validates its values against `values.schema.json`: the message
+names the key. Check its spelling and allowed values with
+`helm show values oci://ghcr.io/batleforc/charts/weebo-forgejo`.
+
+## Next
+
+[Backup & disaster recovery](/docs/guides/backup).

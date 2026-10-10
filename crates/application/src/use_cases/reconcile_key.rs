@@ -12,8 +12,8 @@ use api::keys::KeySource;
 use domain::error::ReasonCode;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
-use crate::ports::{ForgejoGateway, ForgejoRef, GatewayError, RemoteKey, SecretStore};
-use crate::use_cases::{CleanupGateway, Failure, Outcome, gone_ok};
+use crate::ports::{ForgejoGateway, ForgejoRef, GatewayError, RemoteKey, SecretOwner, SecretStore};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, emit, gone_ok};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyOwner {
@@ -29,8 +29,9 @@ pub struct KeyInput<'a> {
     /// Always `false` for user keys.
     pub read_only: bool,
     pub source: &'a KeySource,
-    /// The CR's namespace; `None` for the cluster-scoped `ForgejoUserKey`.
-    pub namespace: Option<&'a str>,
+    /// The CR, as the owner of the emitted private key (its namespace is
+    /// `None` for the cluster-scoped `ForgejoUserKey`).
+    pub secret_owner: SecretOwner<'a>,
     pub current: Option<ForgejoRef>,
     /// Where `current` was created (the `forgejo.weebo.io/key-owner`
     /// record); `None` = unknown, assumed to be `owner`.
@@ -38,19 +39,19 @@ pub struct KeyInput<'a> {
     /// The `forgejo.weebo.io/rotate-secret` annotation.
     pub rotate_nonce: Option<String>,
     pub last_rotation: Option<String>,
+    /// `status.secretPending`: the last generated pair never reached every
+    /// target, which may hold a private key Forgejo no longer accepts.
+    pub secret_pending: bool,
 }
 
-pub fn validate(source: &KeySource, namespace: Option<&str>) -> Result<(), Failure> {
-    let invalid = |m: &str| Err(Failure::new(ReasonCode::InvalidSpec, m));
+pub fn validate(source: &KeySource, owner: &SecretOwner<'_>) -> Result<(), Failure> {
     if source.public_key.is_none() && source.secret_targets.is_empty() {
-        return invalid("a generated key (no spec.publicKey) needs spec.secretTargets");
+        return Err(Failure::new(
+            ReasonCode::InvalidSpec,
+            "a generated key (no spec.publicKey) needs spec.secretTargets",
+        ));
     }
-    for target in &source.secret_targets {
-        if target.namespace.is_none() && namespace.is_none() {
-            return invalid("spec.secretTargets[].namespace is required on a cluster-scoped CR");
-        }
-    }
-    Ok(())
+    emit::check_targets(&source.secret_targets, owner)
 }
 
 pub async fn reconcile_key(
@@ -58,7 +59,7 @@ pub async fn reconcile_key(
     gateway: &dyn ForgejoGateway,
     secrets: &dyn SecretStore,
 ) -> Outcome {
-    if let Err(f) = validate(input.source, input.namespace) {
+    if let Err(f) = validate(input.source, &input.secret_owner) {
         return Outcome::failed(input.current, f);
     }
 
@@ -85,13 +86,15 @@ pub async fn reconcile_key(
     };
 
     // A generated pair is renewed when nothing exists yet, a rotation was
-    // asked for, or a target lost the private key.
+    // asked for, a target lost the private key, or the last pair never
+    // reached every target.
     let generated = input.source.public_key.is_none();
     let rotation_requested =
         input.rotate_nonce.is_some() && input.rotate_nonce != input.last_rotation;
     let renew = generated
         && (remote.is_none()
             || rotation_requested
+            || input.secret_pending
             || match any_target_missing(&input, secrets).await {
                 Ok(missing) => missing,
                 Err(f) => return Outcome::failed(input.current.clone(), f),
@@ -134,16 +137,22 @@ pub async fn reconcile_key(
             ("ssh-privatekey".to_string(), private),
             ("ssh-publickey".to_string(), public),
         ]);
-        for target in &input.source.secret_targets {
-            if let Err(e) = secrets.write(target, input.namespace, &data).await {
-                // The key exists in Forgejo; the next reconcile sees the
-                // target missing and renews the pair.
-                return Outcome::failed(
-                    current,
-                    Failure::new(ReasonCode::SecretTargetFailed, e.to_string()),
-                );
-            }
+        if let Err(f) = emit::write_all(
+            &input.source.secret_targets,
+            &input.secret_owner,
+            &data,
+            secrets,
+        )
+        .await
+        {
+            // The key exists in Forgejo, but some targets may hold the
+            // previous private key: renew the pair next time, whether the
+            // targets exist or not.
+            let mut failed = Outcome::failed(current, f);
+            failed.secret_pending = Some(true);
+            return failed;
         }
+        outcome.secret_pending = Some(false);
         outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
     }
     outcome
@@ -162,7 +171,7 @@ pub async fn reconcile_key(
 pub async fn cleanup_key(
     owners: &[KeyOwner],
     source: &KeySource,
-    namespace: Option<&str>,
+    secret_owner: &SecretOwner<'_>,
     deletion_policy: DeletionPolicy,
     current: Option<&ForgejoRef>,
     gateway: CleanupGateway<'_>,
@@ -180,12 +189,7 @@ pub async fn cleanup_key(
         }
     }
     if source.public_key.is_none() {
-        for target in &source.secret_targets {
-            secrets
-                .delete(target, namespace)
-                .await
-                .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))?;
-        }
+        emit::delete_all(&source.secret_targets, secret_owner, secrets).await?;
     }
     Ok(())
 }
@@ -245,16 +249,7 @@ async fn any_target_missing(
     input: &KeyInput<'_>,
     secrets: &dyn SecretStore,
 ) -> Result<bool, Failure> {
-    for target in &input.source.secret_targets {
-        let exists = secrets
-            .exists(target, input.namespace)
-            .await
-            .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))?;
-        if !exists {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    emit::any_missing(&input.source.secret_targets, &input.secret_owner, secrets).await
 }
 
 /// Compares algorithm and key material only: Forgejo may drop or rewrite
@@ -305,11 +300,12 @@ mod tests {
             title: "ci".into(),
             read_only: true,
             source,
-            namespace: Some("team-a"),
+            secret_owner: SecretOwner::namespaced("ForgejoDeployKey", "team-a", "ci"),
             current,
             created_on: None,
             rotate_nonce: None,
             last_rotation: None,
+            secret_pending: false,
         }
     }
 
@@ -458,7 +454,7 @@ mod tests {
         cleanup_key(
             &owners,
             &source,
-            Some("team-a"),
+            &SecretOwner::namespaced("ForgejoDeployKey", "team-a", "ci"),
             DeletionPolicy::Delete,
             Some(&created),
             Ok(&fj),
@@ -490,7 +486,7 @@ mod tests {
         cleanup_key(
             &owners,
             &source,
-            Some("team-a"),
+            &SecretOwner::namespaced("ForgejoDeployKey", "team-a", "ci"),
             DeletionPolicy::Delete,
             Some(&created),
             Ok(&fj),
@@ -540,7 +536,7 @@ mod tests {
         let deleting = cleanup_key(
             std::slice::from_ref(&owner),
             &source,
-            Some("team-a"),
+            &SecretOwner::namespaced("ForgejoDeployKey", "team-a", "ci"),
             DeletionPolicy::Delete,
             Some(&created),
             Err(&unresolved),
@@ -553,7 +549,7 @@ mod tests {
         cleanup_key(
             std::slice::from_ref(&owner),
             &source,
-            Some("team-a"),
+            &SecretOwner::namespaced("ForgejoDeployKey", "team-a", "ci"),
             DeletionPolicy::Orphan,
             Some(&created),
             Err(&unresolved),
@@ -563,5 +559,46 @@ mod tests {
         .unwrap();
         assert!(fj.key(created.id).is_some());
         assert!(secrets.get("team-a/deploy").is_none());
+    }
+
+    /// A pair whose write failed is renewed even if every target exists
+    /// (holding the previous private key).
+    #[tokio::test]
+    async fn a_failed_write_renews_the_pair_next_time() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let source = generated();
+        let first = reconcile_key(input(&source, None), &fj, &secrets).await;
+        let old_private = secrets.get("team-a/deploy").unwrap()["ssh-privatekey"].clone();
+
+        secrets.fail_writes(true);
+        let mut rotate = input(&source, first.forgejo.clone());
+        rotate.rotate_nonce = Some("1".into());
+        let failed = reconcile_key(rotate, &fj, &secrets).await;
+        assert_eq!(failed.secret_pending, Some(true));
+
+        secrets.fail_writes(false);
+        let mut retry = input(&source, failed.forgejo.clone());
+        retry.rotate_nonce = Some("1".into());
+        retry.last_rotation = Some("1".into());
+        retry.secret_pending = true;
+        let fixed = reconcile_key(retry, &fj, &secrets).await;
+        assert!(fixed.ready.is_ok(), "{fixed:?}");
+        assert_eq!(fixed.secret_pending, Some(false));
+        let secret = secrets.get("team-a/deploy").unwrap();
+        assert_ne!(secret["ssh-privatekey"], old_private);
+        assert_eq!(
+            fj.key(fixed.forgejo.unwrap().id).unwrap().key,
+            secret["ssh-publickey"]
+        );
+    }
+
+    #[tokio::test]
+    async fn targets_in_another_namespace_are_refused() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let mut source = generated();
+        source.secret_targets[0].namespace = Some("kube-system".into());
+        let outcome = reconcile_key(input(&source, None), &fj, &secrets).await;
+        assert_eq!(outcome.reason(), ReasonCode::CrossNamespaceReference);
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
     }
 }

@@ -8,27 +8,26 @@ use application::use_cases::reconcile_organization::{
 };
 use application::use_cases::refs::resolve_required;
 use application::use_cases::{Failure, Outcome};
-use futures::StreamExt;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::{Controller, watcher};
+use kube::runtime::watcher;
 use kube::{Client, ResourceExt};
 
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
 
+const KIND: &str = "ForgejoOrganization";
+
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
-    let controller = Controller::new(
-        Api::<ForgejoOrganization>::all(client.clone()),
-        watcher::Config::default(),
-    );
+    let health = ctx.health.clone();
+    let controller = super::controller(Api::<ForgejoOrganization>::all(client.clone()));
     // An org waiting on its ownerRef is re-reconciled as soon as that user
     // changes (e.g. becomes Ready), instead of on the 30 s retry.
     let orgs = controller.store();
-    controller
+    let results = controller
         .watches(
             Api::<ForgejoUser>::all(client),
             watcher::Config::default(),
@@ -42,13 +41,8 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
             },
         )
         .graceful_shutdown_on(ctx.shutdown.wait())
-        .run(reconcile, error_policy, ctx)
-        .for_each(|res| async move {
-            if let Err(err) = res {
-                tracing::debug!(error = %err, "ForgejoOrganization reconcile failed");
-            }
-        })
-        .await;
+        .run(reconcile, error_policy, ctx);
+    super::drive(KIND, health, results).await;
 }
 
 async fn reconcile(obj: Arc<ForgejoOrganization>, ctx: Arc<Ctx>) -> Result<Action, Error> {
@@ -59,7 +53,9 @@ async fn reconcile(obj: Arc<ForgejoOrganization>, ctx: Arc<Ctx>) -> Result<Actio
     finalizer(&api, FINALIZER, obj, |event| async {
         match event {
             FinalizerEvent::Apply(org) => apply(&api, &org, &ctx).await,
-            FinalizerEvent::Cleanup(org) => cleanup(&org, &ctx).await,
+            FinalizerEvent::Cleanup(org) => {
+                super::finalize(org.as_ref(), &ctx, cleanup(&org, &ctx)).await
+            }
         }
     })
     .await

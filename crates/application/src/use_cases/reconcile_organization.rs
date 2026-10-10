@@ -62,14 +62,30 @@ pub async fn cleanup_organization(
     let Some(current) = current else {
         return Ok(());
     };
-    match gateway
-        .map_err(Clone::clone)?
-        .delete_organization(&current.name)
-        .await
-    {
+    let gateway = gateway.map_err(Clone::clone)?;
+    // By id: after a rename outside the operator, the stored name may
+    // belong to another organization by now.
+    let Some(name) = name_now(current, gateway).await? else {
+        return Ok(());
+    };
+    match gateway.delete_organization(&name).await {
         Ok(()) | Err(GatewayError::NotFound(_)) => Ok(()),
         Err(e) => Err(e.into()),
     }
+}
+
+/// The current name of `current` (`None`: deleted): the stored name when
+/// it still leads to the same id, else looked up by id.
+async fn name_now(
+    current: &ForgejoRef,
+    gateway: &dyn ForgejoGateway,
+) -> Result<Option<String>, GatewayError> {
+    if let Some(org) = gateway.get_organization(&current.name).await?
+        && org.id == current.id
+    {
+        return Ok(Some(org.name));
+    }
+    gateway.organization_name(current.id).await
 }
 
 async fn locate(
@@ -80,8 +96,13 @@ async fn locate(
     let Some(current) = current else {
         return Ok(None);
     };
-    if current.name != spec.name {
-        match gateway.rename_organization(&current.name, &spec.name).await {
+    // By id: renamed outside the operator, the organization is renamed
+    // back instead of being recreated next to it.
+    let Some(name) = name_now(current, gateway).await? else {
+        return Ok(None);
+    };
+    if name != spec.name {
+        match gateway.rename_organization(&name, &spec.name).await {
             Ok(()) | Err(GatewayError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
@@ -214,5 +235,28 @@ mod tests {
             .await
             .unwrap();
         assert!(fj.org("weebo").is_none());
+    }
+
+    #[tokio::test]
+    async fn an_organization_renamed_out_of_band_is_renamed_back_and_deleted_by_id() {
+        let fj = FakeForgejo::default();
+        let mut s = spec("weebo");
+        s.deletion_policy = DeletionPolicy::Delete;
+        let created = run(&s, None, None, &fj).await.forgejo.unwrap();
+        fj.rename_organization("weebo", "weebo-old").await.unwrap();
+        let again = run(&s, Some(created.clone()), None, &fj).await;
+        assert!(again.ready.is_ok(), "{again:?}");
+        assert_eq!(fj.org("weebo").unwrap().remote.id, created.id);
+
+        // Renamed away again, and someone else took the stored name.
+        fj.rename_organization("weebo", "weebo-moved")
+            .await
+            .unwrap();
+        let other = run(&spec("weebo"), None, None, &fj).await.forgejo.unwrap();
+        cleanup_organization(&s, Some(&created), Ok(&fj))
+            .await
+            .unwrap();
+        assert!(fj.org("weebo-moved").is_none(), "ours is gone");
+        assert_eq!(fj.org("weebo").unwrap().remote.id, other.id);
     }
 }

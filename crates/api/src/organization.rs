@@ -11,6 +11,7 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoOrganization",
+    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
     plural = "forgejoorganizations",
     shortname = "fjorg",
     status = "ForgejoStatus",
