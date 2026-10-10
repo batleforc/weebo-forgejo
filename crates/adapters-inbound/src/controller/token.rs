@@ -89,7 +89,7 @@ async fn reconcile(obj: Arc<ForgejoAccessToken>, ctx: Arc<Ctx>) -> Result<Action
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(e.to_string()))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 /// `(user, repository full names)`.
@@ -189,6 +189,6 @@ async fn cleanup(token: &ForgejoAccessToken, ctx: &Ctx) -> Result<Action, Error>
         secrets.as_ref(),
     )
     .await
-    .map_err(|f| Error::Cleanup(f.message))?;
+    .map_err(Error::Cleanup)?;
     Ok(Action::await_change())
 }

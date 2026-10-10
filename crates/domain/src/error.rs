@@ -23,6 +23,16 @@ reason_codes! {
         InstanceUnreachable,
         /// The `ForgejoInstance` token `Secret` (or the key in it) is missing.
         TokenSecretNotFound,
+        /// This CR is now bound to a Forgejo object — created, adopted by the
+        /// importer, or observed (Event only: `status.forgejoId` was just
+        /// recorded).
+        Bound,
+        /// The finalizer finished: the Forgejo object was deleted or kept
+        /// per `deletionPolicy`/`managementPolicy` (or force-orphaned), the
+        /// emitted secrets removed (Event only).
+        Released,
+        /// A `ForgejoInstance` can't be deleted while CRs still use it.
+        InstanceInUse,
         /// A Kubernetes API call made while resolving the `ForgejoInstance`
         /// (listing instances, reading its token or CA `Secret`) failed.
         /// Usually transient (apiserver hiccup); retried like any error.
@@ -72,7 +82,10 @@ reason_codes! {
 impl ReasonCode {
     pub const fn severity(self) -> Severity {
         match self {
-            ReasonCode::Reconciled | ReasonCode::MemberPending => Severity::Advisory,
+            ReasonCode::Reconciled
+            | ReasonCode::MemberPending
+            | ReasonCode::Bound
+            | ReasonCode::Released => Severity::Advisory,
             _ => Severity::Blocking,
         }
     }
@@ -100,14 +113,19 @@ mod tests {
     }
 
     #[test]
-    fn only_success_and_member_pending_are_advisory() {
+    fn only_success_member_pending_and_lifecycle_events_are_advisory() {
         let advisory: Vec<_> = ReasonCode::ALL
             .iter()
             .filter(|c| c.severity() == Severity::Advisory)
             .collect();
         assert_eq!(
             advisory,
-            [&ReasonCode::Reconciled, &ReasonCode::MemberPending]
+            [
+                &ReasonCode::Reconciled,
+                &ReasonCode::Bound,
+                &ReasonCode::Released,
+                &ReasonCode::MemberPending
+            ]
         );
     }
 }

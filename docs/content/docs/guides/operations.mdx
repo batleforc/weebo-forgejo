@@ -36,8 +36,13 @@ status:
       message: ForgejoOrganization "weebo" is not ready yet (InstanceUnreachable)
 ```
 
-The operator also records a Kubernetes **Event** on every `Ready`
-transition. `kubectl get events -n team-a` shows the history.
+The operator also records a Kubernetes **Event** for every error and every
+state change of a CR: a `Warning` each time a reconcile fails (repeats are
+folded into one series), and for errors that stop it before its status
+(Kubernetes API, cleanup); a `Normal` when `Ready` turns `True`, for every
+other condition that appears or goes, when the CR gets bound to a Forgejo
+object (`Bound`) and when its finalizer is released (`Released`).
+`kubectl describe` and `kubectl get events -n team-a` show the history.
 
 ## Reason codes
 
@@ -62,6 +67,9 @@ transition. `kubectl get events -n team-a` shows the history.
 | `SecretTargetFailed` | Writing to a Secret or to Vault failed | Check RBAC or Vault access and the target's namespace/path |
 | `InvalidSpec` | Valid YAML, but it can't be acted on (e.g. both `organizationRef` and `userRef` set) | Fix the spec; the message says what's wrong |
 | `ForgejoApiError` | Forgejo returned another error | Read the message; often a missing token scope |
+| `InstanceInUse` | A `ForgejoInstance` being deleted still has CRs bound to it (cleanup Event) | Delete those CRs first |
+| `Bound` | Event only: the CR is now bound to a Forgejo object (created, imported or observed) | Nothing |
+| `Released` | Event only: the finalizer finished (or the CR was force-orphaned) | Nothing |
 
 ## Disruptive changes
 
@@ -90,7 +98,8 @@ kubectl -n team-a annotate fjrepo app forgejo.weebo.io/allow-disruptive-update=t
 
 Users are never purged, even with `Delete`. Secrets the operator generated
 are always deleted with their CR — only those it owns (`forgejo.weebo.io/owner`).
-A failed cleanup is retried and reported as a `CleanupFailed` Warning Event;
+A failed cleanup is retried and reported as a Warning Event (action
+`Cleanup`, reason of the failure — `InstanceInUse`, `ForgejoApiError`…);
 `forgejo.weebo.io/force-orphan: "true"` releases the CR without cleanup. A
 `ForgejoInstance` is only deleted once no CR is bound to it any more.
 

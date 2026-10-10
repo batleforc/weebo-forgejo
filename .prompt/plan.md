@@ -364,7 +364,9 @@ l'instance.
   « exactement un de » (repo, webhook, clés, team External, email).
 - `ForgejoInstance` a un finalizer tant que des CR y sont liés ;
   `forgejo.weebo.io/force-orphan: "true"` libère un CR sans cleanup ;
-  un cleanup raté émet un Event `CleanupFailed`.
+  un cleanup raté émet un Event `Warning` (action `Cleanup`, raison de
+  l'échec) ; toute erreur et tout changement d'état du CR émettent un
+  Event (`weebo_kit_runtime::events`, `Bound`/`Released`).
 - Webhooks (même URL) et apps OAuth2 (même nom) : jamais de jumeau à la
   création (`ForgejoObjectAlreadyExists`) ; patch de status retenté.
 - `appliedSecretHash` v3 : salé par CR + étiré (migration v2/legacy auto).

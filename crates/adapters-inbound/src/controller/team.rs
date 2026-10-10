@@ -72,7 +72,7 @@ async fn reconcile(obj: Arc<ForgejoTeam>, ctx: Arc<Ctx>) -> Result<Action, Error
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(e.to_string()))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 async fn apply(api: &Api<ForgejoTeam>, team: &ForgejoTeam, ctx: &Ctx) -> Result<Action, Error> {
@@ -138,6 +138,6 @@ async fn cleanup(team: &ForgejoTeam, ctx: &Ctx) -> Result<Action, Error> {
     let gateway = super::cleanup_gateway(ctx, team.spec.instance_ref.as_deref()).await;
     cleanup_team(&team.spec, current_ref(team).as_ref(), gateway.as_deref())
         .await
-        .map_err(|f| Error::Cleanup(f.message))?;
+        .map_err(Error::Cleanup)?;
     Ok(Action::await_change())
 }

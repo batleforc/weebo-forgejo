@@ -10,7 +10,7 @@ use api::common::{DeletionPolicy, ManagementPolicy, SecretTarget, Visibility};
 use api::user::ForgejoUserSpec;
 use k8s_openapi::api::core::v1::Secret;
 use kube::api::{Api, ObjectMeta, Patch, PatchParams, PostParams};
-use support::{condition, harness, wait_for, wait_for_absence};
+use support::{condition, harness, wait_for, wait_for_absence, wait_for_event};
 
 fn user(name: &str, spec: ForgejoUserSpec) -> ForgejoUser {
     ForgejoUser {
@@ -80,6 +80,14 @@ async fn local_user_gets_an_id_a_secret_and_is_orphaned_on_delete() {
         "Orphan keeps the account"
     );
     assert!(secrets.get_opt("alice-forgejo").await.unwrap().is_none());
+
+    // The CR's story, as Events (a cluster-scoped CR's land in `default`).
+    for reason in ["Bound", "Reconciled", "Released"] {
+        assert_eq!(
+            wait_for_event(&h.client, "default", "alice", reason).await,
+            "Normal"
+        );
+    }
 }
 
 #[tokio::test]
@@ -137,4 +145,8 @@ async fn invalid_spec_is_reported_without_touching_forgejo() {
     let ready = wait_for(&users, "dave", |u| condition(u.status.as_ref(), "Ready")).await;
     assert_eq!(ready, ("False".into(), "InvalidSpec".into()));
     assert!(h.forgejo.calls().is_empty());
+    assert_eq!(
+        wait_for_event(&h.client, "default", "dave", "InvalidSpec").await,
+        "Warning"
+    );
 }

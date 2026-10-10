@@ -72,7 +72,7 @@ async fn reconcile(obj: Arc<ForgejoDeployKey>, ctx: Arc<Ctx>) -> Result<Action, 
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(e.to_string()))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 async fn repository(key: &ForgejoDeployKey, ctx: &Ctx) -> Result<Result<String, Failure>, Error> {
@@ -170,6 +170,6 @@ async fn cleanup(key: &ForgejoDeployKey, ctx: &Ctx) -> Result<Action, Error> {
         secrets.as_ref(),
     )
     .await
-    .map_err(|f| Error::Cleanup(f.message))?;
+    .map_err(Error::Cleanup)?;
     Ok(Action::await_change())
 }

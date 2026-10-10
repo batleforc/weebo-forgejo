@@ -59,7 +59,7 @@ async fn reconcile(obj: Arc<ForgejoOrganization>, ctx: Arc<Ctx>) -> Result<Actio
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(e.to_string()))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 async fn apply(
@@ -120,6 +120,6 @@ async fn cleanup(org: &ForgejoOrganization, ctx: &Ctx) -> Result<Action, Error> 
     let gateway = super::cleanup_gateway(ctx, org.spec.instance_ref.as_deref()).await;
     cleanup_organization(&org.spec, current_ref(org).as_ref(), gateway.as_deref())
         .await
-        .map_err(|f| Error::Cleanup(f.message))?;
+        .map_err(Error::Cleanup)?;
     Ok(Action::await_change())
 }

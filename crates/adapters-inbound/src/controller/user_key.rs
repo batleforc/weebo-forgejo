@@ -52,7 +52,7 @@ async fn reconcile(obj: Arc<ForgejoUserKey>, ctx: Arc<Ctx>) -> Result<Action, Er
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(e.to_string()))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 async fn user(key: &ForgejoUserKey, ctx: &Ctx) -> Result<Result<String, Failure>, Error> {
@@ -134,6 +134,6 @@ async fn cleanup(key: &ForgejoUserKey, ctx: &Ctx) -> Result<Action, Error> {
         secrets.as_ref(),
     )
     .await
-    .map_err(|f| Error::Cleanup(f.message))?;
+    .map_err(Error::Cleanup)?;
     Ok(Action::await_change())
 }

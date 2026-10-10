@@ -300,7 +300,10 @@ async fn token_fans_out_and_is_reissued_when_a_target_is_lost() {
     .await;
     let tokens: Api<ForgejoAccessToken> = l.api();
     wait_for(&tokens, "escape", |t| {
-        let ready = token_status(t)?.conditions.iter().find(|c| c.type_ == "Ready")?;
+        let ready = token_status(t)?
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Ready")?;
         (ready.reason == "CrossNamespaceReference").then_some(())
     })
     .await;
@@ -772,7 +775,10 @@ async fn vault_secret_store_end_to_end() {
         "nothing in Kubernetes"
     );
 
-    let (fan, _) = vault.kv("weebo-forgejo/default/ci/fan").await.expect("explicit Vault target");
+    let (fan, _) = vault
+        .kv("weebo-forgejo/default/ci/fan")
+        .await
+        .expect("explicit Vault target");
     assert_eq!(
         l.secret_value("fan-k8s", "FORGEJO_TOKEN").await.as_deref(),
         fan["FORGEJO_TOKEN"].as_str(),
@@ -796,7 +802,11 @@ async fn vault_secret_store_end_to_end() {
 
     // A lost Vault secret is noticed and reissued like a Kubernetes one.
     let resp = vault
-        .call(reqwest::Method::DELETE, "secret/metadata/weebo-forgejo/default/ci/fan", None)
+        .call(
+            reqwest::Method::DELETE,
+            "secret/metadata/weebo-forgejo/default/ci/fan",
+            None,
+        )
         .await;
     assert!(resp.status().is_success());
     tokens

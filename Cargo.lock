@@ -4710,14 +4710,15 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-adapters"
-version = "0.2.0"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.2.0#a13a6e3cd564dda119ebf9bdc348f54e6b7dcddc"
+version = "0.4.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.4.0#4ceeb7a4eee99d6d913b154d15d793984f10561d"
 dependencies = [
  "async-trait",
  "futures",
  "k8s-openapi",
  "kube",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "uuid",
@@ -4728,8 +4729,8 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-api"
-version = "0.2.0"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.2.0#a13a6e3cd564dda119ebf9bdc348f54e6b7dcddc"
+version = "0.4.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.4.0#4ceeb7a4eee99d6d913b154d15d793984f10561d"
 dependencies = [
  "k8s-openapi",
  "schemars",
@@ -4738,8 +4739,8 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-application"
-version = "0.2.0"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.2.0#a13a6e3cd564dda119ebf9bdc348f54e6b7dcddc"
+version = "0.4.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.4.0#4ceeb7a4eee99d6d913b154d15d793984f10561d"
 dependencies = [
  "async-trait",
  "thiserror 2.0.21",
@@ -4748,13 +4749,13 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-domain"
-version = "0.2.0"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.2.0#a13a6e3cd564dda119ebf9bdc348f54e6b7dcddc"
+version = "0.4.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.4.0#4ceeb7a4eee99d6d913b154d15d793984f10561d"
 
 [[package]]
 name = "weebo-kit-runtime"
-version = "0.2.0"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.2.0#a13a6e3cd564dda119ebf9bdc348f54e6b7dcddc"
+version = "0.4.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.4.0#4ceeb7a4eee99d6d913b154d15d793984f10561d"
 dependencies = [
  "anyhow",
  "axum",
@@ -4777,8 +4778,8 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-testkit"
-version = "0.2.0"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.2.0#a13a6e3cd564dda119ebf9bdc348f54e6b7dcddc"
+version = "0.4.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.4.0#4ceeb7a4eee99d6d913b154d15d793984f10561d"
 dependencies = [
  "envtest",
  "kube",

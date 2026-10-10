@@ -11,7 +11,6 @@ use application::ports::{SecretStore, SecretStoreError, SecretStoreFactory};
 use futures::FutureExt;
 use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt};
-use sha2::{Digest, Sha256};
 use weebo_kit_adapters::{
     K8sSecretStore, RoutingSecretStore, VaultConfig, VaultLogins, VaultSecretStore, read_secret_key,
 };
@@ -79,15 +78,7 @@ async fn vault_for(
             .ca_secret_ref
             .as_ref()
             .zip(ca.as_ref())
-            .map(|(r, pem)| {
-                format!(
-                    "{}/{}/{}@sha256:{:x}",
-                    r.namespace,
-                    r.name,
-                    r.key,
-                    Sha256::digest(pem)
-                )
-            }),
+            .map(|(r, pem)| VaultConfig::ca_source_of(r, pem)),
     };
     logins
         .get(&instance, &config, || async move { Ok(ca) })

@@ -133,7 +133,7 @@ async fn reconcile(obj: Arc<ForgejoRepository>, ctx: Arc<Ctx>) -> Result<Action,
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(e.to_string()))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 async fn apply(
@@ -309,6 +309,6 @@ async fn cleanup(repo: &ForgejoRepository, ctx: &Ctx) -> Result<Action, Error> {
     let gateway = super::cleanup_gateway(ctx, repo.spec.instance_ref.as_deref()).await;
     cleanup_repository(&repo.spec, current_ref(repo).as_ref(), gateway.as_deref())
         .await
-        .map_err(|f| Error::Cleanup(f.message))?;
+        .map_err(Error::Cleanup)?;
     Ok(Action::await_change())
 }

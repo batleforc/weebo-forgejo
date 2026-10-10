@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::ForgejoInstance;
-use application::use_cases::Outcome;
 use application::use_cases::reconcile_instance::reconcile_instance;
+use application::use_cases::{Failure, Outcome};
+use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -38,7 +39,7 @@ async fn reconcile(obj: Arc<ForgejoInstance>, ctx: Arc<Ctx>) -> Result<Action, E
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(e.to_string()))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 /// Released once no CR is bound to the instance any more.
@@ -55,10 +56,13 @@ async fn cleanup(
         return Ok(Action::await_change());
     }
     let shown: Vec<_> = dependents.iter().take(5).cloned().collect();
-    Err(Error::Cleanup(format!(
-        "{} CR(s) still use ForgejoInstance {name:?} (e.g. {}): delete them first",
-        dependents.len(),
-        shown.join(", ")
+    Err(Error::Cleanup(Failure::new(
+        ReasonCode::InstanceInUse,
+        format!(
+            "{} CR(s) still use ForgejoInstance {name:?} (e.g. {}): delete them first",
+            dependents.len(),
+            shown.join(", ")
+        ),
     )))
 }
 

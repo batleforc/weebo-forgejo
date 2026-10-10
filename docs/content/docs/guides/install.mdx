@@ -206,7 +206,7 @@ the `ForgejoInstance`s — an instance's finalizer holds it while CRs are
 still bound to it, since their own cleanup needs it.
 
 A CR whose cleanup can't succeed any more (its instance or token already
-gone) stays in `Terminating` with a `CleanupFailed` Warning Event. Release it
+gone) stays in `Terminating` with a Warning Event of action `Cleanup`. Release it
 without touching Forgejo or its Secrets:
 
 ```bash

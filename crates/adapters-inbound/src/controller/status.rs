@@ -1,7 +1,9 @@
 //! `Outcome` → `status` translation, shared by every controller: one merge
 //! patch on the status subresource (`observedGeneration`, `forgejoId`,
-//! `forgejoName`, conditions) and a Kubernetes `Event` whenever `Ready`
-//! changes. Only `ReasonCode`s ever reach a condition or an Event.
+//! `forgejoName`, conditions), then Kubernetes Events: a `Warning` for every
+//! failed reconcile, a `Normal` for every condition change and when the CR
+//! gets bound to a Forgejo object. Only `ReasonCode`s ever reach a
+//! condition or an Event.
 
 use std::fmt::Debug;
 use std::time::Duration;
@@ -9,6 +11,7 @@ use std::time::Duration;
 use api::status::{Condition, ForgejoStatus};
 use application::ports::ForgejoRef;
 use application::use_cases::Outcome;
+use domain::error::ReasonCode;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, Patch, PatchParams};
@@ -16,6 +19,7 @@ use kube::runtime::events::Recorder;
 use kube::{Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use weebo_kit_runtime::events;
 
 pub const FIELD_MANAGER: &str = "weebo-forgejo-operator";
 
@@ -108,7 +112,7 @@ fn transient(err: &kube::Error) -> bool {
 }
 
 /// Patches the outcome onto `obj` (freshly read from the API server) and
-/// emits an Event if `Ready`'s status or reason changed. `observedGeneration`
+/// emits its Events (see the module doc). `observedGeneration`
 /// only advances on success. A failed outcome
 /// without a `forgejo` ref keeps whatever id the status already had.
 pub async fn publish<K>(
@@ -187,13 +191,22 @@ where
         }
     }
 
-    weebo_kit_runtime::conditions::announce_ready_change(
-        recorder,
-        &obj.object_ref(&()),
-        previous,
-        &conds,
-    )
-    .await;
+    // A `Warning` on every failed reconcile, a `Normal` for every
+    // condition change, and one when the CR gets bound to a Forgejo object.
+    let object = obj.object_ref(&());
+    events::announce_outcome(recorder, &object, previous, &conds).await;
+    if let Some(r) = &outcome.forgejo
+        && current_ref(obj).is_none()
+    {
+        events::announce_change(
+            recorder,
+            &object,
+            ReasonCode::Bound,
+            events::RECONCILE,
+            &format!("bound to Forgejo object {:?} (id {})", r.name, r.id),
+        )
+        .await;
+    }
     Ok(())
 }
 

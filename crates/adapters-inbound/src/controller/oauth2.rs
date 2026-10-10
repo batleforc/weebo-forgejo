@@ -72,7 +72,7 @@ async fn reconcile(obj: Arc<ForgejoOAuth2Application>, ctx: Arc<Ctx>) -> Result<
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(e.to_string()))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 /// The owner, or `None` for the admin account.
@@ -166,6 +166,6 @@ async fn cleanup(app: &ForgejoOAuth2Application, ctx: &Ctx) -> Result<Action, Er
         secrets.as_ref(),
     )
     .await
-    .map_err(|f| Error::Cleanup(f.message))?;
+    .map_err(Error::Cleanup)?;
     Ok(Action::await_change())
 }

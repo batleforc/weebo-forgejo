@@ -36,6 +36,7 @@ use kube::runtime::utils::Predicate;
 use kube::runtime::{Controller, WatchStreamExt, watcher};
 use rand::Rng;
 use weebo_kit_runtime::Health;
+use weebo_kit_runtime::events;
 
 pub use api::FINALIZER;
 
@@ -149,12 +150,18 @@ pub enum Error {
     Kube(#[from] kube::Error),
     #[error(transparent)]
     Cluster(#[from] ClusterError),
-    #[error("finalizer error: {0}")]
-    Finalizer(String),
+    /// Anything the finalizer helper reports: the reconcile's own error
+    /// (`ApplyFailed`/`CleanupFailed`) or adding/removing the finalizer.
+    #[error("{0}")]
+    Finalizer(Box<kube::runtime::finalizer::Error<Error>>),
     /// A finalizer cleanup that couldn't complete: the CR stays until it
     /// can (it is retried by `error_policy`).
-    #[error("cleanup failed: {0}")]
-    Cleanup(String),
+    #[error(
+        "cleanup failed: {}; it is retried — annotate with {}=\"true\" to release the CR without cleanup",
+        .0.message,
+        api::FORCE_ORPHAN_ANNOTATION
+    )]
+    Cleanup(application::use_cases::Failure),
 }
 
 /// The gateway and secret store of a CR's `instanceRef`, for kinds that
@@ -252,10 +259,42 @@ fn jittered(secs: u64) -> Duration {
     Duration::from_secs(secs.max(1))
 }
 
-/// Hard errors (kube API, finalizer, cleanup) retry on the short cadence.
-pub fn error_policy<K>(_obj: Arc<K>, err: &Error, _ctx: Arc<Ctx>) -> Action {
+impl Error {
+    /// The reason code of the Event announcing this error, and whether it
+    /// happened reconciling or cleaning up (the Event's `action`).
+    pub fn reason(&self) -> (ReasonCode, &'static str) {
+        use kube::runtime::finalizer::Error as Finalizer;
+        match self {
+            Error::Kube(_) | Error::Cluster(_) => {
+                (ReasonCode::KubernetesApiError, events::RECONCILE)
+            }
+            Error::Cleanup(failure) => (failure.reason, events::CLEANUP),
+            Error::Finalizer(err) => match err.as_ref() {
+                Finalizer::ApplyFailed(inner) => inner.reason(),
+                Finalizer::CleanupFailed(inner) => (inner.reason().0, events::CLEANUP),
+                _ => (ReasonCode::KubernetesApiError, events::RECONCILE),
+            },
+        }
+    }
+}
+
+/// Hard errors (kube API, finalizer, cleanup) retry on the short cadence,
+/// each announced by a `Warning` Event on its CR (the kit folds repeats
+/// into one series): a CR stuck in Terminating says why.
+pub fn error_policy<K>(obj: Arc<K>, err: &Error, ctx: Arc<Ctx>) -> Action
+where
+    K: kube::Resource<DynamicType = ()>,
+{
     let after = jittered(30);
     tracing::warn!(error = %err, retry_in = after.as_secs(), "reconcile error");
+    let (reason, action) = err.reason();
+    events::spawn_error(
+        &ctx.recorder,
+        obj.object_ref(&()),
+        reason,
+        action,
+        err.to_string(),
+    );
     Action::requeue(after)
 }
 
@@ -298,8 +337,8 @@ pub fn force_orphan(meta: &kube::api::ObjectMeta) -> bool {
 }
 
 /// Runs a finalizer `cleanup` — unless the CR is force-orphaned — and
-/// reports a failed one as a Warning Event on the CR: a CR stuck in
-/// Terminating says why.
+/// announces the release with a `Normal` Event. A failed cleanup reaches
+/// `error_policy`, which warns on the CR.
 pub async fn finalize<K>(
     obj: &K,
     ctx: &Ctx,
@@ -308,37 +347,29 @@ pub async fn finalize<K>(
 where
     K: kube::Resource<DynamicType = ()>,
 {
-    if force_orphan(obj.meta()) {
+    let note = if force_orphan(obj.meta()) {
         tracing::warn!(
             kind = %K::kind(&()),
             name = %kube::ResourceExt::name_any(obj),
             "force-orphaned: releasing the finalizer without cleanup"
         );
-        return Ok(Action::await_change());
-    }
-    let result = cleanup.await;
-    if let Err(err) = &result {
-        let event = kube::runtime::events::Event {
-            type_: kube::runtime::events::EventType::Warning,
-            reason: "CleanupFailed".to_string(),
-            note: Some(
-                format!(
-                    "{err}; it is retried — annotate with {}=\"true\" to release the CR \
-                     without cleanup",
-                    api::FORCE_ORPHAN_ANNOTATION
-                )
-                .chars()
-                .take(1000)
-                .collect(),
-            ),
-            action: "Delete".to_string(),
-            secondary: None,
-        };
-        if let Err(e) = ctx.recorder.publish(&event, &obj.object_ref(&())).await {
-            tracing::warn!(error = %e, "failed to publish event");
-        }
-    }
-    result
+        format!(
+            "force-orphaned ({}): released without cleanup",
+            api::FORCE_ORPHAN_ANNOTATION
+        )
+    } else {
+        cleanup.await?;
+        "cleanup finished, finalizer released".to_string()
+    };
+    events::announce_change(
+        &ctx.recorder,
+        &obj.object_ref(&()),
+        ReasonCode::Released,
+        events::CLEANUP,
+        &note,
+    )
+    .await;
+    Ok(Action::await_change())
 }
 
 /// Records in [`KEY_OWNER_ANNOTATION`] that the key now lives on
