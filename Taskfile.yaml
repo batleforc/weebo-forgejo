@@ -4,6 +4,8 @@ includes:
   mise: ./.tasks/mise.yaml
   claude: ./.tasks/claude.yaml
   template: ./.tasks/template.yaml
+  # cog.toml, rendered from weebo-operator-kit's template (task kit:cog).
+  kit: ./.tasks/kit.yaml
   gen: ./.tasks/gen.yaml
   forgejo: ./.tasks/forgejo.yaml
   e2e: ./.tasks/e2e.yaml
@@ -52,10 +54,12 @@ tasks:
       # The chart ships the CRDs as templates (Helm never upgrades crds/),
       # wrapped in `crds.install` + `helm.sh/resource-policy: keep`.
       - deploy/scripts/sync-chart-crds.sh
-      # CRD reference pages + form schemas of the docs site.
+      # CRD reference pages + form schemas of the docs site, and its operator
+      # reference (reason codes and metrics read from crates/, the budget from
+      # docs/perf/): weebo-crd-docs (@weebo/operator-docs) reads
+      # docs/crd-docs.config.mjs and clears its own previous outputs.
       - task: docs:deps
-      - rm -f docs/content/docs/crds/*.mdx docs/public/crd-schemas/*.json
-      - mise exec -- node docs/scripts/gen-crd-docs.mjs
+      - mise exec -- npm run gen:crds --prefix docs --silent
 
   lint:
     desc: "cargo fmt --check + clippy -D warnings on the whole workspace, hadolint on both Containerfiles, actionlint on CI"

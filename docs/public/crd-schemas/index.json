@@ -1,0 +1,57 @@
+[
+  {
+    "kind": "ForgejoInstance",
+    "singular": "forgejoinstance",
+    "scope": "Cluster"
+  },
+  {
+    "kind": "ForgejoUser",
+    "singular": "forgejouser",
+    "scope": "Cluster"
+  },
+  {
+    "kind": "ForgejoUserKey",
+    "singular": "forgejouserkey",
+    "scope": "Cluster"
+  },
+  {
+    "kind": "ForgejoOrganization",
+    "singular": "forgejoorganization",
+    "scope": "Cluster"
+  },
+  {
+    "kind": "ForgejoTeam",
+    "singular": "forgejoteam",
+    "scope": "Cluster"
+  },
+  {
+    "kind": "ForgejoNamespacePolicy",
+    "singular": "forgejonamespacepolicy",
+    "scope": "Cluster"
+  },
+  {
+    "kind": "ForgejoRepository",
+    "singular": "forgejorepository",
+    "scope": "Namespaced"
+  },
+  {
+    "kind": "ForgejoWebhook",
+    "singular": "forgejowebhook",
+    "scope": "Namespaced"
+  },
+  {
+    "kind": "ForgejoDeployKey",
+    "singular": "forgejodeploykey",
+    "scope": "Namespaced"
+  },
+  {
+    "kind": "ForgejoOAuth2Application",
+    "singular": "forgejooauth2application",
+    "scope": "Namespaced"
+  },
+  {
+    "kind": "ForgejoAccessToken",
+    "singular": "forgejoaccesstoken",
+    "scope": "Namespaced"
+  }
+]

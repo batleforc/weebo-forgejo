@@ -1,22 +1,12 @@
-import defaultMdxComponents from 'fumadocs-ui/mdx';
-import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
-import { Step, Steps } from 'fumadocs-ui/components/steps';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { docsMdxComponents } from '@weebo/operator-docs/site';
 import type { MDXComponents } from 'mdx/types';
-import { CrdForm } from './crd-form/CrdForm';
+import { CHOICES } from '@/lib/crd-choices';
 import { GroupSyncDiagram } from './GroupSyncDiagram';
 import { TeamAccessDiagram } from './TeamAccessDiagram';
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
-    ...defaultMdxComponents,
-    Accordion,
-    Accordions,
-    Step,
-    Steps,
-    Tab,
-    Tabs,
-    CrdForm,
+    ...docsMdxComponents(CHOICES),
     GroupSyncDiagram,
     TeamAccessDiagram,
     ...components,

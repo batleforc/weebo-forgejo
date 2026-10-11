@@ -138,9 +138,10 @@ jobs:
       - name: Fail if committed generated files are stale
         run: |
           git diff --exit-code crates/forgejo-client/ deploy/crd/ \
-            deploy/charts/weebo-forgejo/templates/crds/ docs/content/docs/crds/ docs/public/crd-schemas/
+            deploy/charts/weebo-forgejo/templates/crds/ docs/content/docs/crds/ docs/public/crd-schemas/ \
+            docs/content/docs/reference/
           # A generated file that's new must be committed too.
-          test -z "$(git status --porcelain crates/forgejo-client/ docs/content/docs/crds/ docs/public/crd-schemas/ deploy/)"
+          test -z "$(git status --porcelain crates/forgejo-client/ docs/content/docs/crds/ docs/public/crd-schemas/ docs/content/docs/reference/ deploy/)"
 
   docs:
     runs-on: ubuntu-latest

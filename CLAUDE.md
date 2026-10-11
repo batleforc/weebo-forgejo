@@ -40,8 +40,13 @@ use `path = "../weebo-operator-kit/crates/<crate>"` — never push that.
   election, controllers). `crates/crdgen` — writes `deploy/crd/`
   (generated, committed; `task recu` also copies them into the chart and
   generates the docs' CRD pages).
-- `deploy/charts/weebo-forgejo` — Helm chart. `docs/` — Fumadocs site;
-  `docs/content/docs/crds/` and `docs/public/crd-schemas/` are generated.
+- `deploy/charts/weebo-forgejo` — Helm chart. `docs/` — Fumadocs site on
+  `@weebo/operator-docs` (the kit's `packages/operator-docs`: CRD page
+  generator, manifest builder, theme, layout, routes); the site keeps its
+  content, `crd-docs.config.mjs` (examples, guides, order), `src/lib/crd-choices.ts`
+  and its diagrams. `docs/content/docs/crds/`, `docs/public/crd-schemas/`
+  and `docs/content/docs/reference/` (from `ReasonCode`'s doc comments,
+  the metric names and `docs/perf/weebo-forgejo.json`) are generated.
 - `crates/importer` — `weebo-forgejo-importer`, the only adoption path:
   `application::use_cases::import` over the `ForgejoInventory` port, then
   CRs created paused (`forgejo.weebo.io/import-pending`) with seeded

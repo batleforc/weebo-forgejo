@@ -1,0 +1,50 @@
+---
+title: Reason codes
+description: Every code the operator puts on a condition, an Event or an admission denial.
+---
+
+Every condition, Event and admission denial the operator writes carries one
+of these codes, never free text: alerts, scripts and `kubectl` filters can
+rely on them. The list is generated from the operator's source, so it
+matches the installed version.
+
+- **Blocking**: `Ready` turns `False` with this reason, and every failed
+  reconcile records a `Warning` Event with it ([Events](/docs/reference/events)).
+  An admission webhook denial carries one too (HTTP 403, the code as its
+  reason).
+- **Advisory**: the CR still works. `Reconciled` is the reason of `Ready: True`; the
+  others are a condition of their own (its `type` is the code, its
+  `status` `"True"`) or a lifecycle Event.
+
+Every CR's `Ready` reason also labels the reconcile counter
+([Metrics & health](/docs/reference/metrics)), so a code can be graphed and
+alerted on. To find where one shows up right now:
+
+```bash
+kubectl get events -A --field-selector reason=InstanceNotFound
+```
+
+| Code | Severity | Shows as | Meaning | What to do |
+| --- | --- | --- | --- | --- |
+| `Reconciled` | advisory | `Ready: True` | Generic success reason for `Ready: True` — every condition must carry a `ReasonCode`, so this is the one every reconciler uses on the happy path rather than each inventing its own "it worked" code. | Nothing |
+| `InstanceNotFound` | blocking | `Ready: False`, Event (`Warning`) | `spec.instanceRef` does not resolve to a `ForgejoInstance`, or no `instanceRef` was given and the cluster has no `ForgejoInstance`. | [Create the instance](/docs/guides/connect-instance), or fix `instanceRef` |
+| `AmbiguousDefaultInstance` | blocking | `Ready: False`, Event (`Warning`) | No `instanceRef` was given and the cluster has more than one `ForgejoInstance` to choose from. | Set `instanceRef` |
+| `InstanceUnreachable` | blocking | `Ready: False`, Event (`Warning`) | The Forgejo API could not be reached (DNS, TCP, TLS) or answered with a 5xx. | Timeouts and rate limiting (408/429) land here too. Check Forgejo's health and the URL/CA; it's retried automatically |
+| `TokenSecretNotFound` | blocking | `Ready: False`, Event (`Warning`) | The `ForgejoInstance` token `Secret` (or the key in it) is missing. | Fix `tokenSecretRef` or create the Secret |
+| `Bound` | advisory | Event (`Normal`) | This CR is now bound to a Forgejo object — created, adopted by the importer, or observed (Event only: `status.forgejoId` was just recorded). | Nothing |
+| `Released` | advisory | Event (`Normal`) | The finalizer finished: the Forgejo object was deleted or kept per `deletionPolicy`/`managementPolicy` (or force-orphaned), the emitted secrets removed (Event only). | Nothing |
+| `InstanceInUse` | blocking | `Ready: False`, Event (`Warning`) | A `ForgejoInstance` can't be deleted while CRs still use it. | Delete the CRs bound to the instance first |
+| `KubernetesApiError` | blocking | `Ready: False`, Event (`Warning`) | A Kubernetes API call made while resolving the `ForgejoInstance` (listing instances, reading its token or CA `Secret`) failed. Usually transient (apiserver hiccup); retried like any error. | Transient; retried automatically |
+| `ForgejoObjectAlreadyExists` | blocking | `Ready: False`, Event (`Warning`) | Create was rejected because an object with the same name already exists in Forgejo and isn't tracked by this CR. Never adopted implicitly — only the `importer` binds a CR to an existing object. | For a webhook (same URL) or an OAuth2 application (same name), it can be a twin left by a lost create response. Rename the CR's `spec.name`, delete the twin, or adopt the object with the [importer](/docs/guides/migration) |
+| `ForgejoApiError` | blocking | `Ready: False`, Event (`Warning`) | Catch-all for a Forgejo API call that failed for a reason not covered by a more specific code. | Read the message; often a missing token scope |
+| `ReferenceNotFound` | blocking | `Ready: False`, Event (`Warning`) | A `*Ref` field does not resolve to a CR. | Create it or fix the ref |
+| `ReferenceNotReady` | blocking | `Ready: False`, Event (`Warning`) | A `*Ref` field resolves to a CR that isn't `Ready` yet (no `status.forgejoId`). The controller watches the referenced kind, so this clears as soon as the reference becomes ready. | Fix that CR first; this one follows on its own |
+| `UserNotFound` | blocking | `Ready: False`, Event (`Warning`) | A `ForgejoUser` in `managementPolicy: Observe` does not exist in Forgejo yet — typically an OIDC user who hasn't logged in once. | Wait for their first sign-in |
+| `MemberPending` | advisory | condition `MemberPending: True`, Event (`Normal`) | A `ForgejoTeam` member is a `ForgejoUser` that doesn't exist in Forgejo yet; the other members are still synced. Advisory. | Wait for those users' first sign-in; the other members are synced |
+| `LoginSourceNotFound` | blocking | `Ready: False`, Event (`Warning`) | `ForgejoUser.spec.loginSource` doesn't match any authentication source configured in Forgejo. | Fix the id (Site administration → Authentication sources) |
+| `UnsupportedForgejoVersion` | blocking | `Ready: False`, Event (`Warning`) | The `ForgejoInstance` runs a Forgejo older than v16 — the admin token API this operator relies on is missing. | Upgrade Forgejo |
+| `DisruptiveUpdateRefused` | blocking | `Ready: False`, Event (`Warning`) | The change requires a delete-and-recreate (repository transfer, token scope change, OAuth2 owner change) and the CR lacks the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. | See [Disruptive changes](/docs/guides/operations#disruptive-changes) |
+| `NamespaceNotAllowed` | blocking | `Ready: False`, Event (`Warning`), admission denial | Refused by `ForgejoNamespacePolicy` (webhook and/or reconciler). | Adjust the [allow-list](/docs/guides/allow-list); a site admin's credentials need an explicit rule |
+| `CrossNamespaceReference` | blocking | `Ready: False`, Event (`Warning`) | A namespaced CR references a namespaced CR in another namespace. | Typically a `secretTargets` entry in another namespace: write into the CR's own namespace |
+| `SecretTargetFailed` | blocking | `Ready: False`, Event (`Warning`) | A `SecretStore` (Kubernetes or Vault) write/delete/auth call failed. | Check RBAC or Vault access and the target's namespace/path |
+| `InvalidSpec` | blocking | `Ready: False`, Event (`Warning`) | The spec is schema-valid but not a shape a reconciler can act on (e.g. a one-of discriminator without its matching sub-struct). | Fix the spec (e.g. not both `organizationRef` and `userRef`); the message says what's wrong |

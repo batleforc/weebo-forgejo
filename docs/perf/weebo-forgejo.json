@@ -1,0 +1,498 @@
+{
+  "label": "weebo-forgejo",
+  "startup_secs": 0.10165423,
+  "shutdown_secs": 0.008703679,
+  "background_api_requests_per_min": 20.0,
+  "phases": [
+    {
+      "name": "startup",
+      "kind": "idle",
+      "wall_secs": 30.033626344,
+      "usage": {
+        "samples": 121,
+        "rss_peak_mib": 22.1171875,
+        "rss_median_mib": 22.1171875,
+        "cpu_seconds": 0.0,
+        "cpu_mean_millicores": 0.0,
+        "cpu_peak_millicores": 0.0,
+        "rss_slope_mib_per_min": -1.6965568764631822,
+        "fds_max": 45,
+        "threads_max": 17
+      },
+      "reconciles": 1.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": 0.02425,
+      "api_requests": 19.988791218666666,
+      "api_requests_per_min": 39.93282260966787,
+      "api_top": [
+        [
+          "PUT leases",
+          7.0
+        ],
+        [
+          "GET leases",
+          6.0
+        ],
+        [
+          "GET ",
+          2.0
+        ],
+        [
+          "PATCH forgejoinstances",
+          2.0
+        ],
+        [
+          "GET endpoints",
+          1.0
+        ],
+        [
+          "GET endpointslices",
+          1.0
+        ],
+        [
+          "GET secrets",
+          1.0
+        ],
+        [
+          "POST events",
+          1.0
+        ]
+      ],
+      "objects": null,
+      "convergence_secs": null
+    },
+    {
+      "name": "warm-up burst",
+      "kind": "load",
+      "wall_secs": 1.27104599,
+      "usage": {
+        "samples": 5,
+        "rss_peak_mib": 29.2734375,
+        "rss_median_mib": 28.84375,
+        "cpu_seconds": 0.8800000000000001,
+        "cpu_mean_millicores": 880.0199060502749,
+        "cpu_peak_millicores": 1282.8847150965214,
+        "rss_slope_mib_per_min": 140.30447654029163,
+        "fds_max": 51,
+        "threads_max": 17
+      },
+      "reconciles": 200.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": 0.009444444444444445,
+      "api_requests": 1199.5763180033334,
+      "api_requests_per_min": 56626.2587242811,
+      "api_top": [
+        [
+          "PATCH forgejoorganizations",
+          400.0
+        ],
+        [
+          "POST events",
+          400.0
+        ],
+        [
+          "GET forgejoorganizations",
+          200.0
+        ],
+        [
+          "GET secrets",
+          200.0
+        ],
+        [
+          "POST forgejoorganizations",
+          200.0
+        ],
+        [
+          "LIST forgejoorganizations",
+          3.0
+        ],
+        [
+          "GET ",
+          1.0
+        ]
+      ],
+      "objects": 200,
+      "convergence_secs": 1.237453785
+    },
+    {
+      "name": "warm-up churn",
+      "kind": "load",
+      "wall_secs": 0.877264462,
+      "usage": {
+        "samples": 4,
+        "rss_peak_mib": 30.3671875,
+        "rss_median_mib": 30.3671875,
+        "cpu_seconds": 0.8399999999999999,
+        "cpu_mean_millicores": 1119.816914413761,
+        "cpu_peak_millicores": 1563.6035432699623,
+        "rss_slope_mib_per_min": 26.604578530115568,
+        "fds_max": 51,
+        "threads_max": 17
+      },
+      "reconciles": 200.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": 0.009778761061946903,
+      "api_requests": 598.7075785126667,
+      "api_requests_per_min": 40948.26163237421,
+      "api_top": [
+        [
+          "PATCH forgejoorganizations",
+          400.0
+        ],
+        [
+          "GET forgejoorganizations",
+          200.0
+        ],
+        [
+          "GET secrets",
+          200.0
+        ],
+        [
+          "LIST forgejoorganizations",
+          2.0
+        ]
+      ],
+      "objects": 200,
+      "convergence_secs": 0.842780504
+    },
+    {
+      "name": "warm-up delete",
+      "kind": "load",
+      "wall_secs": 0.804246818,
+      "usage": {
+        "samples": 3,
+        "rss_peak_mib": 31.22265625,
+        "rss_median_mib": 31.08984375,
+        "cpu_seconds": 0.7199999999999998,
+        "cpu_mean_millicores": 1440.2919154848462,
+        "cpu_peak_millicores": 1443.253480136159,
+        "rss_slope_mib_per_min": 92.32097113269378,
+        "fds_max": 53,
+        "threads_max": 17
+      },
+      "reconciles": 0.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": null,
+      "api_requests": 601.7319177273333,
+      "api_requests_per_min": 44891.5858360785,
+      "api_top": [
+        [
+          "DELETE forgejoorganizations",
+          200.0
+        ],
+        [
+          "GET secrets",
+          200.0
+        ],
+        [
+          "PATCH forgejoorganizations",
+          200.0
+        ],
+        [
+          "POST events",
+          200.0
+        ],
+        [
+          "LIST forgejoorganizations",
+          2.0
+        ],
+        [
+          "GET endpoints",
+          1.0
+        ],
+        [
+          "GET endpointslices",
+          1.0
+        ],
+        [
+          "PUT leases",
+          1.0
+        ]
+      ],
+      "objects": 200,
+      "convergence_secs": 0.769522951
+    },
+    {
+      "name": "baseline",
+      "kind": "idle",
+      "wall_secs": 30.034665892,
+      "usage": {
+        "samples": 120,
+        "rss_peak_mib": 31.22265625,
+        "rss_median_mib": 31.22265625,
+        "cpu_seconds": 0.0,
+        "cpu_mean_millicores": 0.0,
+        "cpu_peak_millicores": 0.0,
+        "rss_slope_mib_per_min": 0.0,
+        "fds_max": 50,
+        "threads_max": 17
+      },
+      "reconciles": 0.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": null,
+      "api_requests": 15.988444702666667,
+      "api_requests_per_min": 31.9399818066736,
+      "api_top": [
+        [
+          "PUT leases",
+          7.0
+        ],
+        [
+          "GET leases",
+          6.0
+        ],
+        [
+          "GET ",
+          2.0
+        ],
+        [
+          "GET endpoints",
+          1.0
+        ],
+        [
+          "GET endpointslices",
+          1.0
+        ]
+      ],
+      "objects": null,
+      "convergence_secs": null
+    },
+    {
+      "name": "cycle burst",
+      "kind": "load",
+      "wall_secs": 1.245489241,
+      "usage": {
+        "samples": 5,
+        "rss_peak_mib": 32.6796875,
+        "rss_median_mib": 31.45703125,
+        "cpu_seconds": 1.0200000000000005,
+        "cpu_mean_millicores": 1019.6111019727083,
+        "cpu_peak_millicores": 1316.5228052329105,
+        "rss_slope_mib_per_min": 100.75534347141054,
+        "fds_max": 55,
+        "threads_max": 17
+      },
+      "reconciles": 200.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": 0.009122807017543859,
+      "api_requests": 1198.5848369196667,
+      "api_requests_per_min": 57740.43472060792,
+      "api_top": [
+        [
+          "PATCH forgejoorganizations",
+          400.0
+        ],
+        [
+          "POST events",
+          400.0
+        ],
+        [
+          "GET forgejoorganizations",
+          200.0
+        ],
+        [
+          "GET secrets",
+          200.0
+        ],
+        [
+          "POST forgejoorganizations",
+          200.0
+        ],
+        [
+          "LIST forgejoorganizations",
+          3.0
+        ]
+      ],
+      "objects": 200,
+      "convergence_secs": 1.210334054
+    },
+    {
+      "name": "cycle loaded",
+      "kind": "idle",
+      "wall_secs": 30.034847691,
+      "usage": {
+        "samples": 120,
+        "rss_peak_mib": 32.6796875,
+        "rss_median_mib": 32.6796875,
+        "cpu_seconds": 0.0,
+        "cpu_mean_millicores": 0.0,
+        "cpu_peak_millicores": 0.0,
+        "rss_slope_mib_per_min": 0.0,
+        "fds_max": 49,
+        "threads_max": 17
+      },
+      "reconciles": 0.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": null,
+      "api_requests": 15.988384103000001,
+      "api_requests_per_min": 31.939667417306634,
+      "api_top": [
+        [
+          "PUT leases",
+          7.0
+        ],
+        [
+          "GET leases",
+          6.0
+        ],
+        [
+          "GET ",
+          2.0
+        ],
+        [
+          "GET endpoints",
+          1.0
+        ],
+        [
+          "GET endpointslices",
+          1.0
+        ]
+      ],
+      "objects": null,
+      "convergence_secs": null
+    },
+    {
+      "name": "cycle churn",
+      "kind": "load",
+      "wall_secs": 0.871003173,
+      "usage": {
+        "samples": 3,
+        "rss_peak_mib": 32.9375,
+        "rss_median_mib": 32.9140625,
+        "cpu_seconds": 0.7800000000000002,
+        "cpu_mean_millicores": 1558.650230721299,
+        "cpu_peak_millicores": 1760.0252528423293,
+        "rss_slope_mib_per_min": 25.284824976161623,
+        "fds_max": 53,
+        "threads_max": 17
+      },
+      "reconciles": 200.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": 0.009672897196261682,
+      "api_requests": 600.709665609,
+      "api_requests_per_min": 41380.538043734545,
+      "api_top": [
+        [
+          "PATCH forgejoorganizations",
+          400.0
+        ],
+        [
+          "GET forgejoorganizations",
+          200.0
+        ],
+        [
+          "GET secrets",
+          200.0
+        ],
+        [
+          "LIST forgejoorganizations",
+          2.0
+        ],
+        [
+          "GET leases",
+          1.0
+        ],
+        [
+          "PUT leases",
+          1.0
+        ]
+      ],
+      "objects": 200,
+      "convergence_secs": 0.837675866
+    },
+    {
+      "name": "cycle delete",
+      "kind": "load",
+      "wall_secs": 0.803122267,
+      "usage": {
+        "samples": 4,
+        "rss_peak_mib": 33.1484375,
+        "rss_median_mib": 33.125,
+        "cpu_seconds": 0.9699999999999998,
+        "cpu_mean_millicores": 1320.0427258365155,
+        "cpu_peak_millicores": 1560.3022617541494,
+        "rss_slope_mib_per_min": 17.911747423581367,
+        "fds_max": 51,
+        "threads_max": 17
+      },
+      "reconciles": 0.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": null,
+      "api_requests": 599.7322925776666,
+      "api_requests_per_min": 44805.05526147988,
+      "api_top": [
+        [
+          "DELETE forgejoorganizations",
+          200.0
+        ],
+        [
+          "GET secrets",
+          200.0
+        ],
+        [
+          "PATCH forgejoorganizations",
+          200.0
+        ],
+        [
+          "POST events",
+          200.0
+        ],
+        [
+          "LIST forgejoorganizations",
+          2.0
+        ],
+        [
+          "GET ",
+          1.0
+        ]
+      ],
+      "objects": 200,
+      "convergence_secs": 0.768126981
+    },
+    {
+      "name": "final",
+      "kind": "idle",
+      "wall_secs": 30.037208209,
+      "usage": {
+        "samples": 120,
+        "rss_peak_mib": 33.1640625,
+        "rss_median_mib": 33.1484375,
+        "cpu_seconds": 0.0,
+        "cpu_mean_millicores": 0.0,
+        "cpu_peak_millicores": 0.0,
+        "rss_slope_mib_per_min": 0.029520125236942186,
+        "fds_max": 49,
+        "threads_max": 17
+      },
+      "reconciles": 0.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": null,
+      "api_requests": 15.987597263666668,
+      "api_requests_per_min": 31.935585662471112,
+      "api_top": [
+        [
+          "PUT leases",
+          7.0
+        ],
+        [
+          "GET leases",
+          6.0
+        ],
+        [
+          "GET ",
+          2.0
+        ],
+        [
+          "GET endpoints",
+          1.0
+        ],
+        [
+          "GET endpointslices",
+          1.0
+        ]
+      ],
+      "objects": null,
+      "convergence_secs": null
+    }
+  ]
+}

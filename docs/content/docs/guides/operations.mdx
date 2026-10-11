@@ -1,6 +1,6 @@
 ---
 title: Monitoring & troubleshooting
-description: Read a CR's status, fix what its reason code points at, and wire up metrics and ArgoCD.
+description: Read a CR's status, handle disruptive changes and deletion, and wire up metrics and ArgoCD.
 ---
 
 Every CR says whether it's in sync and, if not, why. This page explains how
@@ -37,39 +37,14 @@ status:
 ```
 
 The operator also records a Kubernetes **Event** for every error and every
-state change of a CR: a `Warning` each time a reconcile fails (repeats are
-folded into one series), and for errors that stop it before its status
-(Kubernetes API, cleanup); a `Normal` when `Ready` turns `True`, for every
-other condition that appears or goes, when the CR gets bound to a Forgejo
-object (`Bound`) and when its finalizer is released (`Released`).
-`kubectl describe` and `kubectl get events -n team-a` show the history.
+state change of a CR; `kubectl describe` and `kubectl get events -n team-a`
+show the history ([Events](/docs/reference/events) lists them all).
 
 ## Reason codes
 
-| Reason | Meaning | What to do |
-| --- | --- | --- |
-| `Reconciled` | In sync | Nothing |
-| `InstanceNotFound` | No `ForgejoInstance` exists, or `instanceRef` names a missing one | [Create the instance](/docs/guides/connect-instance), or fix `instanceRef` |
-| `AmbiguousDefaultInstance` | Several instances exist and the CR has no `instanceRef` | Set `instanceRef` |
-| `InstanceUnreachable` | Network, TLS, a 5xx error, a timeout or rate limiting (408/429) | Check Forgejo's health and the URL/CA; it's retried automatically |
-| `TokenSecretNotFound` | The admin token Secret is missing | Fix `tokenSecretRef` or create the Secret |
-| `KubernetesApiError` | The API server failed while resolving the instance | Transient; retried automatically |
-| `UnsupportedForgejoVersion` | Forgejo is older than v16 | Upgrade Forgejo |
-| `ForgejoObjectAlreadyExists` | The name is already used in Forgejo by an object this CR doesn't own — or, for a webhook (same URL) or OAuth2 application (same name), a twin already exists, e.g. after a lost create response | Rename the CR's `spec.name`, delete the twin, or adopt the object with the [importer](/docs/guides/migration) |
-| `ReferenceNotFound` | A `…Ref` names a CR that doesn't exist | Create it or fix the ref |
-| `ReferenceNotReady` | The referenced CR isn't `Ready` | Fix that CR first; this one follows on its own |
-| `UserNotFound` | An observed user hasn't signed in yet | Wait for their first sign-in |
-| `LoginSourceNotFound` | `loginSourceId` matches no authentication source in Forgejo | Fix the id (Site administration → Authentication sources) |
-| `MemberPending` | (advisory) Some team members don't exist yet | Same as above; the others are synced |
-| `DisruptiveUpdateRefused` | The change requires recreating the object | See [Disruptive changes](#disruptive-changes) |
-| `NamespaceNotAllowed` | Refused by a `ForgejoNamespacePolicy` (or a site admin's credentials without an explicit rule) | Adjust the [allow-list](/docs/guides/allow-list) |
-| `CrossNamespaceReference` | A `secretTargets` entry names another namespace than the CR's | Write into the CR's own namespace |
-| `SecretTargetFailed` | Writing to a Secret or to Vault failed | Check RBAC or Vault access and the target's namespace/path |
-| `InvalidSpec` | Valid YAML, but it can't be acted on (e.g. both `organizationRef` and `userRef` set) | Fix the spec; the message says what's wrong |
-| `ForgejoApiError` | Forgejo returned another error | Read the message; often a missing token scope |
-| `InstanceInUse` | A `ForgejoInstance` being deleted still has CRs bound to it (cleanup Event) | Delete those CRs first |
-| `Bound` | Event only: the CR is now bound to a Forgejo object (created, imported or observed) | Nothing |
-| `Released` | Event only: the finalizer finished (or the CR was force-orphaned) | Nothing |
+Each code, where it shows up, what it means and what to do about it is in
+[Reason codes](/docs/reference/reason-codes), generated from the operator's
+source so it always matches the installed version.
 
 ## Disruptive changes
 
@@ -124,21 +99,14 @@ prometheusRule:
   enabled: true
 ```
 
-| Metric | Type | Labels |
-| --- | --- | --- |
-| `weebo_forgejo_reconcile_total` | counter | `kind`, `result` (`success`/`error`), `reason` (the `Ready` reason code) |
-| `weebo_forgejo_reconcile_duration_seconds` | histogram | `kind` |
-| `weebo_forgejo_webhook_decisions_total` | counter | `kind`, `result` |
-| `weebo_forgejo_forgejo_requests_total` | counter | `operation` (the gateway call, e.g. `create_repository`), `result` (`ok`, `not_found`, `already_exists`, `unreachable`, `error`) |
-| `weebo_forgejo_forgejo_request_duration_seconds` | histogram | `operation` |
-| `weebo_forgejo_leader` | gauge (0/1) | none: `1` on the replica holding the Lease |
+Every metric, its labels and example queries are in
+[Metrics & health](/docs/reference/metrics).
 
-The metrics are recorded through OpenTelemetry. Depending on the exporter
-version, the Prometheus names can carry an extra suffix (a counter's
-`_total`, a histogram's unit, `_ratio` on a unit-less gauge); check
-`/metrics` once (`kubectl -n weebo-forgejo port-forward svc/weebo-forgejo-metrics 9090`)
-before writing your own queries. The chart's alerts match the names with
-regular expressions, so they work either way.
+The metrics are recorded through OpenTelemetry and exported under the
+names listed there (counters end in `_total`, durations in `_seconds`).
+The chart's alerts match them with regular expressions, so they also
+catch the doubled suffixes (`_total_total`, `_seconds_seconds`) older
+releases exported.
 
 ### Built-in alerts
 

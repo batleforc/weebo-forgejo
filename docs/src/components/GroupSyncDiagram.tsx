@@ -3,7 +3,7 @@
 // the team — and, below, the two operators that declare the group and the
 // team but never the membership itself.
 
-import { box, captionClass, code, dim, figureClass, frame, grant, ink, wire } from './diagram-style';
+import { box, captionClass, code, dim, figureClass, frame, grant, ink, wire } from '@weebo/operator-docs/diagram-style';
 
 const COLS = [20, 232, 444, 656];
 const W = 185;

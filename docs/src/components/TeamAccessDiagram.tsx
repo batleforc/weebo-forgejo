@@ -2,7 +2,7 @@
 // (permission + unitsMap), where (includesAllRepositories or the
 // repository's teamRefs).
 
-import { box, captionClass, code, dim, figureClass, frame, grant, ink, wire } from './diagram-style';
+import { box, captionClass, code, dim, figureClass, frame, grant, ink, wire } from '@weebo/operator-docs/diagram-style';
 
 function Label({ x, y, children }: { x: number; y: number; children: string }) {
   return (

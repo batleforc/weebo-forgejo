@@ -8,14 +8,14 @@
     "start": "next start",
     "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
     "postinstall": "fumadocs-mdx",
-    "lint": "eslint"
+    "lint": "eslint",
+    "gen:crds": "weebo-crd-docs"
   },
   "dependencies": {
-    "cnfast": "^0.0.8",
+    "@weebo/operator-docs": "https://github.com/batleforc/weebo-operator-kit/releases/download/v0.7.0/weebo-operator-docs-0.7.0.tgz",
     "fumadocs-core": "16.16.2",
     "fumadocs-mdx": "15.4.6",
     "fumadocs-ui": "16.16.2",
-    "js-yaml": "^5.2.1",
     "lucide-react": "^1.24.0",
     "next": "16.4.0",
     "react": "^19.3.0",
