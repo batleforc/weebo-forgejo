@@ -10,75 +10,15 @@ on:
 permissions: {}
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
+  # weebo-operator-kit's checks: task lint, test:all, audit, lint:helm.
+  checks:
+    uses: batleforc/weebo-operator-kit/.github/workflows/checks.yml@v0.9.0
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-mise
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-      # clippy --all-targets and the tests build crates/testkit's envtest,
-      # whose bindgen step needs libclang (crates/testkit/src/envtest.rs).
-      - name: Install libclang
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libclang-dev
-          LIBCLANG_SO="$(find /usr/lib -iname 'libclang.so*' 2>/dev/null | head -n1)"
-          if [ -z "$LIBCLANG_SO" ]; then
-            echo "::error::libclang.so not found after installing libclang-dev" >&2
-            exit 1
-          fi
-          {
-            echo "LIBCLANG_PATH=$(dirname "$LIBCLANG_SO")"
-            echo "BINDGEN_EXTRA_CLANG_ARGS="
-          } >> "$GITHUB_ENV"
-      - run: mise install
-      - run: mise exec -- task lint
-
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-mise
-      # target/ is deliberately not cached: keyed on Cargo.lock only, it
-      # never gets evicted and grows until the runner runs out of disk.
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-      # clippy --all-targets and the tests build crates/testkit's envtest,
-      # whose bindgen step needs libclang (crates/testkit/src/envtest.rs).
-      - name: Install libclang
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libclang-dev
-          LIBCLANG_SO="$(find /usr/lib -iname 'libclang.so*' 2>/dev/null | head -n1)"
-          if [ -z "$LIBCLANG_SO" ]; then
-            echo "::error::libclang.so not found after installing libclang-dev" >&2
-            exit 1
-          fi
-          {
-            echo "LIBCLANG_PATH=$(dirname "$LIBCLANG_SO")"
-            echo "BINDGEN_EXTRA_CLANG_ARGS="
-          } >> "$GITHUB_ENV"
-      - run: mise install
-      - run: mise exec -- task test:all
+    with:
+      test-task: "test:all"
+      helm-task: "lint:helm"
+      free-disk-space: false
 
   # Every layer — unit, contract, envtest, the binaries, and the live
   # suites against a real Forgejo (disposable container) — under coverage,
@@ -154,30 +94,6 @@ jobs:
       - uses: ./.github/actions/setup-mise
       - run: mise install
       - run: mise exec -- task docs:build
-
-  helm-lint:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-mise
-      - run: mise install
-      - run: mise exec -- task lint:helm
-
-  audit:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-mise
-      - run: mise install
-      - run: mise exec -- task audit
 
   image-build:
     runs-on: ubuntu-latest

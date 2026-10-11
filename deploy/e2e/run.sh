@@ -133,6 +133,8 @@ if [ -n "$previous" ]; then
 fi
 
 step "operator chart ($IMAGE)"
+# The kit's library chart, as Chart.lock pins it.
+helm dependency build --skip-refresh "$CHART"
 helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$OPERATOR_NS" --create-namespace \
   --set image.repository="${IMAGE%:*}" --set image.tag="${IMAGE##*:}" \

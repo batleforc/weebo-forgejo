@@ -80,13 +80,20 @@ then `task coverage` or `task test:live-forgejo`.
 
 ## Changing the chart
 
+- The chart is built on weebo-operator-kit's library chart
+  (`weebo-operator-lib`, a dependency pinned to the kit's version):
+  `templates/operator.yaml` renders every resource but the CRDs, and
+  `templates/_params.tpl` holds what is Forgejo's own (kinds, admitted
+  kinds, `WEEBO_FORGEJO_MAX_INFLIGHT`, Forgejo egress, the Forgejo API
+  alert). A change to a shared resource goes to the kit.
 - The CRDs under `deploy/charts/weebo-forgejo/templates/crds/` are generated
-  by `task recu` (`deploy/scripts/sync-chart-crds.sh`) from `deploy/crd/`:
-  never edit them.
+  by `task recu` (the kit's `helm:crds`) from `deploy/crd/`: never edit them.
 - Every new value goes into `values.yaml` **and** `values.schema.json`
   (`additionalProperties: false` rejects unknown keys).
-- `task lint:helm` lints and renders the main value combinations, and checks
-  that invalid ones are refused (`.tasks/helm.yaml`).
+- `task lint:helm` (the kit's `helm:lint`) lints and renders the main value
+  combinations, and checks that invalid ones are refused.
+- `task kit:sync TAG=vX.Y.Z` moves the crates, the kit's tasks, the
+  reusable workflows and the library chart to another kit release.
 
 ## The documentation site
 
