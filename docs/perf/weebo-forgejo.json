@@ -1,29 +1,29 @@
 {
   "label": "weebo-forgejo",
-  "startup_secs": 0.10178,
-  "shutdown_secs": 0.014472852,
+  "startup_secs": 0.101537378,
+  "shutdown_secs": 0.010398166,
   "background_api_requests_per_min": 20.0,
   "phases": [
     {
       "name": "startup",
       "kind": "idle",
-      "wall_secs": 30.036722322,
+      "wall_secs": 30.049294297,
       "usage": {
         "samples": 121,
-        "rss_peak_mib": 22.82421875,
-        "rss_median_mib": 22.8203125,
-        "cpu_seconds": 0.019999999999999997,
-        "cpu_mean_millicores": 0.66666412587635,
-        "cpu_peak_millicores": 80.05541596003584,
-        "rss_slope_mib_per_min": 0.32827044242470554,
-        "fds_max": 46,
-        "threads_max": 17
+        "rss_peak_mib": 21.99609375,
+        "rss_median_mib": 21.99609375,
+        "cpu_seconds": 0.020000000000000004,
+        "cpu_mean_millicores": 0.6666497534068764,
+        "cpu_peak_millicores": 79.99712714317005,
+        "rss_slope_mib_per_min": 0.3709548679211249,
+        "fds_max": 49,
+        "threads_max": 5
       },
       "reconciles": 1.0,
       "reconcile_errors": 0.0,
-      "reconcile_p95_secs": 0.02425,
-      "api_requests": 19.987759226,
-      "api_requests_per_min": 39.9266451480165,
+      "reconcile_p95_secs": 0.04875,
+      "api_requests": 20.983568567666666,
+      "api_requests_per_min": 41.89829223995103,
       "api_top": [
         [
           "PUT leases",
@@ -54,7 +54,7 @@
           1.0
         ],
         [
-          "POST events",
+          "LIST forgejoinstances",
           1.0
         ]
       ],
@@ -64,23 +64,23 @@
     {
       "name": "warm-up burst",
       "kind": "load",
-      "wall_secs": 1.234571586,
+      "wall_secs": 2.074369563,
       "usage": {
-        "samples": 5,
-        "rss_peak_mib": 30.046875,
-        "rss_median_mib": 29.80859375,
-        "cpu_seconds": 0.81,
-        "cpu_mean_millicores": 810.2903343193997,
-        "cpu_peak_millicores": 1202.2434247022838,
-        "rss_slope_mib_per_min": 120.7055238967594,
-        "fds_max": 50,
-        "threads_max": 17
+        "samples": 8,
+        "rss_peak_mib": 27.29296875,
+        "rss_median_mib": 26.828125,
+        "cpu_seconds": 1.84,
+        "cpu_mean_millicores": 1050.955497924012,
+        "cpu_peak_millicores": 1362.122988544469,
+        "rss_slope_mib_per_min": 92.7615081740853,
+        "fds_max": 53,
+        "threads_max": 5
       },
       "reconciles": 200.0,
       "reconcile_errors": 0.0,
-      "reconcile_p95_secs": 0.009242424242424243,
-      "api_requests": 1199.588476138,
-      "api_requests_per_min": 58299.82593514833,
+      "reconcile_p95_secs": 0.023794642857142858,
+      "api_requests": 1199.308543479,
+      "api_requests_per_min": 34689.340748266666,
       "api_top": [
         [
           "PATCH forgejoorganizations",
@@ -104,7 +104,7 @@
         ],
         [
           "LIST forgejoorganizations",
-          3.0
+          4.0
         ],
         [
           "GET ",
@@ -112,28 +112,28 @@
         ]
       ],
       "objects": 200,
-      "convergence_secs": 1.20199202
+      "convergence_secs": 2.023613107
     },
     {
       "name": "warm-up churn",
       "kind": "load",
-      "wall_secs": 0.850202094,
+      "wall_secs": 1.295577746,
       "usage": {
-        "samples": 3,
-        "rss_peak_mib": 30.60546875,
-        "rss_median_mib": 30.5078125,
-        "cpu_seconds": 0.75,
-        "cpu_mean_millicores": 1499.6079964712906,
-        "cpu_peak_millicores": 1722.4285070698295,
-        "rss_slope_mib_per_min": 31.39357604400401,
-        "fds_max": 50,
-        "threads_max": 17
+        "samples": 6,
+        "rss_peak_mib": 27.79296875,
+        "rss_median_mib": 27.7109375,
+        "cpu_seconds": 1.8900000000000001,
+        "cpu_mean_millicores": 1517.1533511997004,
+        "cpu_peak_millicores": 1723.7194072626037,
+        "rss_slope_mib_per_min": 21.66212529529465,
+        "fds_max": 54,
+        "threads_max": 5
       },
       "reconciles": 200.0,
       "reconcile_errors": 0.0,
-      "reconcile_p95_secs": 0.009523809523809525,
-      "api_requests": 598.716599302,
-      "api_requests_per_min": 42252.30237802731,
+      "reconcile_p95_secs": 0.024615384615384615,
+      "api_requests": 601.5681407513333,
+      "api_requests_per_min": 27859.453866445157,
       "api_top": [
         [
           "PATCH forgejoorganizations",
@@ -145,51 +145,6 @@
         ],
         [
           "GET secrets",
-          200.0
-        ],
-        [
-          "LIST forgejoorganizations",
-          2.0
-        ]
-      ],
-      "objects": 200,
-      "convergence_secs": 0.818077302
-    },
-    {
-      "name": "warm-up delete",
-      "kind": "load",
-      "wall_secs": 0.782666042,
-      "usage": {
-        "samples": 4,
-        "rss_peak_mib": 31.390625,
-        "rss_median_mib": 31.2734375,
-        "cpu_seconds": 0.9400000000000002,
-        "cpu_mean_millicores": 1253.404668771049,
-        "cpu_peak_millicores": 1400.0228427727031,
-        "rss_slope_mib_per_min": 59.9324678413032,
-        "fds_max": 52,
-        "threads_max": 17
-      },
-      "reconciles": 0.0,
-      "reconcile_errors": 0.0,
-      "reconcile_p95_secs": null,
-      "api_requests": 601.7391113193333,
-      "api_requests_per_min": 46129.95165460367,
-      "api_top": [
-        [
-          "DELETE forgejoorganizations",
-          200.0
-        ],
-        [
-          "GET secrets",
-          200.0
-        ],
-        [
-          "PATCH forgejoorganizations",
-          200.0
-        ],
-        [
-          "POST events",
           200.0
         ],
         [
@@ -210,32 +165,85 @@
         ]
       ],
       "objects": 200,
-      "convergence_secs": 0.750195531
+      "convergence_secs": 1.246722605
     },
     {
-      "name": "baseline",
-      "kind": "idle",
-      "wall_secs": 30.033873667,
+      "name": "warm-up delete",
+      "kind": "load",
+      "wall_secs": 1.772832296,
       "usage": {
-        "samples": 120,
-        "rss_peak_mib": 31.390625,
-        "rss_median_mib": 31.390625,
-        "cpu_seconds": 0.009999999999999787,
-        "cpu_mean_millicores": 0.33613128837384554,
-        "cpu_peak_millicores": 39.92189903235858,
-        "rss_slope_mib_per_min": 0.0,
-        "fds_max": 50,
-        "threads_max": 17
+        "samples": 7,
+        "rss_peak_mib": 28.53125,
+        "rss_median_mib": 28.4609375,
+        "cpu_seconds": 1.7400000000000002,
+        "cpu_mean_millicores": 1160.806194605699,
+        "cpu_peak_millicores": 1555.7838010067298,
+        "rss_slope_mib_per_min": 28.645458559753695,
+        "fds_max": 53,
+        "threads_max": 5
       },
       "reconciles": 0.0,
       "reconcile_errors": 0.0,
       "reconcile_p95_secs": null,
-      "api_requests": 14.988708777666666,
-      "api_requests_per_min": 29.94360756228854,
+      "api_requests": 600.4090559013333,
+      "api_requests_per_min": 20320.33342091146,
+      "api_top": [
+        [
+          "DELETE forgejoorganizations",
+          200.0
+        ],
+        [
+          "GET secrets",
+          200.0
+        ],
+        [
+          "PATCH forgejoorganizations",
+          200.0
+        ],
+        [
+          "POST events",
+          200.0
+        ],
+        [
+          "LIST forgejoorganizations",
+          3.0
+        ],
+        [
+          "GET leases",
+          1.0
+        ],
+        [
+          "PUT leases",
+          1.0
+        ]
+      ],
+      "objects": 200,
+      "convergence_secs": 1.721635573
+    },
+    {
+      "name": "baseline",
+      "kind": "idle",
+      "wall_secs": 30.053495313,
+      "usage": {
+        "samples": 121,
+        "rss_peak_mib": 28.53125,
+        "rss_median_mib": 28.53125,
+        "cpu_seconds": 0.009999999999999787,
+        "cpu_mean_millicores": 0.3333301089756271,
+        "cpu_peak_millicores": 40.07689778809143,
+        "rss_slope_mib_per_min": 0.0,
+        "fds_max": 50,
+        "threads_max": 5
+      },
+      "reconciles": 0.0,
+      "reconcile_errors": 0.0,
+      "reconcile_p95_secs": null,
+      "api_requests": 15.982168229000001,
+      "api_requests_per_min": 31.9074398419542,
       "api_top": [
         [
           "PUT leases",
-          6.0
+          7.0
         ],
         [
           "GET leases",
@@ -260,23 +268,23 @@
     {
       "name": "cycle burst",
       "kind": "load",
-      "wall_secs": 1.236621005,
+      "wall_secs": 2.09106556,
       "usage": {
-        "samples": 5,
-        "rss_peak_mib": 32.87890625,
-        "rss_median_mib": 31.66796875,
-        "cpu_seconds": 0.94,
-        "cpu_mean_millicores": 939.9175664096732,
-        "cpu_peak_millicores": 1435.3188682668604,
-        "rss_slope_mib_per_min": 102.57059663955178,
-        "fds_max": 52,
-        "threads_max": 17
+        "samples": 8,
+        "rss_peak_mib": 29.9296875,
+        "rss_median_mib": 28.828125,
+        "cpu_seconds": 1.8599999999999994,
+        "cpu_mean_millicores": 1063.1457480469783,
+        "cpu_peak_millicores": 1357.27136878562,
+        "rss_slope_mib_per_min": 57.538565408350145,
+        "fds_max": 53,
+        "threads_max": 5
       },
       "reconciles": 200.0,
       "reconcile_errors": 0.0,
-      "reconcile_p95_secs": 0.009152542372881357,
-      "api_requests": 1199.5877929983333,
-      "api_requests_per_min": 58203.17404353001,
+      "reconcile_p95_secs": 0.0237603305785124,
+      "api_requests": 1199.3029781466666,
+      "api_requests_per_min": 34412.205941931345,
       "api_top": [
         [
           "PATCH forgejoorganizations",
@@ -300,36 +308,36 @@
         ],
         [
           "LIST forgejoorganizations",
-          3.0
+          4.0
         ],
         [
-          "PUT leases",
+          "GET ",
           1.0
         ]
       ],
       "objects": 200,
-      "convergence_secs": 1.203358208
+      "convergence_secs": 2.038875409
     },
     {
       "name": "cycle loaded",
       "kind": "idle",
-      "wall_secs": 30.036526947,
+      "wall_secs": 30.074603563,
       "usage": {
-        "samples": 120,
-        "rss_peak_mib": 32.87890625,
-        "rss_median_mib": 32.87890625,
-        "cpu_seconds": 0.0,
-        "cpu_mean_millicores": 0.0,
-        "cpu_peak_millicores": 0.0,
+        "samples": 121,
+        "rss_peak_mib": 29.9296875,
+        "rss_median_mib": 29.9296875,
+        "cpu_seconds": 0.010000000000000675,
+        "cpu_mean_millicores": 0.3334982247272084,
+        "cpu_peak_millicores": 39.92106376125905,
         "rss_slope_mib_per_min": 0.0,
-        "fds_max": 50,
-        "threads_max": 17
+        "fds_max": 51,
+        "threads_max": 5
       },
       "reconciles": 0.0,
       "reconcile_errors": 0.0,
       "reconcile_p95_secs": null,
-      "api_requests": 15.987824351,
-      "api_requests_per_min": 31.93676361959718,
+      "api_requests": 15.975132145666667,
+      "api_requests_per_min": 31.87100793305975,
       "api_top": [
         [
           "PUT leases",
@@ -358,23 +366,23 @@
     {
       "name": "cycle churn",
       "kind": "load",
-      "wall_secs": 0.852748414,
+      "wall_secs": 1.786277413,
       "usage": {
-        "samples": 4,
-        "rss_peak_mib": 33.13671875,
-        "rss_median_mib": 33.10546875,
-        "cpu_seconds": 0.9500000000000002,
-        "cpu_mean_millicores": 1279.0926544330325,
-        "cpu_peak_millicores": 1597.156352555033,
-        "rss_slope_mib_per_min": 21.34741313709805,
+        "samples": 7,
+        "rss_peak_mib": 30.15234375,
+        "rss_median_mib": 30.08984375,
+        "cpu_seconds": 1.87,
+        "cpu_mean_millicores": 1246.191730536242,
+        "cpu_peak_millicores": 1559.806178484264,
+        "rss_slope_mib_per_min": 9.372115811298118,
         "fds_max": 53,
-        "threads_max": 17
+        "threads_max": 5
       },
       "reconciles": 200.0,
       "reconcile_errors": 0.0,
-      "reconcile_p95_secs": 0.00971264367816092,
-      "api_requests": 600.7157505286667,
-      "api_requests_per_min": 42266.79808485695,
+      "reconcile_p95_secs": 0.024460431654676262,
+      "api_requests": 598.4045741956667,
+      "api_requests_per_min": 20100.055114865856,
       "api_top": [
         [
           "PATCH forgejoorganizations",
@@ -390,40 +398,32 @@
         ],
         [
           "LIST forgejoorganizations",
-          2.0
-        ],
-        [
-          "GET leases",
-          1.0
-        ],
-        [
-          "PUT leases",
-          1.0
+          3.0
         ]
       ],
       "objects": 200,
-      "convergence_secs": 0.818266789
+      "convergence_secs": 1.712300892
     },
     {
       "name": "cycle delete",
       "kind": "load",
-      "wall_secs": 0.784608561,
+      "wall_secs": 1.734423197,
       "usage": {
-        "samples": 3,
-        "rss_peak_mib": 33.3515625,
-        "rss_median_mib": 33.25,
-        "cpu_seconds": 0.7600000000000007,
-        "cpu_mean_millicores": 1518.3956237057077,
-        "cpu_peak_millicores": 1559.4691816420782,
-        "rss_slope_mib_per_min": 22.476693880123733,
-        "fds_max": 52,
-        "threads_max": 17
+        "samples": 7,
+        "rss_peak_mib": 30.32421875,
+        "rss_median_mib": 30.265625,
+        "cpu_seconds": 1.6799999999999997,
+        "cpu_mean_millicores": 1119.978549424169,
+        "cpu_peak_millicores": 1596.3325218110847,
+        "rss_slope_mib_per_min": 7.3325385802350995,
+        "fds_max": 53,
+        "threads_max": 5
       },
       "reconciles": 0.0,
       "reconcile_errors": 0.0,
       "reconcile_p95_secs": null,
-      "api_requests": 599.738463813,
-      "api_requests_per_min": 45862.751972674436,
+      "api_requests": 601.4218589343334,
+      "api_requests_per_min": 20805.367224375288,
       "api_top": [
         [
           "DELETE forgejoorganizations",
@@ -443,36 +443,44 @@
         ],
         [
           "LIST forgejoorganizations",
-          2.0
+          3.0
         ],
         [
           "GET ",
           1.0
+        ],
+        [
+          "GET leases",
+          1.0
+        ],
+        [
+          "PUT leases",
+          1.0
         ]
       ],
       "objects": 200,
-      "convergence_secs": 0.751938716
+      "convergence_secs": 1.683129794
     },
     {
       "name": "final",
       "kind": "idle",
-      "wall_secs": 30.034052563,
+      "wall_secs": 30.056407351,
       "usage": {
-        "samples": 121,
-        "rss_peak_mib": 33.39453125,
-        "rss_median_mib": 33.37109375,
-        "cpu_seconds": 0.0,
-        "cpu_mean_millicores": 0.0,
-        "cpu_peak_millicores": 0.0,
-        "rss_slope_mib_per_min": 0.04364243380678757,
+        "samples": 120,
+        "rss_peak_mib": 30.33203125,
+        "rss_median_mib": 30.32421875,
+        "cpu_seconds": 0.010000000000001563,
+        "cpu_mean_millicores": 0.3361333048270856,
+        "cpu_peak_millicores": 39.91115839998641,
+        "rss_slope_mib_per_min": 0.019255892561155723,
         "fds_max": 50,
-        "threads_max": 17
+        "threads_max": 5
       },
       "reconciles": 0.0,
       "reconcile_errors": 0.0,
       "reconcile_p95_secs": null,
-      "api_requests": 15.988649145666667,
-      "api_requests_per_min": 31.941042479289614,
+      "api_requests": 15.981197549666668,
+      "api_requests_per_min": 31.90241074996935,
       "api_top": [
         [
           "PUT leases",
@@ -499,6 +507,6 @@
       "convergence_secs": null
     }
   ],
-  "measured_at": "2026-10-11T10:40:01.627812586Z",
+  "measured_at": "2026-10-11T10:54:53.208144805Z",
   "kit_version": "0.8.0"
 }

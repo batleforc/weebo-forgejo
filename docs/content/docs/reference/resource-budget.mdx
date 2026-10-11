@@ -22,15 +22,15 @@ The limits are the kit's small-cluster budget (a few operators on a
 | --- | --- | --- | --- |
 | Startup: spawn → leader lease held | 15 s | 0.10 s | ok |
 | Shutdown: SIGTERM → exit | 15 s | 0.01 s | ok |
-| Memory at rest (median RSS of every idle window) | 64 MiB | 33.4 MiB | ok |
-| Peak memory over the whole run | 192 MiB | 33.4 MiB | ok |
+| Memory at rest (median RSS of every idle window) | 64 MiB | 30.3 MiB | ok |
+| Peak memory over the whole run | 192 MiB | 30.3 MiB | ok |
 | CPU at rest (mean of every idle window) | 10 m | 0.67 m | ok |
-| CPU time per object of a load | 50 ms | 4.75 ms | ok |
-| apiserver requests at rest | 60 req/min | 39.9 req/min | ok |
+| CPU time per object of a load | 50 ms | 9.45 ms | ok |
+| apiserver requests at rest | 60 req/min | 41.9 req/min | ok |
 | apiserver requests per object of a load | 20 req | 6.00 req | ok |
-| Time for 100 objects of a load to converge | 60 s | 0.60 s | ok |
-| Reconcile p95, any phase | 2 s | 0.02 s | ok |
-| Memory not given back: final vs baseline idle window | 10 % | 6.31 % | ok |
+| Time for 100 objects of a load to converge | 60 s | 1.02 s | ok |
+| Reconcile p95, any phase | 2 s | 0.05 s | ok |
+| Memory not given back: final vs baseline idle window | 10 % | 6.28 % | ok |
 | File descriptors not given back | 16 | 0 | ok |
 | Threads not given back | 4 | 0 | ok |
 
