@@ -54,7 +54,9 @@ tasks:
         : "${FORGEJO_URL:?run task forgejo:container:start or export FORGEJO_URL}"
         mise exec -- cargo llvm-cov clean --workspace
         # --include-ignored: the live suites are #[ignore] for `task test`.
-        mise exec -- cargo llvm-cov --no-report --workspace --all-targets --no-fail-fast -- --include-ignored
+        # The perf test runs too, for its coverage only: an instrumented
+        # debug binary can't be held to the release budget (`task perf`).
+        WEEBO_PERF_REPORT_ONLY=1 mise exec -- cargo llvm-cov --no-report --workspace --all-targets --no-fail-fast -- --include-ignored
         mise exec -- cargo llvm-cov report --ignore-filename-regex '{{.IGNORE}}' --lcov --output-path target/lcov.info
         mise exec -- cargo llvm-cov report --ignore-filename-regex '{{.IGNORE}}' --summary-only --fail-under-lines 85
 
