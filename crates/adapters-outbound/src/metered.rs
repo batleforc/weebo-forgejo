@@ -40,11 +40,13 @@ static INSTRUMENTS: LazyLock<Instruments> = LazyLock::new(|| {
     let meter = opentelemetry::global::meter("weebo-forgejo-operator");
     Instruments {
         requests: meter
-            .u64_counter("weebo_forgejo_forgejo_requests_total")
+            // The Prometheus exporter appends `_total` to counters and the
+            // unit (`_seconds`) to histograms: the names leave them out.
+            .u64_counter("weebo_forgejo_forgejo_requests")
             .with_description("Forgejo API calls, by gateway operation and result")
             .build(),
         duration: meter
-            .f64_histogram("weebo_forgejo_forgejo_request_duration_seconds")
+            .f64_histogram("weebo_forgejo_forgejo_request_duration")
             .with_description("Forgejo API call duration, by gateway operation")
             .with_unit("s")
             .build(),
