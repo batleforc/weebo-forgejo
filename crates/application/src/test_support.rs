@@ -1407,7 +1407,7 @@ impl ReferenceReader for FakeCluster {
 }
 
 #[async_trait::async_trait]
-impl PolicySource for FakeCluster {
+impl PolicySource<NamespaceRule> for FakeCluster {
     async fn policies(&self) -> Result<Vec<Vec<NamespaceRule>>, ClusterError> {
         self.check()?;
         Ok(self.policies.lock().unwrap().clone())

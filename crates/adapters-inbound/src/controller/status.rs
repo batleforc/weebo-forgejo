@@ -6,20 +6,19 @@
 //! condition or an Event.
 
 use std::fmt::Debug;
-use std::time::Duration;
 
 use api::status::{Condition, ForgejoStatus};
 use application::ports::ForgejoRef;
 use application::use_cases::Outcome;
 use domain::error::ReasonCode;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use k8s_openapi::jiff::Timestamp;
-use kube::api::{Api, Patch, PatchParams};
+use kube::Resource;
+use kube::api::Api;
 use kube::runtime::events::Recorder;
-use kube::{Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use weebo_kit_runtime::events;
+use weebo_kit_runtime::status::StatusUpdate;
 
 pub const FIELD_MANAGER: &str = "weebo-forgejo-operator";
 
@@ -99,18 +98,6 @@ pub fn conditions(
     )
 }
 
-/// Extra attempts of a failed status patch.
-const STATUS_RETRIES: u32 = 3;
-
-/// Worth retrying: the apiserver unreachable, overloaded or timing out —
-/// not a patch it refuses.
-fn transient(err: &kube::Error) -> bool {
-    match err {
-        kube::Error::Api(e) => e.code == 429 || e.code >= 500,
-        _ => true,
-    }
-}
-
 /// Patches the outcome onto `obj` (freshly read from the API server) and
 /// emits its Events (see the module doc). `observedGeneration`
 /// only advances on success. A failed outcome
@@ -128,73 +115,65 @@ where
         .forgejo_status()
         .map(|s| s.conditions.as_slice())
         .unwrap_or_default();
-    let generation = obj.meta().generation;
-    let now = Time(Timestamp::now());
-    let conds = conditions(previous, outcome, generation, &now);
-
-    let mut status = serde_json::json!({ "conditions": conds });
-    // Only a reconcile that reached the end has observed this generation:
-    // `spec_changed` must keep re-sending a change that failed to apply.
-    if outcome.ready.is_ok() {
-        status["observedGeneration"] = generation.into();
-    }
+    let mut fields = serde_json::Map::new();
     if let Some(r) = &outcome.forgejo {
-        status["forgejoId"] = r.id.to_string().into();
-        status["forgejoName"] = r.name.clone().into();
+        fields.insert("forgejoId".into(), r.id.to_string().into());
+        fields.insert("forgejoName".into(), r.name.clone().into());
         // The account `forgejo` belongs to, always alongside it: `null`
         // (the admin account, or a kind without an owner) drops a stale id.
-        status["ownerId"] = outcome
-            .owner_id
-            .map_or(serde_json::Value::Null, |id| id.to_string().into());
+        fields.insert(
+            "ownerId".into(),
+            outcome
+                .owner_id
+                .map_or(serde_json::Value::Null, |id| id.to_string().into()),
+        );
     }
     if let Some(hash) = &outcome.secret_hash {
-        status["appliedSecretHash"] = hash.clone().into();
+        fields.insert("appliedSecretHash".into(), hash.clone().into());
     }
     if let Some(rotation) = &outcome.last_rotation {
-        status["lastRotation"] = rotation.clone().into();
+        fields.insert("lastRotation".into(), rotation.clone().into());
     }
     // `null` drops the field from the status (merge patch).
     if let Some(pending) = outcome.secret_pending {
-        status["secretPending"] = if pending {
-            true.into()
-        } else {
-            serde_json::Value::Null
-        };
+        fields.insert(
+            "secretPending".into(),
+            if pending {
+                true.into()
+            } else {
+                serde_json::Value::Null
+            },
+        );
     }
-    let patch = Patch::Merge(serde_json::json!({ "status": status }));
-    // Retried in place: a lost patch after a create would leave the new
-    // Forgejo object untracked, and the next reconcile would create it again
-    // (or collide with it).
-    let mut attempt = 0;
-    loop {
-        match api
-            .patch_status(&obj.name_any(), &PatchParams::apply(FIELD_MANAGER), &patch)
-            .await
-        {
-            Ok(_) => break,
-            Err(err) if attempt < STATUS_RETRIES && transient(&err) => {
-                attempt += 1;
-                tracing::warn!(error = %err, attempt, "status patch failed, retrying");
-                tokio::time::sleep(Duration::from_millis(250 * 2u64.pow(attempt))).await;
-            }
-            Err(err) => {
-                if let Some(r) = &outcome.forgejo {
-                    tracing::error!(
-                        error = %err,
-                        forgejo_id = r.id,
-                        forgejo_name = %r.name,
-                        "status patch failed: the Forgejo object above is not recorded on the CR"
-                    );
-                }
-                return Err(err);
-            }
-        }
+    let published = weebo_kit_runtime::status::publish(
+        api,
+        recorder,
+        FIELD_MANAGER,
+        obj,
+        previous,
+        StatusUpdate {
+            ready: &outcome.ready,
+            advisories: &outcome.advisories,
+            fields,
+        },
+    )
+    .await;
+    if let Err(err) = &published
+        && let Some(r) = &outcome.forgejo
+    {
+        tracing::error!(
+            error = %err,
+            forgejo_id = r.id,
+            forgejo_name = %r.name,
+            "status patch failed: the Forgejo object above is not recorded on the CR"
+        );
     }
+    published?;
 
-    // A `Warning` on every failed reconcile, a `Normal` for every
-    // condition change, and one when the CR gets bound to a Forgejo object.
+    // The kit announced the conditions (a `Warning` on every failed
+    // reconcile, a `Normal` for every change); one more when the CR gets
+    // bound to a Forgejo object.
     let object = obj.object_ref(&());
-    events::announce_outcome(recorder, &object, previous, &conds).await;
     if let Some(r) = &outcome.forgejo
         && current_ref(obj).is_none()
     {
@@ -214,6 +193,7 @@ where
 mod tests {
     use application::use_cases::{Advisory, Failure};
     use domain::error::ReasonCode;
+    use k8s_openapi::jiff::Timestamp;
 
     use super::*;
 

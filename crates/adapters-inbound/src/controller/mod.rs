@@ -18,27 +18,21 @@ pub mod user_key;
 pub mod webhook;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use application::ports::{
     ClusterError, GatewayFactory, PolicySource, ReferenceReader, SecretStoreFactory,
 };
 use application::use_cases::Outcome;
 use domain::error::ReasonCode;
-use futures::{Stream, StreamExt};
 use kube::Client;
 use kube::api::{Api, Patch, PatchParams};
-use kube::runtime::controller::{self as runtime_controller, Action};
+use kube::runtime::controller::Action;
 use kube::runtime::events::Recorder;
-use kube::runtime::predicates;
-use kube::runtime::reflector::{self, ObjectRef};
-use kube::runtime::utils::Predicate;
-use kube::runtime::{Controller, WatchStreamExt, watcher};
-use rand::Rng;
 use weebo_kit_runtime::Health;
 use weebo_kit_runtime::events;
 
 pub use api::FINALIZER;
+use api::namespace_policy::NamespaceRule;
 
 pub use api::KEY_OWNER_ANNOTATION;
 
@@ -53,91 +47,17 @@ pub struct Ctx {
     /// What the `*Ref` fields point at.
     pub refs: Arc<dyn ReferenceReader>,
     /// The `ForgejoNamespacePolicy` rules, re-checked before any Forgejo call.
-    pub policies: Arc<dyn PolicySource>,
+    pub policies: Arc<dyn PolicySource<NamespaceRule>>,
     pub recorder: Recorder,
     pub shutdown: Shutdown,
     /// Liveness: controllers report their watch errors here.
     pub health: Arc<Health>,
 }
 
-/// Default of `WEEBO_RECONCILE_CONCURRENCY`: reconciles run at once per
-/// controller. Bounded so a startup sweep or a policy change (which
-/// re-checks every CR of 5 kinds) can't flood Forgejo and the apiserver.
-pub const DEFAULT_CONCURRENCY: u16 = 4;
-
-fn concurrency() -> u16 {
-    std::env::var("WEEBO_RECONCILE_CONCURRENCY")
-        .ok()
-        .and_then(|c| c.parse().ok())
-        .filter(|c| *c > 0)
-        .unwrap_or(DEFAULT_CONCURRENCY)
-}
-
-/// Hash of `deletionTimestamp`: a deletion must always reach the finalizer.
-fn deletion<K: kube::Resource>(obj: &K) -> Option<u64> {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    obj.meta().deletion_timestamp.as_ref().map(|t| {
-        let mut h = DefaultHasher::new();
-        t.0.to_string().hash(&mut h);
-        h.finish()
-    })
-}
-
-/// The controller of `api`'s kind. Its primary watch only fires on what
-/// reconciling acts on — spec (`generation`), annotations, labels,
-/// finalizers, deletion — never on the CR's own status patches, which
-/// would otherwise re-trigger it (and, through the watches on referenced
-/// kinds, its dependents) in a loop. Watch errors back off exponentially.
-pub fn controller<K>(api: Api<K>) -> Controller<K>
-where
-    K: kube::Resource<DynamicType = ()>
-        + Clone
-        + std::fmt::Debug
-        + serde::de::DeserializeOwned
-        + Send
-        + Sync
-        + 'static,
-{
-    let (reader, writer) = reflector::store();
-    let trigger = watcher(api, watcher::Config::default())
-        .default_backoff()
-        .reflect(writer)
-        .applied_objects()
-        .predicate_filter(
-            predicates::generation
-                .combine(predicates::annotations)
-                .combine(predicates::labels)
-                .combine(predicates::finalizers)
-                .combine(deletion),
-            Default::default(),
-        );
-    Controller::for_stream(trigger, reader)
-        .with_config(runtime_controller::Config::default().concurrency(concurrency()))
-}
-
-/// Drains a controller's result stream until shutdown, reporting watch
-/// failures to `health` (reconcile failures are the CRs' own business:
-/// they show in their status).
-pub async fn drive<K, E, S>(kind: &'static str, health: Arc<Health>, results: S)
-where
-    K: kube::Resource,
-    E: std::error::Error + Send + Sync + 'static,
-    S: Stream<Item = Result<(ObjectRef<K>, Action), runtime_controller::Error<E, watcher::Error>>>,
-{
-    results
-        .for_each(|res| {
-            match res {
-                Ok(_) => health.ok(kind),
-                Err(runtime_controller::Error::QueueError(err)) => {
-                    tracing::warn!(kind, error = %err, "watch error");
-                    health.failed(kind, err.to_string());
-                }
-                Err(err) => tracing::debug!(kind, error = %err, "reconcile failed"),
-            }
-            futures::future::ready(())
-        })
-        .await;
-}
+/// The kit's controller skeleton: predicate-filtered watch, bounded
+/// concurrency (`WEEBO_RECONCILE_CONCURRENCY`), result stream drained into
+/// the liveness.
+pub use weebo_kit_runtime::controller::{DEFAULT_CONCURRENCY, controller, drive};
 
 /// Resolves once the process is asked to stop: every controller then stops
 /// taking new work, lets its in-flight reconciles finish, and its `run`
@@ -248,17 +168,6 @@ impl application::ports::SecretStore for UnresolvedSecretStore {
     }
 }
 
-/// ±20%: CRs created or restarted together don't stay in lockstep.
-fn jittered(secs: u64) -> Duration {
-    let spread = secs / 5;
-    let secs = if spread == 0 {
-        secs
-    } else {
-        secs - spread + rand::rng().random_range(0..=2 * spread)
-    };
-    Duration::from_secs(secs.max(1))
-}
-
 impl Error {
     /// The reason code of the Event announcing this error, and whether it
     /// happened reconciling or cleaning up (the Event's `action`).
@@ -285,17 +194,14 @@ pub fn error_policy<K>(obj: Arc<K>, err: &Error, ctx: Arc<Ctx>) -> Action
 where
     K: kube::Resource<DynamicType = ()>,
 {
-    let after = jittered(30);
-    tracing::warn!(error = %err, retry_in = after.as_secs(), "reconcile error");
     let (reason, action) = err.reason();
-    events::spawn_error(
+    weebo_kit_runtime::controller::retry_after_error(
         &ctx.recorder,
         obj.object_ref(&()),
         reason,
         action,
-        err.to_string(),
-    );
-    Action::requeue(after)
+        err,
+    )
 }
 
 /// Failures only a spec, annotation or policy change can clear — each of
@@ -317,23 +223,15 @@ fn needs_a_change(reason: ReasonCode) -> bool {
 /// dependency that isn't ready yet. Jittered, except for an explicit due
 /// time (a token expiring).
 pub fn requeue_after(outcome: &Outcome) -> Action {
-    let base = if outcome.ready.is_ok() || needs_a_change(outcome.reason()) {
-        300
-    } else {
-        30
-    };
-    match outcome.due_in {
-        Some(due) if due < base => Action::requeue(Duration::from_secs(due)),
-        _ => Action::requeue(jittered(base)),
-    }
+    weebo_kit_runtime::controller::requeue_after(
+        outcome.ready.is_ok() || needs_a_change(outcome.reason()),
+        outcome.due_in,
+    )
 }
 
 /// Whether the CR carries `forgejo.weebo.io/force-orphan: "true"`.
 pub fn force_orphan(meta: &kube::api::ObjectMeta) -> bool {
-    meta.annotations
-        .as_ref()
-        .and_then(|a| a.get(api::FORCE_ORPHAN_ANNOTATION))
-        .is_some_and(|v| v == "true")
+    api::ANNOTATIONS.force_orphan(meta)
 }
 
 /// Runs a finalizer `cleanup` — unless the CR is force-orphaned — and
@@ -347,29 +245,14 @@ pub async fn finalize<K>(
 where
     K: kube::Resource<DynamicType = ()>,
 {
-    let note = if force_orphan(obj.meta()) {
-        tracing::warn!(
-            kind = %K::kind(&()),
-            name = %kube::ResourceExt::name_any(obj),
-            "force-orphaned: releasing the finalizer without cleanup"
-        );
-        format!(
-            "force-orphaned ({}): released without cleanup",
-            api::FORCE_ORPHAN_ANNOTATION
-        )
-    } else {
-        cleanup.await?;
-        "cleanup finished, finalizer released".to_string()
-    };
-    events::announce_change(
+    weebo_kit_runtime::controller::finalize(
+        obj,
         &ctx.recorder,
-        &obj.object_ref(&()),
+        &api::ANNOTATIONS,
         ReasonCode::Released,
-        events::CLEANUP,
-        &note,
+        async { cleanup.await.map(|_| ()) },
     )
-    .await;
-    Ok(Action::await_change())
+    .await
 }
 
 /// Records in [`KEY_OWNER_ANNOTATION`] that the key now lives on
@@ -450,26 +333,16 @@ pub fn key_owner(meta: &kube::api::ObjectMeta) -> Option<&str> {
 
 /// Value of the `forgejo.weebo.io/rotate-secret` annotation.
 pub fn rotate_nonce(meta: &kube::api::ObjectMeta) -> Option<String> {
-    meta.annotations
-        .as_ref()
-        .and_then(|a| a.get(api::ROTATE_SECRET_ANNOTATION))
-        .cloned()
+    api::ANNOTATIONS.rotate_nonce(meta)
 }
 
 /// Whether the CR carries `forgejo.weebo.io/allow-disruptive-update: "true"`.
 pub fn allows_disruptive_update(meta: &kube::api::ObjectMeta) -> bool {
-    meta.annotations
-        .as_ref()
-        .and_then(|a| a.get(api::ALLOW_DISRUPTIVE_UPDATE_ANNOTATION))
-        .is_some_and(|v| v == "true")
+    api::ANNOTATIONS.allows_disruptive_update(meta)
 }
 
 /// Whether the importer is still seeding this CR's status (see
 /// `api::IMPORT_PENDING_ANNOTATION`). A deletion is always processed.
 pub fn import_pending(meta: &kube::api::ObjectMeta) -> bool {
-    meta.deletion_timestamp.is_none()
-        && meta
-            .annotations
-            .as_ref()
-            .is_some_and(|a| a.contains_key(api::IMPORT_PENDING_ANNOTATION))
+    api::ANNOTATIONS.import_pending(meta)
 }

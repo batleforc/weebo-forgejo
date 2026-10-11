@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use api::namespace_policy::NamespaceRule;
 use domain::error::ReasonCode;
 
 /// Failure of a Forgejo API call, already classified into the stable
@@ -645,10 +644,8 @@ pub use weebo_kit_application::ports::{
 
 /// A Kubernetes API read (a referenced CR, a `Secret`, the policies)
 /// failed — usually transient, never a spec problem. Retried by the
-/// controller rather than surfaced as a `Ready` reason.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Kubernetes API error: {0}")]
-pub struct ClusterError(pub String);
+/// controller rather than surfaced as a `Ready` reason. The kit's.
+pub use weebo_kit_application::ports::ClusterError;
 
 /// The kinds a `*Ref` field can point at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -727,11 +724,8 @@ pub trait ReferenceReader: Send + Sync {
 
 /// The `spec.rules` of every `ForgejoNamespacePolicy`, one entry per
 /// policy (an existing policy with no rule still switches the cluster to
-/// default-deny).
-#[async_trait::async_trait]
-pub trait PolicySource: Send + Sync {
-    async fn policies(&self) -> Result<Vec<Vec<NamespaceRule>>, ClusterError>;
-}
+/// default-deny): the kit's port, as `PolicySource<NamespaceRule>`.
+pub use weebo_kit_application::ports::PolicySource;
 
 // ── Debug without secrets ─────────────────────────────────────────────────────
 

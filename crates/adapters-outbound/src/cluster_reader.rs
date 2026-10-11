@@ -243,7 +243,7 @@ impl ReferenceReader for KubeClusterReader {
 }
 
 #[async_trait::async_trait]
-impl PolicySource for KubeClusterReader {
+impl PolicySource<NamespaceRule> for KubeClusterReader {
     async fn policies(&self) -> Result<Vec<Vec<NamespaceRule>>, ClusterError> {
         let api: Api<ForgejoNamespacePolicy> = Api::all(self.client.clone());
         Ok(api

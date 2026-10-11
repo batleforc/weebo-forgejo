@@ -4,118 +4,87 @@
 //! webhook that only ran on the leader would turn a failover into a
 //! cluster-wide outage for these kinds.
 
-use std::sync::LazyLock;
+use std::sync::Arc;
 
+use api::namespace_policy::NamespaceRule;
 use api::{
     ForgejoAccessToken, ForgejoDeployKey, ForgejoOAuth2Application, ForgejoRepository,
     ForgejoWebhook,
 };
-use axum::extract::State;
-use axum::routing::post;
-use axum::{Json, Router};
-use domain::error::ReasonCode;
-use kube::core::DynamicObject;
-use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
-use opentelemetry::KeyValue;
-use opentelemetry::metrics::Counter;
-use serde::de::DeserializeOwned;
-
 use application::ports::{PolicySource, ReferenceReader};
 use application::use_cases::admission::{Governed, enforce};
-use std::sync::Arc;
+use axum::Router;
+use domain::error::ReasonCode;
+use kube::core::DynamicObject;
+use serde::de::DeserializeOwned;
 use weebo_kit_runtime::Health;
-
-static DECISIONS: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    opentelemetry::global::meter("weebo-forgejo-operator")
-        .u64_counter("weebo_forgejo_webhook_decisions_total")
-        .with_description("Admission decisions, by kind and result")
-        .build()
-});
+use weebo_kit_runtime::admission::{Admission, Denial, typed};
 
 #[derive(Clone)]
 pub struct WebhookState {
-    pub policies: Arc<dyn PolicySource>,
+    pub policies: Arc<dyn PolicySource<NamespaceRule>>,
     /// The referenced `ForgejoUser`s (site-admin credentials rule).
     pub refs: Arc<dyn ReferenceReader>,
 }
 
-/// `POST /validate`, plus the probes: `/readyz` (and its alias
-/// `/healthz`) and `/livez`.
+/// `POST /validate` (the kit's: a `DELETE` or an `UPDATE` leaving `spec`
+/// alone always passes — the reconcilers still re-check the policy before
+/// any Forgejo call), plus the probes: `/readyz` (and its alias
+/// `/healthz`) and `/livez`. Decisions are counted as
+/// `weebo_forgejo_webhook_decisions_total`.
 pub fn router(state: WebhookState, health: Arc<Health>) -> Router {
-    Router::new()
-        .route("/validate", post(validate))
-        .with_state(state)
-        .merge(weebo_kit_runtime::health::routes(health))
+    weebo_kit_runtime::admission::router(
+        Arc::new(state),
+        health,
+        "weebo-forgejo-operator",
+        "weebo_forgejo",
+    )
 }
 
-async fn validate(
-    State(state): State<WebhookState>,
-    Json(review): Json<AdmissionReview<DynamicObject>>,
-) -> Json<AdmissionReview<DynamicObject>> {
-    let Ok(req): Result<AdmissionRequest<DynamicObject>, _> = review.try_into() else {
-        return Json(AdmissionResponse::invalid("AdmissionReview without a request").into_review());
-    };
-    let kind = req.kind.kind.clone();
-    let decision = decide(&state, &req).await;
-    DECISIONS.add(
-        1,
-        &[
-            KeyValue::new("kind", kind),
-            KeyValue::new("result", if decision.is_ok() { "allow" } else { "deny" }),
-        ],
-    );
-    Json(match decision {
-        Ok(()) => AdmissionResponse::from(&req).into_review(),
-        Err(message) => {
-            let mut response = AdmissionResponse::from(&req).deny(message);
-            response.result.code = 403;
-            response.result.reason = ReasonCode::NamespaceNotAllowed.as_str().to_string();
-            response.into_review()
-        }
-    })
-}
+#[async_trait::async_trait]
+impl Admission for WebhookState {
+    type Reason = ReasonCode;
 
-/// `Err` carries the denial message. Anything this webhook can't
-/// understand fails closed.
-async fn decide(state: &WebhookState, req: &AdmissionRequest<DynamicObject>) -> Result<(), String> {
-    let namespace = req.namespace.clone().unwrap_or_default();
-    let Some(object) = req.object.as_ref() else {
-        return Err("request carries no object".into());
-    };
-    // What the allow-list governs is in `spec`. An UPDATE that leaves it
-    // alone — the operator removing its finalizer from a CR being deleted,
-    // a label edit — references nothing new, and blocking it would leave
-    // a CR whose namespace lost its policy stuck in Terminating. The
-    // reconcilers still re-check the policy before any Forgejo call.
-    if let Some(old) = req.old_object.as_ref()
-        && old.data.get("spec") == object.data.get("spec")
-    {
-        return Ok(());
+    /// Anything this webhook can't understand fails closed.
+    async fn admit(
+        &self,
+        kind: &str,
+        namespace: &str,
+        object: &DynamicObject,
+    ) -> Result<(), Denial<ReasonCode>> {
+        let (policies, refs) = (self.policies.as_ref(), self.refs.as_ref());
+        let decision = match kind {
+            "ForgejoRepository" => {
+                check::<ForgejoRepository>(policies, refs, namespace, object).await
+            }
+            "ForgejoWebhook" => check::<ForgejoWebhook>(policies, refs, namespace, object).await,
+            "ForgejoDeployKey" => {
+                check::<ForgejoDeployKey>(policies, refs, namespace, object).await
+            }
+            "ForgejoOAuth2Application" => {
+                check::<ForgejoOAuth2Application>(policies, refs, namespace, object).await
+            }
+            "ForgejoAccessToken" => {
+                check::<ForgejoAccessToken>(policies, refs, namespace, object).await
+            }
+            other => Err(format!("kind {other} is not handled by this webhook")),
+        };
+        decision.map_err(|message| Denial::new(ReasonCode::NamespaceNotAllowed, message))
     }
-    let ns = namespace.as_str();
-    let (policies, refs) = (state.policies.as_ref(), state.refs.as_ref());
-    match req.kind.kind.as_str() {
-        "ForgejoRepository" => check::<ForgejoRepository>(policies, refs, ns, object).await,
-        "ForgejoWebhook" => check::<ForgejoWebhook>(policies, refs, ns, object).await,
-        "ForgejoDeployKey" => check::<ForgejoDeployKey>(policies, refs, ns, object).await,
-        "ForgejoOAuth2Application" => {
-            check::<ForgejoOAuth2Application>(policies, refs, ns, object).await
-        }
-        "ForgejoAccessToken" => check::<ForgejoAccessToken>(policies, refs, ns, object).await,
-        other => Err(format!("kind {other} is not handled by this webhook")),
+
+    fn undecidable(&self) -> ReasonCode {
+        ReasonCode::NamespaceNotAllowed
     }
 }
 
 /// The reconcilers' own admission checks (`enforce`), on the typed object.
 async fn check<K: Governed + DeserializeOwned>(
-    policies: &dyn PolicySource,
+    policies: &dyn PolicySource<NamespaceRule>,
     refs: &dyn ReferenceReader,
     namespace: &str,
     object: &DynamicObject,
 ) -> Result<(), String> {
-    let value = serde_json::to_value(object).map_err(|e| e.to_string())?;
-    let typed: K =
-        serde_json::from_value(value).map_err(|e| format!("object does not match the CRD: {e}"))?;
+    let typed: K = typed(object)?;
     match enforce(policies, refs, namespace, &typed).await {
         Ok(decision) => decision.map_err(|f| f.message),
         Err(e) => {
@@ -127,6 +96,8 @@ async fn check<K: Governed + DeserializeOwned>(
 
 #[cfg(test)]
 mod tests {
+    use kube::core::admission::{AdmissionResponse, AdmissionReview};
+
     use super::*;
 
     /// No policy lookup can succeed, as with an unreachable apiserver.
@@ -159,9 +130,8 @@ mod tests {
             policies: cluster.clone(),
             refs: cluster,
         };
-        validate(State(state), Json(review))
+        weebo_kit_runtime::admission::handle(&state, review)
             .await
-            .0
             .response
             .unwrap()
     }

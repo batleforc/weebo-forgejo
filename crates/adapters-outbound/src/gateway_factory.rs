@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use crate::forgejo_http::ForgejoHttpGateway;
 use crate::instance_resolver::InstanceResolver;
 use crate::metered::{MeteredGateway, max_inflight};
+use weebo_kit_adapters::SelectError;
 use weebo_kit_adapters::read_secret_key;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -159,22 +160,11 @@ pub(crate) fn select<'a>(
     instances: &'a [ForgejoInstance],
     instance_ref: Option<&str>,
 ) -> Result<&'a ForgejoInstance, GatewayFactoryError> {
-    match instance_ref {
-        Some(name) => instances
-            .iter()
-            .find(|i| i.name_any() == name)
-            .ok_or_else(|| GatewayFactoryError::InstanceNotFound(name.to_string())),
-        None => match instances {
-            [only] => Ok(only),
-            [] => Err(GatewayFactoryError::InstanceNotFound(
-                "no ForgejoInstance exists".to_string(),
-            )),
-            many => Err(GatewayFactoryError::AmbiguousDefault(format!(
-                "{} ForgejoInstances exist; set spec.instanceRef",
-                many.len()
-            ))),
-        },
-    }
+    weebo_kit_adapters::select(instances, instance_ref).map_err(|e| match e {
+        SelectError::NotFound { name, .. } => GatewayFactoryError::InstanceNotFound(name),
+        SelectError::NoInstance { .. } => GatewayFactoryError::InstanceNotFound(e.to_string()),
+        SelectError::Ambiguous { .. } => GatewayFactoryError::AmbiguousDefault(e.to_string()),
+    })
 }
 
 /// `ca_pem` is added on top of the platform trust store. A configured CA

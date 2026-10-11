@@ -13,11 +13,12 @@ use api::{
     ForgejoWebhook,
 };
 use application::use_cases::import::{Existing, Import, Imported};
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::{Api, ListParams};
 use kube::{Client, Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use weebo_kit_adapters::{Adopter, Adoption};
 
 const FIELD_MANAGER: &str = "weebo-forgejo-importer";
 
@@ -145,15 +146,15 @@ pub async fn existing(client: &Client, namespace: &str) -> anyhow::Result<Existi
     })
 }
 
-/// What `--apply` did, per CR.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Summary {
-    pub adopted: usize,
-    /// Already owning the same Forgejo object (a re-run).
-    pub skipped: usize,
-    /// Reported on stderr as they happen.
-    pub failed: usize,
-}
+/// What `--apply` did, per CR: adopted, skipped (already owning the same
+/// Forgejo object, a re-run), failed (reported on stderr as they happen).
+pub use weebo_kit_adapters::Summary;
+
+/// The kit's adoption flow, as this importer.
+const ADOPTER: Adopter = Adopter {
+    field_manager: FIELD_MANAGER,
+    annotations: api::ANNOTATIONS,
+};
 
 /// Adopts every CR in dependency order; a failure is reported and the rest
 /// carry on. A CR already in the cluster that owns nothing yet is refused
@@ -165,13 +166,12 @@ pub async fn apply_all(client: &Client, i: &Manifests) -> Summary {
 /// [`apply_all`]; `force` also takes over CRs that own nothing yet.
 pub async fn apply_all_with(client: &Client, i: &Manifests, force: bool) -> Summary {
     let mut summary = Summary::default();
-    for_each!(i, |cr| match adopt(client, cr, force).await {
-        Ok(true) => summary.adopted += 1,
-        Ok(false) => summary.skipped += 1,
-        Err(e) => {
-            summary.failed += 1;
-            eprintln!("error: {}: {e:#}", describe(cr));
+    for_each!(i, |cr| {
+        let result = adopt(client, cr, force).await;
+        if let Err(e) = &result {
+            eprintln!("error: {}: {e}", describe(cr));
         }
+        summary.record(&result);
     });
     summary
 }
@@ -217,89 +217,26 @@ fn describe<K: Resource<DynamicType = ()>>(cr: &K) -> String {
 }
 
 /// Creates (or takes over) the CR paused, seeds its status, then unpauses
-/// it — the operator never sees it without its `forgejoId`, so it can't
-/// create a duplicate (webhooks have no name to collide on). `Ok(false)`:
-/// the CR already owns this object (still paused from a run that failed
-/// after seeding: unpaused now). A CR owning another one is an error.
-async fn adopt<K>(client: &Client, cr: &K, force: bool) -> anyhow::Result<bool>
+/// it (the kit's [`Adopter`]) — the operator never sees it without its
+/// `forgejoId`, so it can't create a duplicate (webhooks have no name to
+/// collide on).
+async fn adopt<K>(client: &Client, cr: &K, force: bool) -> Result<Adoption, String>
 where
     K: Resource<DynamicType = ()> + Seeded + Clone + Debug + Serialize + DeserializeOwned,
 {
     let api = K::api(client.clone(), cr.namespace().as_deref());
-    let name = cr.name_any();
-    let seed = cr.seeded().context("CR without a seeded status")?;
-    let id = seed.forgejo_id.as_deref();
-
-    if let Some(existing) = api.get_opt(&name).await? {
-        match existing.seeded().and_then(|s| s.forgejo_id.as_deref()) {
-            Some(owned) if Some(owned) == id => {
-                // A run that seeded the status but failed to unpause: finish it.
-                if existing
-                    .annotations()
-                    .contains_key(api::IMPORT_PENDING_ANNOTATION)
-                {
-                    unpause(&api, &name).await?;
-                }
-                return Ok(false);
-            }
-            Some(owned) => anyhow::bail!(
-                "already owns Forgejo id {owned}, not {}",
-                id.unwrap_or_default()
-            ),
-            // Paused by an earlier run of ours: safe to finish.
-            None if existing
-                .annotations()
-                .contains_key(api::IMPORT_PENDING_ANNOTATION) => {}
-            None if force => {}
-            None => anyhow::bail!(
-                "exists but owns nothing yet — the operator may be creating its object \
-                 right now; delete it, or re-run with --force to take it over"
-            ),
-        }
-    }
-
-    let mut body = serde_json::to_value(cr)?;
-    if let Some(obj) = body.as_object_mut() {
-        obj.remove("status");
-    }
-    body["metadata"]["annotations"][api::IMPORT_PENDING_ANNOTATION] = json!("true");
-    api.patch(
-        &name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&body),
-    )
-    .await
-    .context("creating the CR")?;
-
-    api.patch_status(
-        &name,
-        &PatchParams::default(),
-        &Patch::Merge(json!({ "status": {
-            "forgejoId": seed.forgejo_id,
-            "forgejoName": seed.forgejo_name,
-        }})),
-    )
-    .await
-    .context("seeding status (the CR stays paused until a re-run succeeds)")?;
-
-    unpause(&api, &name).await?;
-    Ok(true)
-}
-
-async fn unpause<K>(api: &Api<K>, name: &str) -> anyhow::Result<()>
-where
-    K: Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned,
-{
-    api.patch(
-        name,
-        &PatchParams::default(),
-        &Patch::Merge(json!({ "metadata": { "annotations": {
-            api::IMPORT_PENDING_ANNOTATION: null,
-        }}})),
-    )
-    .await
-    .context("removing the import-pending annotation")?;
-    Ok(())
+    let seed = cr.seeded().ok_or("CR without a seeded status")?;
+    let id = seed.forgejo_id.clone().unwrap_or_default();
+    ADOPTER
+        .adopt(
+            &api,
+            cr,
+            &id,
+            json!({ "forgejoId": seed.forgejo_id, "forgejoName": seed.forgejo_name }),
+            |existing: &K| existing.seeded().and_then(|s| s.forgejo_id.clone()),
+            force,
+        )
+        .await
 }
 
 #[cfg(test)]

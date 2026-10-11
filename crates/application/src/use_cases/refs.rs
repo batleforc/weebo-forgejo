@@ -6,21 +6,15 @@
 
 use domain::error::ReasonCode;
 
+use weebo_kit_application::refs::{RefError, Referenced};
+
 use crate::ports::{ClusterError, ForgejoRef, RefKind, ReferenceReader};
 use crate::use_cases::Failure;
 use crate::use_cases::reconcile_team::Member;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RefState {
-    Ready(ForgejoRef),
-    NotFound,
-    /// Exists but isn't usable yet; carries the referenced CR's `Ready`
-    /// reason (e.g. `UserNotFound` for an observed OIDC user).
-    NotReady(String),
-    /// Targets another `ForgejoInstance` than the referencing CR: an id
-    /// from one instance means nothing on another.
-    OtherInstance(Option<String>),
-}
+/// The kit's ref state, over a Forgejo id + name: `Ready`, `NotFound`,
+/// `NotReady(reason)`, `OtherInstance(instanceRef)`.
+pub type RefState = weebo_kit_application::refs::RefState<ForgejoRef>;
 
 /// `namespace`/`our_instance` are the referencing CR's namespace and
 /// `spec.instanceRef`.
@@ -34,14 +28,15 @@ pub async fn resolve(
     let Some(cr) = reader.referenced(kind, namespace, name).await? else {
         return Ok(RefState::NotFound);
     };
-    if !same_instance(reader, cr.instance_ref.as_deref(), our_instance).await? {
-        return Ok(RefState::OtherInstance(cr.instance_ref));
-    }
-    Ok(match (cr.forgejo, cr.ready) {
-        (Some(r), Some((true, _))) => RefState::Ready(r),
-        (_, Some((_, reason))) => RefState::NotReady(reason),
-        (_, None) => RefState::NotReady("NotReconciledYet".to_string()),
-    })
+    let same = same_instance(reader, cr.instance_ref.as_deref(), our_instance).await?;
+    Ok(RefState::of(
+        Some(Referenced {
+            instance_ref: cr.instance_ref,
+            remote: cr.forgejo,
+            ready: cr.ready,
+        }),
+        same,
+    ))
 }
 
 /// `status.forgejoName` of the referenced CR whatever its readiness, for a
@@ -70,36 +65,19 @@ async fn same_instance(
     theirs: Option<&str>,
     ours: Option<&str>,
 ) -> Result<bool, ClusterError> {
-    Ok(match (theirs, ours) {
-        (a, b) if a == b => true,
-        (Some(named), None) | (None, Some(named)) => {
-            reader.default_instance().await?.as_deref() == Some(named)
-        }
-        _ => false,
-    })
+    weebo_kit_application::refs::same_instance(theirs, ours, || reader.default_instance()).await
 }
 
 /// A single required ref: anything but `Ready` fails the reconcile.
 pub fn require(kind: RefKind, name: &str, state: RefState) -> Result<ForgejoRef, Failure> {
-    let kind = kind.as_str();
-    match state {
-        RefState::Ready(r) => Ok(r),
-        RefState::NotFound => Err(Failure::new(
-            ReasonCode::ReferenceNotFound,
-            format!("{kind} {name:?} does not exist"),
-        )),
-        RefState::NotReady(why) => Err(Failure::new(
-            ReasonCode::ReferenceNotReady,
-            format!("{kind} {name:?} is not ready yet ({why})"),
-        )),
-        RefState::OtherInstance(theirs) => Err(Failure::new(
-            ReasonCode::InvalidSpec,
-            format!(
-                "{kind} {name:?} targets ForgejoInstance {:?}, not this CR's",
-                theirs.as_deref().unwrap_or("<default>")
-            ),
-        )),
-    }
+    state.require().map_err(|e| {
+        let reason = match e {
+            RefError::NotFound => ReasonCode::ReferenceNotFound,
+            RefError::NotReady(_) => ReasonCode::ReferenceNotReady,
+            RefError::OtherInstance(_) => ReasonCode::InvalidSpec,
+        };
+        Failure::new(reason, e.describe(kind.as_str(), name, "ForgejoInstance"))
+    })
 }
 
 /// [`resolve`] then [`require`].

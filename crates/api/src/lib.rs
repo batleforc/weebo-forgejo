@@ -25,6 +25,10 @@ pub use webhook::ForgejoWebhook;
 
 /// API group shared by every CRD of this operator.
 pub const GROUP: &str = "forgejo.weebo.io";
+/// The kit's common annotations (`force-orphan`, `allow-disruptive-update`,
+/// `rotate-secret`, `import-pending`), under [`GROUP`]: the constants
+/// below are their keys.
+pub const ANNOTATIONS: weebo_kit_api::Annotations = weebo_kit_api::Annotations::new(GROUP);
 /// Finalizer set on every CR whose deletion has a Forgejo-side effect.
 pub const FINALIZER: &str = "forgejo.weebo.io/finalizer";
 /// Authorizes a delete-and-recreate the reconciler would otherwise refuse
@@ -56,3 +60,21 @@ pub const SECRET_OWNER_ANNOTATION: &str = "forgejo.weebo.io/owner";
 /// succeed (its `ForgejoInstance` or token already gone). Everything the
 /// CR owned is left behind, as with `deletionPolicy: Orphan`.
 pub const FORCE_ORPHAN_ANNOTATION: &str = "forgejo.weebo.io/force-orphan";
+
+#[cfg(test)]
+mod annotation_tests {
+    use weebo_kit_api::annotations::*;
+
+    use super::*;
+
+    #[test]
+    fn the_constants_are_the_kits_keys() {
+        assert_eq!(ANNOTATIONS.key(FORCE_ORPHAN), FORCE_ORPHAN_ANNOTATION);
+        assert_eq!(
+            ANNOTATIONS.key(ALLOW_DISRUPTIVE_UPDATE),
+            ALLOW_DISRUPTIVE_UPDATE_ANNOTATION
+        );
+        assert_eq!(ANNOTATIONS.key(ROTATE_SECRET), ROTATE_SECRET_ANNOTATION);
+        assert_eq!(ANNOTATIONS.key(IMPORT_PENDING), IMPORT_PENDING_ANNOTATION);
+    }
+}

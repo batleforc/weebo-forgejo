@@ -10,6 +10,7 @@ name = "weebo-forgejo-importer"
 path = "src/main.rs"
 
 [dependencies]
+weebo-kit-adapters = { workspace = true }
 api = { workspace = true }
 application = { workspace = true }
 adapters-outbound = { workspace = true }

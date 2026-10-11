@@ -106,7 +106,7 @@ impl Governed for ForgejoAccessToken {
 /// Every admission check of `obj` (in `namespace`), in order: its secret
 /// targets, the allow-list, then the site-admin credentials rule.
 pub async fn enforce<K: Governed>(
-    policies: &dyn PolicySource,
+    policies: &dyn PolicySource<NamespaceRule>,
     refs: &dyn ReferenceReader,
     namespace: &str,
     obj: &K,
