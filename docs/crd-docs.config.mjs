@@ -127,6 +127,8 @@ ideas behind the fields, start with [Concepts](/docs/concepts).`,
     },
     // `task perf`'s report (target/perf/weebo-forgejo.json), copied here.
     perfReport: "perf/weebo-forgejo.json",
-    perfNote: "kit v0.5.0, 2026-10-11",
+    // Refreshed every week by .github/workflows/perf.yml; the report
+    // dates itself.
+    perfScheduled: true,
   },
 });
