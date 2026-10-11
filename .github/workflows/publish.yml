@@ -266,6 +266,8 @@ jobs:
         id: push
         run: |
           mkdir -p dist
+          # The kit's library chart, as Chart.lock pins it.
+          mise exec -- helm dependency build --skip-refresh deploy/charts/weebo-forgejo
           mise exec -- helm package deploy/charts/weebo-forgejo --destination dist
           out="$(mise exec -- helm push dist/weebo-forgejo-*.tgz "oci://${CHART_REPO}" 2>&1)"
           echo "$out"

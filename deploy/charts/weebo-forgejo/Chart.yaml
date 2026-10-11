@@ -30,3 +30,9 @@ annotations:
       url: https://batleforc.github.io/weebo-forgejo
     - name: Source
       url: https://github.com/batleforc/weebo-forgejo
+dependencies:
+  # Every resource but the CRDs (templates/operator.yaml); its version is
+  # the kit's, as in Cargo.toml (`task kit:sync` keeps them in step).
+  - name: weebo-operator-lib
+    version: 0.9.0
+    repository: oci://ghcr.io/batleforc/charts

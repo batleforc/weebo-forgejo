@@ -2,7 +2,7 @@
 misconfigurations:
   - id: KSV-0041
     paths:
-      - deploy/charts/weebo-forgejo/templates/clusterrole.yaml
+      - deploy/charts/weebo-forgejo/templates/operator.yaml
     statement: >-
       The operator writes emitted credentials (OAuth2 client secrets,
       access tokens, generated passwords and SSH keys) into the namespace

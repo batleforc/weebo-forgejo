@@ -21,3 +21,6 @@ graphify-out/
 
 # Local progress tracker, kept out of the repository.
 todo.md
+
+# The kit's library chart, fetched by `task helm:deps` (Chart.lock pins it)
+deploy/charts/*/charts/

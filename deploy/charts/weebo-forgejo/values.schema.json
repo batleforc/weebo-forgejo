@@ -7,6 +7,10 @@
     "global": {
       "type": "object"
     },
+    "weebo-operator-lib": {
+      "description": "Set by Helm for the kit's library chart (a dependency); holds nothing.",
+      "type": "object"
+    },
     "replicaCount": {
       "type": "integer",
       "minimum": 0
