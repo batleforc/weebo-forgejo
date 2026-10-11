@@ -182,7 +182,26 @@ relisible via GET). Donc :
 ### ForgejoRepository (v1)
 
 - Création : vide, `autoInit` (README/gitignore/licence), ou depuis un
-  template (`templateRef` → `POST /repos/{o}/{r}/generate`).
+  template (`fromTemplate` → `POST /repos/{o}/{r}/generate`). Le template
+  se désigne de deux façons, exactement une :
+  - `repositoryRef` : une `ForgejoRepository` du même namespace (règle des
+    références) ;
+  - `repository: owner/name` : nom Forgejo brut, pour un template
+    **partagé** entre namespaces (géré par une CR ailleurs, ou à la main).
+    Exception assumée à « références par CR » : une ref cross-namespace
+    casserait la règle des références, et dupliquer la CR du template dans
+    chaque namespace ferait se battre plusieurs CR pour un même dépôt.
+    Gouverné par `allowedTemplates` (cf. allow-list) : le token admin lit
+    tout dépôt, privé compris, donc sans restriction un namespace pourrait
+    copier n'importe quel template. Template absent ⇒ `ReferenceNotFound`
+    (404 de `generate`) ; dépôt non-template ⇒ refus Forgejo
+    (`ForgejoApiError`). Le controller réveille aussi les dépôts dont le
+    `repository` égale le `status.forgejoName` d'une CR de n'importe quel
+    namespace.
+  - Constat (Forgejo 16, réel) : un **pull-mirror** peut être marqué
+    template (PATCH `template: true`) et sert de source à `generate` ;
+    c'est la voie pour suivre un template GitHub (`migrate` + `mirror` +
+    `isTemplate`).
 - Migration / pull-mirror : `migrate{cloneAddr, service, mirror,
   mirrorInterval, lfs, authSecretRef}` → `POST /repos/migrate`.
 - Settings : visibilité, branche par défaut, unités (issues, wiki, PR…),
@@ -204,8 +223,13 @@ relisible via GET). Donc :
   perdent jamais le dépôt (pas de piège de redirection comme pour users/orgs).
 - Branch protections : listes d'autorisation en **noms Forgejo bruts**
   (utilisateurs, équipes), exception assumée à « références par CR » — une
-  CR par nom serait lourde sans bénéfice. Liste autoritaire (une règle
-  absente du spec est supprimée).
+  CR par nom serait lourde sans bénéfice. `branchProtections` absent :
+  l'opérateur ne lit ni ne touche les règles (celles copiées d'un template
+  par `fromTemplate.protectedBranches`, ou posées dans l'UI) ; présent :
+  liste autoritaire (une règle absente est supprimée, `[]` les supprime
+  toutes). Avant, absent valait `[]`, ce qui annulait aussitôt
+  `protectedBranches`. L'importer pose toujours la liste (même vide) : un
+  dépôt adopté reste entièrement géré.
 
 ### Constats du M1 (vérifiés contre un Forgejo 16.0.5 réel)
 
@@ -464,7 +488,8 @@ Identique à authentik :
   toutes les 60 s.
 - `ForgejoNamespacePolicy` : allow tant qu'aucune policy n'existe,
   default-deny dès qu'une existe. Règles `{namespaces, allowedKinds,
-  allowedOrganizations, allowedUsers, effect}` **(≠ authentik)** :
+  allowedOrganizations, allowedUsers, allowedTemplates, effect}`
+  **(≠ authentik)** :
   - `namespaces` : noms exacts, `*`, ou glob préfixe (`team-*`).
   - `allowedOrganizations` / `allowedUsers` (noms de CR ; absent = tout) :
     un `Allow` doit couvrir **toutes** les orgs et users référencés par la
@@ -472,6 +497,14 @@ Identique à authentik :
     titulaire d'un token). `allowedUsers` est ce qui empêche un namespace
     de frapper un token pour un compte privilégié (ajouté en M4 : sans lui,
     `ForgejoAccessToken` était une escalade de privilèges).
+  - `allowedTemplates` (noms Forgejo `owner/name`, `*` ou glob préfixe
+    `batlehub/*` ; absent = tout) : les templates qu'une `ForgejoRepository`
+    peut utiliser **par nom** (`fromTemplate.repository`) ; un template
+    référencé par CR du même namespace n'y est pas soumis. Le moteur du kit
+    ne compare qu'en noms exacts : `domain::allow_list::evaluate` remplace
+    les motifs de chaque règle par les templates demandés qu'ils couvrent
+    (même décision). À remonter dans le kit si un autre opérateur a besoin
+    de scopes à motifs.
   - Un `Deny` matche namespace + kind, restreint par ses listes si posées ;
     deny gagne toujours.
   - Même code (`application::use_cases::admission::check`, logique pure

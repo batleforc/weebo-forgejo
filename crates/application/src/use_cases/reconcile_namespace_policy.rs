@@ -35,6 +35,7 @@ mod tests {
             allowed_kinds: kinds.to_vec(),
             allowed_organizations: None,
             allowed_users: None,
+            allowed_templates: None,
             effect: Effect::Allow,
         }
     }

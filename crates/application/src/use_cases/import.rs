@@ -404,7 +404,8 @@ fn repository_spec(
             milestones: false,
             auth_secret_ref: None,
         }),
-        branch_protections: protections.into_iter().map(branch_protection).collect(),
+        // Always set, even empty: an adopted repository's rules are managed.
+        branch_protections: Some(protections.into_iter().map(branch_protection).collect()),
         team_refs,
         deletion_policy: DeletionPolicy::Orphan,
     }
@@ -769,7 +770,10 @@ mod tests {
                 name: "weebo-dev".into()
             }]
         );
-        assert_eq!(repo.spec.branch_protections[0].required_approvals, 1);
+        assert_eq!(
+            repo.spec.branch_protections.as_ref().unwrap()[0].required_approvals,
+            1
+        );
         assert_eq!(repo.forgejo.name, "weebo/app");
 
         let dots = out

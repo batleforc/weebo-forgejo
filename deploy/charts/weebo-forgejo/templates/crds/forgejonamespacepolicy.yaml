@@ -34,9 +34,9 @@ spec:
 
               While no `ForgejoNamespacePolicy` exists, everything is allowed. As soon
               as one exists, a namespaced CR is only accepted if some `Allow` rule
-              matches its namespace and kind and covers the organizations and users it
-              references — and no `Deny` rule matches. Rules of every policy are
-              pooled; deny always wins.
+              matches its namespace and kind and covers the organizations, users and
+              templates it references — and no `Deny` rule matches. Rules of every
+              policy are pooled; deny always wins.
             properties:
               rules:
                 items:
@@ -56,6 +56,18 @@ spec:
                         `ForgejoOrganization`s (CR names) the namespace may reference —
                         owner of its repositories, target of its org webhooks. Unset: any.
                         On a `Deny` rule: only deny requests referencing one of these.
+                      items:
+                        type: string
+                      nullable: true
+                      type: array
+                    allowedTemplates:
+                      description: |-
+                        Template repositories (Forgejo `owner/name`, `*`, or a prefix glob
+                        like `batlehub/*`) the namespace may generate repositories from by
+                        name (`fromTemplate.repository`). Unset: any. A template referenced
+                        as a same-namespace CR (`fromTemplate.repositoryRef`) isn't
+                        governed by this list. On a `Deny` rule: only deny requests
+                        referencing one of these.
                       items:
                         type: string
                       nullable: true

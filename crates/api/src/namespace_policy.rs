@@ -9,9 +9,9 @@ use crate::status::ForgejoStatus;
 ///
 /// While no `ForgejoNamespacePolicy` exists, everything is allowed. As soon
 /// as one exists, a namespaced CR is only accepted if some `Allow` rule
-/// matches its namespace and kind and covers the organizations and users it
-/// references — and no `Deny` rule matches. Rules of every policy are
-/// pooled; deny always wins.
+/// matches its namespace and kind and covers the organizations, users and
+/// templates it references — and no `Deny` rule matches. Rules of every
+/// policy are pooled; deny always wins.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "forgejo.weebo.io",
@@ -46,6 +46,14 @@ pub struct NamespaceRule {
     /// referencing one of these.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_users: Option<Vec<String>>,
+    /// Template repositories (Forgejo `owner/name`, `*`, or a prefix glob
+    /// like `batlehub/*`) the namespace may generate repositories from by
+    /// name (`fromTemplate.repository`). Unset: any. A template referenced
+    /// as a same-namespace CR (`fromTemplate.repositoryRef`) isn't
+    /// governed by this list. On a `Deny` rule: only deny requests
+    /// referencing one of these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_templates: Option<Vec<String>>,
     #[serde(default)]
     pub effect: Effect,
 }

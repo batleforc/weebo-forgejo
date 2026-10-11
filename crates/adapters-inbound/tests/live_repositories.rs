@@ -152,22 +152,38 @@ async fn user_owned_repository_and_template_generation() {
         &l,
         "tpl",
         json!({"userRef": {"name": "owner"}, "name": "tpl", "isTemplate": true,
-               "init": {"readme": "Default"}, "deletionPolicy": "Delete"}),
+               "init": {"readme": "Default"},
+               "branchProtections": [{"ruleName": "main", "requiredApprovals": 1}],
+               "deletionPolicy": "Delete"}),
     )
     .await;
     let template = l.fj.get_repository(template_id).await.unwrap().unwrap();
     assert_eq!(template.owner, owner);
     assert!(template.template);
 
-    // ...and a repository generated from it, content included.
+    // ...and a repository generated from it, content included, keeping the
+    // template's branch protections: its own `branchProtections` is unset.
     let generated_id = repo(
         &l,
         "from-tpl",
         json!({"userRef": {"name": "owner"}, "name": "generated",
-               "fromTemplate": {"repositoryRef": {"name": "tpl"}},
+               "fromTemplate": {"repositoryRef": {"name": "tpl"},
+                                "protectedBranches": true},
                "deletionPolicy": "Delete"}),
     )
     .await;
+    let repos: Api<ForgejoRepository> = l.api();
+    nudge(&repos, "from-tpl").await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let copied =
+        l.fj.list_branch_protections(&format!("{owner}/generated"))
+            .await
+            .unwrap();
+    assert_eq!(copied.len(), 1, "{copied:?}");
+    assert_eq!(
+        (copied[0].rule_name.as_str(), copied[0].required_approvals),
+        ("main", 1)
+    );
     let generated = l.fj.get_repository(generated_id).await.unwrap().unwrap();
     assert_eq!(generated.full_name(), format!("{owner}/generated"));
     assert!(!generated.template);
@@ -183,7 +199,6 @@ async fn user_owned_repository_and_template_generation() {
         "{contents}"
     );
 
-    let repos: Api<ForgejoRepository> = l.api();
     repos.delete("from-tpl", &Default::default()).await.unwrap();
     repos.delete("tpl", &Default::default()).await.unwrap();
     wait_for_absence(&repos, "from-tpl").await;
@@ -193,7 +208,7 @@ async fn user_owned_repository_and_template_generation() {
 
 #[tokio::test]
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
-async fn authenticated_pull_mirror_keeps_its_interval_in_sync() {
+async fn authenticated_pull_mirror_keeps_its_interval_in_sync_and_serves_as_a_template() {
     let l = live().await;
     let org_name = l.name("mirror");
     org(&l, "src", &org_name).await;
@@ -261,6 +276,41 @@ async fn authenticated_pull_mirror_keeps_its_interval_in_sync() {
             .unwrap()
             .mirror_interval,
         "12h0m0s"
+    );
+
+    // A pull mirror can be a template (the upstream one on GitHub, say),
+    // and others generated from it by Forgejo name.
+    patch(&repos, "mirror", json!({"spec": {"isTemplate": true}})).await;
+    for _ in 0..60 {
+        if l.fj
+            .get_repository(mirror_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .template
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    let mirror = l.fj.get_repository(mirror_id).await.unwrap().unwrap();
+    assert!(mirror.mirror && mirror.template);
+    let generated_id = repo(
+        &l,
+        "from-mirror",
+        json!({"organizationRef": {"name": "src"}, "name": "from-mirror",
+               "fromTemplate": {"repository": format!("{org_name}/mirror")},
+               "deletionPolicy": "Delete"}),
+    )
+    .await;
+    let generated = l.fj.get_repository(generated_id).await.unwrap().unwrap();
+    assert!(!generated.mirror && !generated.template);
+    let contents = get_json(&l, &format!("/repos/{org_name}/from-mirror/contents"))
+        .await
+        .unwrap();
+    assert!(
+        !contents.as_array().unwrap().is_empty(),
+        "generated is empty"
     );
 }
 

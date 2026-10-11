@@ -6,6 +6,7 @@
     "users-and-oidc",
     "oidc-groups",
     "repositories",
+    "templates",
     "credentials",
     "allow-list",
     "operations",

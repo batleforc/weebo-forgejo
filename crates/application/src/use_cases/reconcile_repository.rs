@@ -76,8 +76,22 @@ pub fn validate(spec: &ForgejoRepositorySpec) -> Result<(), Failure> {
     if sources.iter().filter(|s| **s).count() > 1 {
         return invalid("set at most one of spec.init, spec.fromTemplate and spec.migrate");
     }
+    if let Some(t) = &spec.from_template {
+        match (&t.repository_ref, &t.repository) {
+            (Some(_), Some(_)) | (None, None) => {
+                return invalid(
+                    "set exactly one of spec.fromTemplate.repositoryRef and \
+                     spec.fromTemplate.repository",
+                );
+            }
+            (None, Some(name)) if !is_full_name(name) => {
+                return invalid("spec.fromTemplate.repository must be owner/name");
+            }
+            _ => {}
+        }
+    }
     let mut rules = BTreeSet::new();
-    for rule in &spec.branch_protections {
+    for rule in spec.branch_protections.iter().flatten() {
         if !rules.insert(&rule.rule_name) {
             return invalid(&format!(
                 "spec.branchProtections lists {:?} twice",
@@ -179,7 +193,10 @@ pub async fn reconcile_repository(
     {
         return Outcome::failed(current, e);
     }
-    if let Err(e) = sync_protections(&full_name, &spec.branch_protections, gateway).await {
+    // Unset: someone else's (a template's copy, Forgejo's UI).
+    if let Some(wanted) = &spec.branch_protections
+        && let Err(e) = sync_protections(&full_name, wanted, gateway).await
+    {
         return Outcome::failed(current, e);
     }
     if spec.archived
@@ -252,11 +269,26 @@ async fn create(
         }
         Source::Migrate(options) => gateway.migrate_repository(owner, desired, options).await,
     }
-    .map_err(|e| (None, Failure::from(e)))?;
+    .map_err(|e| (None, creation_failure(&source, e)))?;
 
     refetch(gateway, created.id)
         .await
         .map_err(|f| (Some(created), f))
+}
+
+/// A missing template says so, rather than a bare 404.
+fn creation_failure(source: &Source, err: GatewayError) -> Failure {
+    match (source, err) {
+        (Source::Template(template, _), GatewayError::NotFound(_)) => Failure::new(
+            ReasonCode::ReferenceNotFound,
+            format!("template repository {template} not found in Forgejo"),
+        ),
+        (_, e) => e.into(),
+    }
+}
+
+fn is_full_name(name: &str) -> bool {
+    matches!(name.split_once('/'), Some((o, r)) if !o.is_empty() && !r.is_empty() && !r.contains('/'))
 }
 
 async fn refetch(gateway: &dyn ForgejoGateway, id: i64) -> Result<RemoteRepository, Failure> {
@@ -480,7 +512,7 @@ fn normalized(mut r: ProtectionRule) -> ProtectionRule {
 #[cfg(test)]
 mod tests {
     use api::common::ObjectRef;
-    use api::repository::{MigrateSource, RepositoryUnits};
+    use api::repository::{MigrateSource, RepositoryUnits, TemplateSource};
 
     use super::*;
     use crate::ports::{DesiredOrganization, DesiredTeam};
@@ -504,7 +536,7 @@ mod tests {
             init: None,
             from_template: None,
             migrate: None,
-            branch_protections: vec![],
+            branch_protections: None,
             team_refs: vec![],
             deletion_policy: DeletionPolicy::Orphan,
         }
@@ -602,13 +634,13 @@ mod tests {
     async fn branch_protections_are_authoritative() {
         let fj = forgejo().await;
         let mut s = spec("app");
-        s.branch_protections = vec![BranchProtection {
+        s.branch_protections = Some(vec![BranchProtection {
             rule_name: "main".into(),
             required_approvals: 1,
             push_whitelist_teams: vec!["devs".into()],
             enable_push: true,
             ..Default::default()
-        }];
+        }]);
         let current = reconcile_repository(input(&s, None, "weebo"), &fj)
             .await
             .forgejo
@@ -621,7 +653,7 @@ mod tests {
         reconcile_repository(input(&s, Some(current.clone()), "weebo"), &fj).await;
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
 
-        s.branch_protections[0].rule_name = "release/*".into();
+        s.branch_protections.as_mut().unwrap()[0].rule_name = "release/*".into();
         reconcile_repository(input(&s, Some(current.clone()), "weebo"), &fj).await;
         let names: Vec<_> = fj
             .protections(current.id)
@@ -629,6 +661,22 @@ mod tests {
             .map(|r| r.rule_name)
             .collect();
         assert_eq!(names, vec!["release/*"]);
+
+        // Unset: the rules stay, whoever made them, and aren't even read.
+        s.branch_protections = None;
+        fj.clear_calls();
+        reconcile_repository(input(&s, Some(current.clone()), "weebo"), &fj).await;
+        assert_eq!(fj.protections(current.id).len(), 1);
+        assert!(
+            fj.calls().iter().all(|c| !c.contains("branch_protection")),
+            "{:?}",
+            fj.calls()
+        );
+
+        // Empty: every rule goes.
+        s.branch_protections = Some(vec![]);
+        reconcile_repository(input(&s, Some(current.clone()), "weebo"), &fj).await;
+        assert!(fj.protections(current.id).is_empty());
     }
 
     /// Forgejo drops the push allow-list switches while pushing is off.
@@ -636,13 +684,13 @@ mod tests {
     async fn push_allow_list_without_push_does_not_drift() {
         let fj = forgejo().await;
         let mut s = spec("app");
-        s.branch_protections = vec![BranchProtection {
+        s.branch_protections = Some(vec![BranchProtection {
             rule_name: "main".into(),
             push_whitelist_usernames: vec!["alice".into()],
             push_whitelist_deploy_keys: true,
             enable_push: false,
             ..Default::default()
-        }];
+        }]);
         let current = reconcile_repository(input(&s, None, "weebo"), &fj)
             .await
             .forgejo
@@ -828,5 +876,77 @@ mod tests {
         });
         assert!(validate(&s).is_err());
         assert!(validate(&spec("x")).is_ok());
+    }
+
+    fn template(repository_ref: Option<&str>, repository: Option<&str>) -> TemplateSource {
+        TemplateSource {
+            repository_ref: repository_ref.map(|n| ObjectRef { name: n.into() }),
+            repository: repository.map(Into::into),
+            git_content: true,
+            topics: false,
+            labels: false,
+            webhooks: false,
+            protected_branches: false,
+            git_hooks: false,
+            avatar: false,
+        }
+    }
+
+    #[test]
+    fn a_template_is_named_exactly_once_as_owner_slash_name() {
+        let with = |t| {
+            let mut s = spec("x");
+            s.from_template = Some(t);
+            validate(&s)
+        };
+        assert!(with(template(Some("tpl"), None)).is_ok());
+        assert!(with(template(None, Some("batlehub/weebo-base"))).is_ok());
+        for bad in [
+            template(None, None),
+            template(Some("tpl"), Some("batlehub/weebo-base")),
+            template(None, Some("weebo-base")),
+            template(None, Some("batlehub/")),
+            template(None, Some("a/b/c")),
+        ] {
+            let f = with(bad.clone()).unwrap_err();
+            assert_eq!(f.reason, ReasonCode::InvalidSpec, "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn generates_from_a_template_by_name() {
+        let fj = forgejo().await;
+        let mut base = spec("weebo-base");
+        base.is_template = true;
+        reconcile_repository(input(&base, None, "labs"), &fj).await;
+
+        let mut s = spec("app");
+        s.from_template = Some(template(None, Some("labs/weebo-base")));
+        let mut resolved = input(&s, None, "weebo");
+        resolved.source = Ok(Source::Template(
+            "labs/weebo-base".into(),
+            GenerateOptions::default(),
+        ));
+        let created = reconcile_repository(resolved, &fj).await;
+        assert!(created.ready.is_ok(), "{:?}", created.ready);
+        assert!(
+            fj.calls()
+                .iter()
+                .any(|c| c == "generate_repository labs/weebo-base weebo/app"),
+            "{:?}",
+            fj.calls()
+        );
+
+        s.name = "other".into();
+        let mut resolved = input(&s, None, "weebo");
+        resolved.source = Ok(Source::Template(
+            "labs/gone".into(),
+            GenerateOptions::default(),
+        ));
+        let missing = reconcile_repository(resolved, &fj).await;
+        assert_eq!(missing.forgejo, None);
+        let f = missing.ready.unwrap_err();
+        assert_eq!(f.reason, ReasonCode::ReferenceNotFound);
+        assert!(f.message.contains("labs/gone"), "{}", f.message);
     }
 }

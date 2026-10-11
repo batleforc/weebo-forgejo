@@ -24,7 +24,7 @@ export const CHOICES: CrdChoices = {
       label: "Start from",
       options: [
         { id: "init", label: "Empty", hint: "A new repository, optionally with a README, license and .gitignore.", fields: ["init"] },
-        { id: "template", label: "Template", hint: "Generated from a template ForgejoRepository in the same namespace.", fields: ["fromTemplate"], require: ["fromTemplate"] },
+        { id: "template", label: "Template", hint: "Generated from a template: a ForgejoRepository in the same namespace (repositoryRef) or any Forgejo template by owner/name (repository).", fields: ["fromTemplate"], require: ["fromTemplate"] },
         { id: "migrate", label: "Mirror / migrate", hint: "Cloned from a remote, once or as a pull mirror.", fields: ["migrate"], require: ["migrate"] },
       ],
     },

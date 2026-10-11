@@ -9,7 +9,7 @@ use adapters_inbound::controller;
 use api::common::{DeletionPolicy, LocalSecretKeyRef, ObjectRef, SecretTarget, Visibility};
 use api::keys::{ForgejoDeployKeySpec, KeySource};
 use api::organization::ForgejoOrganizationSpec;
-use api::repository::{BranchProtection, ForgejoRepositorySpec};
+use api::repository::{BranchProtection, ForgejoRepositorySpec, TemplateSource};
 use api::team::{ForgejoTeamSpec, TeamPermission};
 use api::webhook::ForgejoWebhookSpec;
 use api::{ForgejoDeployKey, ForgejoOrganization, ForgejoRepository, ForgejoTeam, ForgejoWebhook};
@@ -101,13 +101,13 @@ fn repo_spec() -> ForgejoRepositorySpec {
         init: Some(Default::default()),
         from_template: None,
         migrate: None,
-        branch_protections: vec![BranchProtection {
+        branch_protections: Some(vec![BranchProtection {
             rule_name: "main".into(),
             required_approvals: 1,
             push_whitelist_teams: vec!["devs".into()],
             enable_push: true,
             ..Default::default()
-        }],
+        }]),
         team_refs: vec![ObjectRef {
             name: "weebo-devs".into(),
         }],
@@ -287,6 +287,88 @@ async fn repository_waits_for_its_team() {
             .calls()
             .iter()
             .all(|c| !c.starts_with("create_repository"))
+    );
+}
+
+fn from_template(repository_ref: Option<&str>, repository: Option<&str>) -> ForgejoRepositorySpec {
+    ForgejoRepositorySpec {
+        init: None,
+        from_template: Some(TemplateSource {
+            repository_ref: repository_ref.map(|n| ObjectRef { name: n.into() }),
+            repository: repository.map(Into::into),
+            git_content: true,
+            topics: false,
+            labels: false,
+            webhooks: false,
+            protected_branches: false,
+            git_hooks: false,
+            avatar: false,
+        }),
+        branch_protections: None,
+        team_refs: vec![],
+        ..repo_spec()
+    }
+}
+
+#[tokio::test]
+async fn repository_generated_from_a_template_by_name() {
+    use application::ports::{DesiredRepository, ForgejoGateway};
+
+    let h = harness().await;
+    let repos: Api<ForgejoRepository> = Api::namespaced(h.client.clone(), NS);
+    let create = |name: &str, spec: ForgejoRepositorySpec| {
+        let (repos, cr) = (
+            repos.clone(),
+            ForgejoRepository {
+                metadata: meta(name),
+                spec,
+                status: None,
+            },
+        );
+        async move { repos.create(&PostParams::default(), &cr).await }
+    };
+    // The schema refuses both sources at once, and a name without owner.
+    for bad in [
+        from_template(Some("tpl"), Some("weebo/base")),
+        from_template(None, None),
+        from_template(None, Some("base")),
+    ] {
+        let refused = create("bad", bad.clone()).await.unwrap_err();
+        assert!(
+            refused.to_string().contains("spec.fromTemplate"),
+            "{bad:?}: {refused}"
+        );
+    }
+
+    tokio::spawn(controller::repository::run(h.client.clone(), h.ctx.clone()));
+    tokio::spawn(controller::organization::run(
+        h.client.clone(),
+        h.ctx.clone(),
+    ));
+    org_and_team(&h.client).await;
+    let orgs: Api<ForgejoOrganization> = Api::all(h.client.clone());
+    wait_for(&orgs, "weebo", |o| id_when_ready(o.status.as_ref())).await;
+    // A template no CR manages, made by hand in Forgejo.
+    let template = DesiredRepository {
+        name: "base".into(),
+        template: true,
+        ..Default::default()
+    };
+    h.forgejo
+        .create_repository("weebo", true, &template, &Default::default())
+        .await
+        .unwrap();
+
+    create("app", from_template(None, Some("weebo/base")))
+        .await
+        .unwrap();
+    wait_for(&repos, "app", |r| id_when_ready(r.status.as_ref())).await;
+    assert!(
+        h.forgejo
+            .calls()
+            .contains(&"generate_repository weebo/base weebo/app".to_string()),
+        "{:?}",
+        h.forgejo.calls()
     );
 }
 

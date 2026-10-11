@@ -423,6 +423,25 @@ async fn repository_lifecycle() {
         .await
         .unwrap();
     assert_eq!(generated.name, format!("{org}/from-tpl"));
+    // A missing template is a 404 (the use-case reports it as such); one
+    // that isn't a template is refused.
+    let generate_from = |template: String| {
+        let (gw, org) = (&gw, &org);
+        async move {
+            let desired = DesiredRepository {
+                name: "never".into(),
+                ..Default::default()
+            };
+            gw.generate_repository(&template, org, &desired, &GenerateOptions::default())
+                .await
+        }
+    };
+    assert!(matches!(
+        generate_from(format!("{org}/no-such-template")).await,
+        Err(GatewayError::NotFound(_))
+    ));
+    let refused = generate_from(format!("{org}/from-tpl")).await;
+    assert!(matches!(refused, Err(GatewayError::Api(_))), "{refused:?}");
 
     // Pull mirror of the generated repo, through Forgejo's own URL.
     let base =

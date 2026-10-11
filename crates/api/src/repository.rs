@@ -9,8 +9,10 @@ use crate::status::ForgejoStatus;
 /// `ForgejoUser`. Created empty (optionally initialized), from a template
 /// repository, or by migrating/mirroring a remote.
 ///
-/// Set exactly one of `organizationRef`/`userRef`, and at most one of
-/// `init`/`fromTemplate`/`migrate`; anything else reports `InvalidSpec`.
+/// Set exactly one of `organizationRef`/`userRef`, at most one of
+/// `init`/`fromTemplate`/`migrate`, and exactly one of
+/// `fromTemplate.repositoryRef`/`fromTemplate.repository`; anything else
+/// reports `InvalidSpec`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "forgejo.weebo.io",
@@ -19,6 +21,8 @@ use crate::status::ForgejoStatus;
     validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
     validation = kube::core::Rule::new("has(self.spec.organizationRef) != has(self.spec.userRef)").message("set exactly one of spec.organizationRef and spec.userRef"),
     validation = kube::core::Rule::new("(has(self.spec.init) ? 1 : 0) + (has(self.spec.fromTemplate) ? 1 : 0) + (has(self.spec.migrate) ? 1 : 0) <= 1").message("set at most one of spec.init, spec.fromTemplate and spec.migrate"),
+    validation = kube::core::Rule::new("!has(self.spec.fromTemplate) || has(self.spec.fromTemplate.repositoryRef) != has(self.spec.fromTemplate.repository)").message("set exactly one of spec.fromTemplate.repositoryRef and spec.fromTemplate.repository"),
+    validation = kube::core::Rule::new("!has(self.spec.fromTemplate) || !has(self.spec.fromTemplate.repository) || self.spec.fromTemplate.repository.matches('^[^/]+/[^/]+$')").message("spec.fromTemplate.repository must be owner/name"),
     validation = kube::core::Rule::new("!has(self.spec.userRef) || !has(self.spec.teamRefs) || size(self.spec.teamRefs) == 0").message("spec.teamRefs only applies to organization-owned repositories"),
     plural = "forgejorepositories",
     shortname = "fjrepo",
@@ -65,18 +69,22 @@ pub struct ForgejoRepositorySpec {
     /// Creation-time initialization of an empty repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub init: Option<RepositoryInit>,
-    /// Generate the repository from a template `ForgejoRepository` in the
-    /// same namespace. Creation-time only.
+    /// Generate the repository from a template repository: a
+    /// `ForgejoRepository` in the same namespace, or any Forgejo template
+    /// by name (gated by the namespace policy's `allowedTemplates`).
+    /// Creation-time only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_template: Option<TemplateSource>,
     /// Migrate (or pull-mirror) a remote repository. Creation-time only,
     /// except `mirrorInterval`, which stays in sync.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migrate: Option<MigrateSource>,
-    /// Branch protection rules. Authoritative: a rule not listed here is
-    /// deleted.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub branch_protections: Vec<BranchProtection>,
+    /// Branch protection rules. Unset: the repository's rules are left
+    /// alone (those copied from a template, or set in Forgejo). Set:
+    /// authoritative — a rule not listed here is deleted, and `[]` deletes
+    /// them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_protections: Option<Vec<BranchProtection>>,
     /// `ForgejoTeam`s granted access (organization-owned repositories only;
     /// the teams must belong to the owning organization). Authoritative,
     /// except for the `Owners` team and teams with
@@ -136,7 +144,15 @@ fn default_true() -> bool {
 pub struct TemplateSource {
     /// Template `ForgejoRepository` in the same namespace (must have
     /// `isTemplate: true`).
-    pub repository_ref: ObjectRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_ref: Option<ObjectRef>,
+    /// Template repository by its Forgejo name, `owner/name` (e.g.
+    /// `batlehub/weebo-base`) — one shared by every namespace, managed by a
+    /// CR elsewhere or not at all. It must be marked as a template in
+    /// Forgejo. A `ForgejoNamespacePolicy` restricts which ones a namespace
+    /// may use with `allowedTemplates`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     #[serde(default = "default_true")]
     pub git_content: bool,
     #[serde(default)]
@@ -145,6 +161,9 @@ pub struct TemplateSource {
     pub labels: bool,
     #[serde(default)]
     pub webhooks: bool,
+    /// Copy the template's branch protections. Leave `branchProtections`
+    /// unset to keep them: when set, it is authoritative and a copied rule
+    /// it doesn't list is deleted right after.
     #[serde(default)]
     pub protected_branches: bool,
     #[serde(default)]

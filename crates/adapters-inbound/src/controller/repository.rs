@@ -33,7 +33,8 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
     // them all (policies change rarely, and the check is a local list).
     let by_policy = controller.store();
     // Re-trigger on anything a repository references: its owner, its
-    // teams, and its template (another repository in the same namespace).
+    // teams, and its template (another repository in the same namespace,
+    // or one in any namespace whose Forgejo name it generates from).
     let by_org = controller.store();
     let by_user = controller.store();
     let by_team = controller.store();
@@ -88,15 +89,19 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
             watcher::Config::default(),
             move |template| {
                 let (name, ns) = (template.name_any(), template.namespace());
+                let forgejo_name = template
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.forgejo_name.clone());
                 by_template
                     .state()
                     .into_iter()
                     .filter(|r| {
-                        r.namespace() == ns
-                            && r.spec
-                                .from_template
-                                .as_ref()
-                                .is_some_and(|t| t.repository_ref.name == name)
+                        r.spec.from_template.as_ref().is_some_and(|t| {
+                            let by_ref = t.repository_ref.as_ref().is_some_and(|t| t.name == name);
+                            (by_ref && r.namespace() == ns)
+                                || (t.repository.is_some() && t.repository == forgejo_name)
+                        })
                     })
                     .map(|r| ObjectRef::from_obj(r.as_ref()))
                     .collect::<Vec<_>>()
@@ -253,23 +258,28 @@ async fn source(
     ctx: &Ctx,
 ) -> Result<Result<Source, Failure>, Error> {
     if let Some(t) = &spec.from_template {
-        let name = &t.repository_ref.name;
+        let options = GenerateOptions {
+            git_content: t.git_content,
+            topics: t.topics,
+            labels: t.labels,
+            webhooks: t.webhooks,
+            protected_branches: t.protected_branches,
+            git_hooks: t.git_hooks,
+            avatar: t.avatar,
+        };
+        // By name: Forgejo itself says whether it exists and is a template.
+        let Some(template_ref) = &t.repository_ref else {
+            let name = t
+                .repository
+                .clone()
+                .expect("validated: one template source");
+            return Ok(Ok(Source::Template(name, options)));
+        };
         let instance = spec.instance_ref.as_deref();
-        let template = resolve_required(ctx.refs.as_ref(), RefKind::Repository, ns, name, instance);
-        return Ok(template.await?.map(|r| {
-            Source::Template(
-                r.name,
-                GenerateOptions {
-                    git_content: t.git_content,
-                    topics: t.topics,
-                    labels: t.labels,
-                    webhooks: t.webhooks,
-                    protected_branches: t.protected_branches,
-                    git_hooks: t.git_hooks,
-                    avatar: t.avatar,
-                },
-            )
-        }));
+        let refs = ctx.refs.as_ref();
+        let template =
+            resolve_required(refs, RefKind::Repository, ns, &template_ref.name, instance);
+        return Ok(template.await?.map(|r| Source::Template(r.name, options)));
     }
     if let Some(m) = &spec.migrate {
         let mut options = MigrateOptions {

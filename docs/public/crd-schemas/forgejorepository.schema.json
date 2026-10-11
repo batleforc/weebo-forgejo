@@ -2,7 +2,7 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoRepository",
   "scope": "Namespaced",
-  "description": "A Forgejo repository, owned by a `ForgejoOrganization` or a\n`ForgejoUser`. Created empty (optionally initialized), from a template\nrepository, or by migrating/mirroring a remote.\n\nSet exactly one of `organizationRef`/`userRef`, and at most one of\n`init`/`fromTemplate`/`migrate`; anything else reports `InvalidSpec`.",
+  "description": "A Forgejo repository, owned by a `ForgejoOrganization` or a\n`ForgejoUser`. Created empty (optionally initialized), from a template\nrepository, or by migrating/mirroring a remote.\n\nSet exactly one of `organizationRef`/`userRef`, at most one of\n`init`/`fromTemplate`/`migrate`, and exactly one of\n`fromTemplate.repositoryRef`/`fromTemplate.repository`; anything else\nreports `InvalidSpec`.",
   "properties": {
     "archived": {
       "default": false,
@@ -10,7 +10,7 @@
       "type": "boolean"
     },
     "branchProtections": {
-      "description": "Branch protection rules. Authoritative: a rule not listed here is\ndeleted.",
+      "description": "Branch protection rules. Unset: the repository's rules are left\nalone (those copied from a template, or set in Forgejo). Set:\nauthoritative — a rule not listed here is deleted, and `[]` deletes\nthem all.",
       "items": {
         "description": "One branch protection rule. Allow-lists name Forgejo users and teams\ndirectly (not CRs); each `enable*Whitelist` switch is derived from\nwhether its lists are non-empty.",
         "properties": {
@@ -117,6 +117,7 @@
         ],
         "type": "object"
       },
+      "nullable": true,
       "type": "array"
     },
     "defaultBranch": {
@@ -137,7 +138,7 @@
       "type": "string"
     },
     "fromTemplate": {
-      "description": "Generate the repository from a template `ForgejoRepository` in the\nsame namespace. Creation-time only.",
+      "description": "Generate the repository from a template repository: a\n`ForgejoRepository` in the same namespace, or any Forgejo template\nby name (gated by the namespace policy's `allowedTemplates`).\nCreation-time only.",
       "nullable": true,
       "properties": {
         "avatar": {
@@ -158,10 +159,17 @@
         },
         "protectedBranches": {
           "default": false,
+          "description": "Copy the template's branch protections. Leave `branchProtections`\nunset to keep them: when set, it is authoritative and a copied rule\nit doesn't list is deleted right after.",
           "type": "boolean"
+        },
+        "repository": {
+          "description": "Template repository by its Forgejo name, `owner/name` (e.g.\n`batlehub/weebo-base`) — one shared by every namespace, managed by a\nCR elsewhere or not at all. It must be marked as a template in\nForgejo. A `ForgejoNamespacePolicy` restricts which ones a namespace\nmay use with `allowedTemplates`.",
+          "nullable": true,
+          "type": "string"
         },
         "repositoryRef": {
           "description": "Template `ForgejoRepository` in the same namespace (must have\n`isTemplate: true`).",
+          "nullable": true,
           "properties": {
             "name": {
               "type": "string"
@@ -181,9 +189,6 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "repositoryRef"
-      ],
       "type": "object"
     },
     "init": {

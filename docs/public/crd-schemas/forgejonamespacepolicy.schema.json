@@ -2,7 +2,7 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoNamespacePolicy",
   "scope": "Cluster",
-  "description": "Namespace allow-list for the namespaced kinds, enforced by the\nadmission webhook (CREATE/UPDATE) and re-checked by every reconciler.\n\nWhile no `ForgejoNamespacePolicy` exists, everything is allowed. As soon\nas one exists, a namespaced CR is only accepted if some `Allow` rule\nmatches its namespace and kind and covers the organizations and users it\nreferences — and no `Deny` rule matches. Rules of every policy are\npooled; deny always wins.",
+  "description": "Namespace allow-list for the namespaced kinds, enforced by the\nadmission webhook (CREATE/UPDATE) and re-checked by every reconciler.\n\nWhile no `ForgejoNamespacePolicy` exists, everything is allowed. As soon\nas one exists, a namespaced CR is only accepted if some `Allow` rule\nmatches its namespace and kind and covers the organizations, users and\ntemplates it references — and no `Deny` rule matches. Rules of every\npolicy are pooled; deny always wins.",
   "properties": {
     "rules": {
       "items": {
@@ -22,6 +22,14 @@
           },
           "allowedOrganizations": {
             "description": "`ForgejoOrganization`s (CR names) the namespace may reference —\nowner of its repositories, target of its org webhooks. Unset: any.\nOn a `Deny` rule: only deny requests referencing one of these.",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "allowedTemplates": {
+            "description": "Template repositories (Forgejo `owner/name`, `*`, or a prefix glob\nlike `batlehub/*`) the namespace may generate repositories from by\nname (`fromTemplate.repository`). Unset: any. A template referenced\nas a same-namespace CR (`fromTemplate.repositoryRef`) isn't\ngoverned by this list. On a `Deny` rule: only deny requests\nreferencing one of these.",
             "items": {
               "type": "string"
             },

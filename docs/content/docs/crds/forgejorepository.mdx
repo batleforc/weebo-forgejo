@@ -13,8 +13,10 @@ A Forgejo repository, owned by a `ForgejoOrganization` or a
 `ForgejoUser`. Created empty (optionally initialized), from a template
 repository, or by migrating/mirroring a remote.
 
-Set exactly one of `organizationRef`/`userRef`, and at most one of
-`init`/`fromTemplate`/`migrate`; anything else reports `InvalidSpec`.
+Set exactly one of `organizationRef`/`userRef`, at most one of
+`init`/`fromTemplate`/`migrate`, and exactly one of
+`fromTemplate.repositoryRef`/`fromTemplate.repository`; anything else
+reports `InvalidSpec`.
 
 ## Example
 
@@ -38,11 +40,11 @@ spec:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `archived` | `boolean` | no | `false` | Archived repositories are read-only; their settings, branch protections and teams are left alone until unarchived. |
-| `branchProtections` | `object[]` | no |  | Branch protection rules. Authoritative: a rule not listed here is deleted. |
+| `branchProtections` | `object[]` | no |  | Branch protection rules. Unset: the repository's rules are left alone (those copied from a template, or set in Forgejo). Set: authoritative — a rule not listed here is deleted, and `[]` deletes them all. |
 | `defaultBranch` | `string` | no |  |  |
 | `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR never deletes git history. |
 | `description` | `string` | no |  |  |
-| `fromTemplate` | `object` | no |  | Generate the repository from a template `ForgejoRepository` in the same namespace. Creation-time only. |
+| `fromTemplate` | `object` | no |  | Generate the repository from a template repository: a `ForgejoRepository` in the same namespace, or any Forgejo template by name (gated by the namespace policy's `allowedTemplates`). Creation-time only. |
 | `init` | `object` | no |  | Creation-time initialization of an empty repository. |
 | `instanceRef` | `string` | no |  |  |
 | `isTemplate` | `boolean` | no | `false` | Mark the repository as a template others can be generated from. |

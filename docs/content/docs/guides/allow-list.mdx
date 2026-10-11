@@ -34,7 +34,8 @@ See [Security model](/docs/guides/security#tokens-and-oauth2-applications-for-ad
 With at least one policy in place, a CR is accepted only if:
 
 1. an `Allow` rule matches its namespace and kind;
-2. that rule covers **every** organization and user the CR references; and
+2. that rule covers **every** organization, user and template the CR
+   references; and
 3. no `Deny` rule matches. A `Deny` always wins.
 
 ```yaml
@@ -63,13 +64,39 @@ spec:
 `metadata.name` of the `ForgejoOrganization` and `ForgejoUser`, which is what
 `organizationRef`, `userRef` and `ownerRef` point at.
 
+### Templates
+
+`allowedTemplates` restricts the template repositories a namespace may
+generate repositories from **by Forgejo name**
+(`fromTemplate.repository`). It lists `owner/name` patterns: an exact name,
+`*`, or a prefix glob such as `batlehub/*`. Unset means any template.
+
+```yaml
+    - namespaces: ["team-*"]
+      allowedKinds: [ForgejoRepository]
+      allowedOrganizations: [weebo]
+      allowedTemplates: ["batlehub/*"]  # only the shared templates
+```
+
+A template referenced as a `ForgejoRepository` of the same namespace
+(`fromTemplate.repositoryRef`) isn't governed by this list: the namespace
+already manages it.
+
+<Callout type="warn" title="Restrict templates on a shared cluster">
+The operator generates repositories with its admin token, which can read
+**every** repository, private ones included. Without `allowedTemplates`, a
+namespace allowed to create repositories can copy the content of any
+repository marked as a template into its own. While no policy exists, that
+is the case for every namespace.
+</Callout>
+
 ## What each kind references
 
 A rule must cover what the CR points at:
 
 | Kind | References |
 | --- | --- |
-| `ForgejoRepository` | Its owner: the organization (`organizationRef`) or the user (`userRef`) |
+| `ForgejoRepository` | Its owner: the organization (`organizationRef`) or the user (`userRef`); and the template it is generated from by name (`fromTemplate.repository`) |
 | `ForgejoWebhook` on an organization | That organization |
 | `ForgejoWebhook` on a repository | Nothing beyond the repository, which must be in the same namespace and is checked itself |
 | `ForgejoDeployKey` | Nothing beyond the repository, as above |

@@ -29,6 +29,11 @@ pub trait Governed {
     const KIND: NamespacedKind;
     /// `(ForgejoOrganization names, ForgejoUser names)` this CR references.
     fn references(&self) -> (Vec<String>, Vec<String>);
+    /// Template repositories (Forgejo `owner/name`) the CR generates from
+    /// by name.
+    fn templates(&self) -> Vec<String> {
+        vec![]
+    }
     /// Where the CR writes the secrets it emits.
     fn secret_targets(&self) -> &[SecretTarget] {
         &[]
@@ -51,6 +56,13 @@ impl Governed for ForgejoRepository {
             names([self.spec.organization_ref.as_ref()]),
             names([self.spec.user_ref.as_ref()]),
         )
+    }
+    fn templates(&self) -> Vec<String> {
+        let by_name = self.spec.from_template.as_ref();
+        by_name
+            .and_then(|t| t.repository.clone())
+            .into_iter()
+            .collect()
     }
 }
 
@@ -116,7 +128,14 @@ pub async fn enforce<K: Governed>(
         return Ok(Err(f));
     }
     let (organizations, users) = obj.references();
-    let request = allow_list::request(namespace, kind_of(K::KIND), &organizations, &users);
+    let templates = obj.templates();
+    let request = allow_list::request(
+        namespace,
+        kind_of(K::KIND),
+        &organizations,
+        &users,
+        &templates,
+    );
     let policies = policies.policies().await?;
     if let Err(f) = check(&request, &policies) {
         return Ok(Err(f));
@@ -160,7 +179,7 @@ pub fn check_admin_credentials(
         .filter(|r| r.effect == ApiEffect::Deny || r.allowed_users.is_some())
         .map(rule_of)
         .collect();
-    let request = allow_list::request(namespace, kind, &[], admins);
+    let request = allow_list::request(namespace, kind, &[], admins, &[]);
     match allow_list::evaluate(&request, &explicit, true) {
         Decision::Allowed => Ok(()),
         Decision::Denied(_) => Err(Failure::new(
@@ -190,6 +209,7 @@ pub fn rule_of(rule: &NamespaceRule) -> Rule {
         rule.allowed_kinds.iter().copied().map(kind_of).collect(),
         rule.allowed_organizations.clone(),
         rule.allowed_users.clone(),
+        rule.allowed_templates.clone(),
         match rule.effect {
             ApiEffect::Allow => Effect::Allow,
             ApiEffect::Deny => Effect::Deny,
@@ -219,11 +239,12 @@ mod tests {
             allowed_kinds: vec![NamespacedKind::ForgejoAccessToken],
             allowed_organizations: None,
             allowed_users: Some(vec!["ci-bot".into()]),
+            allowed_templates: None,
             effect: ApiEffect::Allow,
         }]];
         let bot = vec!["ci-bot".to_string()];
         let admin = vec!["admin".to_string()];
-        let ask = |users| allow_list::request("team-a", Kind::AccessToken, &[], users);
+        let ask = |users| allow_list::request("team-a", Kind::AccessToken, &[], users, &[]);
         assert!(check(&ask(&bot), &policies).is_ok());
         let denied = check(&ask(&admin), &policies).unwrap_err();
         assert_eq!(denied.reason, ReasonCode::NamespaceNotAllowed);
@@ -252,9 +273,16 @@ mod tests {
             vec![Kind::OAuth2Application],
             None,
             users.map(|u| u.iter().map(|s| s.to_string()).collect()),
+            None,
             Effect::Allow,
         );
-        let request = allow_list::request("team-a", Kind::OAuth2Application, &organizations, &refs);
+        let request = allow_list::request(
+            "team-a",
+            Kind::OAuth2Application,
+            &organizations,
+            &refs,
+            &[],
+        );
         allow_list::evaluate(&request, &[rule], true)
     }
 
@@ -293,8 +321,48 @@ mod tests {
             ],
             allowed_organizations: None,
             allowed_users: users,
+            allowed_templates: None,
             effect: ApiEffect::Allow,
         }]]
+    }
+
+    fn repository(template: serde_json::Value) -> ForgejoRepository {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoRepository",
+            "metadata": {"name": "app", "namespace": "team-a"},
+            "spec": {"organizationRef": {"name": "weebo"}, "name": "app", "fromTemplate": template},
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn templates_by_name_are_governed_by_allowed_templates() {
+        let cluster = crate::test_support::FakeCluster::default();
+        let shared = repository(serde_json::json!({"repository": "batlehub/weebo-base"}));
+        let foreign = repository(serde_json::json!({"repository": "ops/secrets"}));
+        let local = repository(serde_json::json!({"repositoryRef": {"name": "tpl"}}));
+        let verdict = |repo: &ForgejoRepository| {
+            let (cluster, repo) = (&cluster, repo.clone());
+            async move { enforce(cluster, cluster, "team-a", &repo).await.unwrap() }
+        };
+        assert!(verdict(&foreign).await.is_ok(), "no policy, no restriction");
+
+        cluster.set_policies(vec![vec![NamespaceRule {
+            namespaces: vec!["team-*".into()],
+            allowed_kinds: vec![NamespacedKind::ForgejoRepository],
+            allowed_organizations: None,
+            allowed_users: None,
+            allowed_templates: Some(vec!["batlehub/*".into()]),
+            effect: ApiEffect::Allow,
+        }]]);
+        assert!(verdict(&shared).await.is_ok());
+        assert!(
+            verdict(&local).await.is_ok(),
+            "a same-namespace template CR isn't a template by name"
+        );
+        let denied = verdict(&foreign).await.unwrap_err();
+        assert_eq!(denied.reason, ReasonCode::NamespaceNotAllowed);
+        assert!(denied.message.contains("ops/secrets"), "{}", denied.message);
     }
 
     #[tokio::test]

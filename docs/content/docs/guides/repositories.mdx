@@ -43,6 +43,16 @@ spec:
 </Tab>
 <Tab value="From a template">
 
+Name the template one of two ways:
+
+- **`repositoryRef`**: a `ForgejoRepository` **in the same namespace** with
+  `isTemplate: true`.
+- **`repository`**: any template repository in Forgejo, by its
+  `owner/name`. Use this for a template shared by every team (managed by a
+  CR in a platform namespace, or created by hand). The allow-list's
+  [`allowedTemplates`](/docs/guides/allow-list#templates) restricts which
+  ones a namespace may use.
+
 ```yaml
 apiVersion: forgejo.weebo.io/v1alpha1
 kind: ForgejoRepository
@@ -52,11 +62,53 @@ metadata:
 spec:
   organizationRef: { name: weebo }
   name: app
-  fromTemplate: { repositoryRef: { name: service-template } }
+  fromTemplate:
+    repository: batlehub/weebo-base   # or repositoryRef: { name: service-template }
+    gitContent: true                  # default; also topics, labels, webhooks,
+                                      # protectedBranches, gitHooks, avatar
 ```
 
-The template must be a `ForgejoRepository` **in the same namespace** with
-`isTemplate: true`.
+If the template doesn't exist, the repository reports `ReferenceNotFound`.
+If the repository exists but isn't marked as a template, Forgejo refuses
+it (`ForgejoApiError`).
+
+Forgejo fills in variables in the files the template lists in
+`.forgejo/template`, and in their paths:
+
+| Variable | For `weebo/my-app` |
+| --- | --- |
+| `$REPO_NAME` | `my-app` |
+| `$REPO_OWNER` | `weebo` |
+| `$REPO_DESCRIPTION` | the repository's `description` |
+| `$REPO_HTTPS_URL` / `$REPO_SSH_URL` | its clone URLs |
+| `${REPO_NAME_SNAKE}`, `_PASCAL`, `_CAMEL`, `_KEBAB`, `_UPPER`… | `my_app`, `MyApp`, `myApp`, `my-app`, `MY-APP` |
+
+See [Repository templates](/docs/guides/templates) for the full list, the
+glob rules and a step-by-step setup.
+
+<Callout title="A template kept in sync with GitHub">
+To reuse a GitHub template, mirror it into Forgejo and mark the mirror as a
+template. Each pull-mirror sync brings in the upstream changes, and
+repositories generated afterwards start from them:
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: weebo-base
+  namespace: platform
+spec:
+  organizationRef: { name: batlehub }
+  name: weebo-base
+  isTemplate: true
+  migrate:
+    cloneAddr: https://github.com/batleforc/weebo-base.git
+    mirror: true
+    mirrorInterval: 8h
+```
+
+Teams then generate from it with `fromTemplate.repository: batlehub/weebo-base`.
+</Callout>
 
 </Tab>
 <Tab value="Mirror or migrate">
@@ -110,7 +162,10 @@ spec:
       statusCheckContexts: [ci/build]
 ```
 
-Both lists are authoritative: what isn't listed is removed.
+Both lists are authoritative: what isn't listed is removed. Leave
+`branchProtections` out to keep the repository's rules as they are (those
+copied from a [template](/docs/guides/templates), or set in Forgejo); set it
+to `[]` to remove them all.
 
 - **`teamRefs`** grants teams access to the repository. They must belong to
   the owning organization. The access level comes from the team (see
@@ -182,4 +237,4 @@ use [`ForgejoUserKey`](/docs/guides/users-and-oidc#ssh-keys-for-a-user).
 
 ## Next
 
-[Credentials](/docs/guides/credentials).
+[Repository templates](/docs/guides/templates).

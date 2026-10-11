@@ -36,8 +36,10 @@ spec:
               `ForgejoUser`. Created empty (optionally initialized), from a template
               repository, or by migrating/mirroring a remote.
 
-              Set exactly one of `organizationRef`/`userRef`, and at most one of
-              `init`/`fromTemplate`/`migrate`; anything else reports `InvalidSpec`.
+              Set exactly one of `organizationRef`/`userRef`, at most one of
+              `init`/`fromTemplate`/`migrate`, and exactly one of
+              `fromTemplate.repositoryRef`/`fromTemplate.repository`; anything else
+              reports `InvalidSpec`.
             properties:
               archived:
                 default: false
@@ -47,8 +49,10 @@ spec:
                 type: boolean
               branchProtections:
                 description: |-
-                  Branch protection rules. Authoritative: a rule not listed here is
-                  deleted.
+                  Branch protection rules. Unset: the repository's rules are left
+                  alone (those copied from a template, or set in Forgejo). Set:
+                  authoritative — a rule not listed here is deleted, and `[]` deletes
+                  them all.
                 items:
                   description: |-
                     One branch protection rule. Allow-lists name Forgejo users and teams
@@ -128,6 +132,7 @@ spec:
                   required:
                   - ruleName
                   type: object
+                nullable: true
                 type: array
               defaultBranch:
                 nullable: true
@@ -144,8 +149,10 @@ spec:
                 type: string
               fromTemplate:
                 description: |-
-                  Generate the repository from a template `ForgejoRepository` in the
-                  same namespace. Creation-time only.
+                  Generate the repository from a template repository: a
+                  `ForgejoRepository` in the same namespace, or any Forgejo template
+                  by name (gated by the namespace policy's `allowedTemplates`).
+                  Creation-time only.
                 nullable: true
                 properties:
                   avatar:
@@ -162,11 +169,25 @@ spec:
                     type: boolean
                   protectedBranches:
                     default: false
+                    description: |-
+                      Copy the template's branch protections. Leave `branchProtections`
+                      unset to keep them: when set, it is authoritative and a copied rule
+                      it doesn't list is deleted right after.
                     type: boolean
+                  repository:
+                    description: |-
+                      Template repository by its Forgejo name, `owner/name` (e.g.
+                      `batlehub/weebo-base`) — one shared by every namespace, managed by a
+                      CR elsewhere or not at all. It must be marked as a template in
+                      Forgejo. A `ForgejoNamespacePolicy` restricts which ones a namespace
+                      may use with `allowedTemplates`.
+                    nullable: true
+                    type: string
                   repositoryRef:
                     description: |-
                       Template `ForgejoRepository` in the same namespace (must have
                       `isTemplate: true`).
+                    nullable: true
                     properties:
                       name:
                         type: string
@@ -179,8 +200,6 @@ spec:
                   webhooks:
                     default: false
                     type: boolean
-                required:
-                - repositoryRef
                 type: object
               init:
                 description: Creation-time initialization of an empty repository.
@@ -455,6 +474,10 @@ spec:
           rule: has(self.spec.organizationRef) != has(self.spec.userRef)
         - message: set at most one of spec.init, spec.fromTemplate and spec.migrate
           rule: '(has(self.spec.init) ? 1 : 0) + (has(self.spec.fromTemplate) ? 1 : 0) + (has(self.spec.migrate) ? 1 : 0) <= 1'
+        - message: set exactly one of spec.fromTemplate.repositoryRef and spec.fromTemplate.repository
+          rule: '!has(self.spec.fromTemplate) || has(self.spec.fromTemplate.repositoryRef) != has(self.spec.fromTemplate.repository)'
+        - message: spec.fromTemplate.repository must be owner/name
+          rule: '!has(self.spec.fromTemplate) || !has(self.spec.fromTemplate.repository) || self.spec.fromTemplate.repository.matches(''^[^/]+/[^/]+$'')'
         - message: spec.teamRefs only applies to organization-owned repositories
           rule: '!has(self.spec.userRef) || !has(self.spec.teamRefs) || size(self.spec.teamRefs) == 0'
     served: true

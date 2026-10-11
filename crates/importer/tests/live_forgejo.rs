@@ -158,7 +158,7 @@ async fn import_round_trips_a_live_organization() {
         }]
     );
     assert_eq!(
-        r.spec.branch_protections[0].push_whitelist_teams,
+        r.spec.branch_protections.as_ref().unwrap()[0].push_whitelist_teams,
         vec!["Dev"]
     );
     let h = &out.webhooks[0];

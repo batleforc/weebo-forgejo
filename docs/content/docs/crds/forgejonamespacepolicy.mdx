@@ -16,9 +16,9 @@ admission webhook (CREATE/UPDATE) and re-checked by every reconciler.
 
 While no `ForgejoNamespacePolicy` exists, everything is allowed. As soon
 as one exists, a namespaced CR is only accepted if some `Allow` rule
-matches its namespace and kind and covers the organizations and users it
-references — and no `Deny` rule matches. Rules of every policy are
-pooled; deny always wins.
+matches its namespace and kind and covers the organizations, users and
+templates it references — and no `Deny` rule matches. Rules of every
+policy are pooled; deny always wins.
 
 ## Example
 

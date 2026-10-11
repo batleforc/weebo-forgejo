@@ -1,0 +1,250 @@
+---
+title: Repository templates
+description: Share a template repository across teams, keep it in sync with GitHub, and have Forgejo fill in each new repository's name.
+---
+
+A template repository is a starting point: a README, a CI pipeline, a
+`Taskfile`, a `Cargo.toml`… A new repository generated from it gets a copy
+of its files, and Forgejo replaces variables such as `$REPO_NAME` along
+the way. Its README title, package name or file names then match the new
+repository from the first commit.
+
+This guide sets up one template shared by every team, generates
+repositories from it, and restricts who may use it.
+
+## Before you begin
+
+- A `ForgejoOrganization` to hold the template, for example `batlehub`
+  (see [Users, OIDC and teams](/docs/guides/users-and-oidc)).
+- For the generated repositories, an organization or user each team may
+  use (see [Repositories](/docs/guides/repositories)).
+
+## Set up a shared template
+
+<Steps>
+<Step>
+
+### Mark the files to fill in
+
+Forgejo only replaces variables in the files listed in
+**`.forgejo/template`**, at the template's root. List one glob per line:
+
+```text title=".forgejo/template"
+*.md
+**/*.md
+Cargo.toml
+src/**
+```
+
+Then use the [variables](#variables) in those files, and in their paths:
+
+```markdown title="README.md"
+# $REPO_NAME
+
+$REPO_DESCRIPTION
+
+    git clone $REPO_HTTPS_URL
+```
+
+```toml title="Cargo.toml"
+[package]
+name = "${REPO_NAME_SNAKE}"
+```
+
+A file named `src/${REPO_NAME_SNAKE}.rs` becomes `src/my_app.rs`.
+
+<Callout title="Globs match path segments">
+`*` stops at `/`, and `**/` needs at least one directory. `**/*.md` covers
+`docs/guide.md` but **not** `README.md` at the root: list `*.md` as well.
+Likewise, `docs/*.txt` doesn't cover `docs/sub/notes.txt`.
+</Callout>
+
+Files not listed are copied as they are, `$REPO_NAME` included. The
+`.forgejo/template` file itself is not copied into generated repositories.
+
+</Step>
+<Step>
+
+### Bring the template into Forgejo
+
+Pick where the template's source of truth lives:
+
+<Tabs items={['Mirrored from GitHub', 'Managed in Forgejo']}>
+<Tab value="Mirrored from GitHub">
+
+Keep developing the template on GitHub and pull-mirror it into Forgejo,
+marked as a template. Each sync (here every 8 hours) brings in the upstream
+changes, and repositories generated afterwards start from them.
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: weebo-base
+  namespace: platform
+spec:
+  organizationRef: { name: batlehub }
+  name: weebo-base
+  isTemplate: true
+  migrate:
+    cloneAddr: https://github.com/batleforc/weebo-base.git
+    mirror: true
+    mirrorInterval: 8h
+    # authSecretRef: { name: github, tokenKey: token }   # private source
+```
+
+A mirror is read-only in Forgejo: the template's changes are made on GitHub.
+
+</Tab>
+<Tab value="Managed in Forgejo">
+
+Create the template in Forgejo and push to it like any repository:
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: weebo-base
+  namespace: platform
+spec:
+  organizationRef: { name: batlehub }
+  name: weebo-base
+  isTemplate: true
+  init: { readme: Default }
+```
+
+A template created by hand in Forgejo (**Settings → Template repository**)
+works too: the operator never needs to manage it.
+
+</Tab>
+</Tabs>
+
+Either way, the template is now `batlehub/weebo-base` in Forgejo.
+
+</Step>
+<Step>
+
+### Restrict who may use it
+
+The operator generates repositories with its admin token, which can read
+every repository, private ones included. On a shared cluster, list the
+templates each namespace may use with `allowedTemplates` (an exact
+`owner/name`, `*`, or a prefix glob):
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoNamespacePolicy
+metadata:
+  name: teams
+spec:
+  rules:
+    - namespaces: ["team-*"]
+      allowedKinds: [ForgejoRepository]
+      allowedOrganizations: [weebo]
+      allowedTemplates: ["batlehub/*"]
+```
+
+See [The allow-list](/docs/guides/allow-list#templates) for how rules
+combine.
+
+</Step>
+<Step>
+
+### Generate repositories
+
+From any allowed namespace, name the template by its Forgejo name:
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoRepository
+metadata:
+  name: my-app
+  namespace: team-a
+spec:
+  organizationRef: { name: weebo }
+  name: my-app
+  description: Billing service   # becomes $REPO_DESCRIPTION
+  private: true
+  fromTemplate:
+    repository: batlehub/weebo-base
+```
+
+The repository's README now starts with `# my-app`.
+
+</Step>
+</Steps>
+
+## Variables
+
+Tested on Forgejo 16, for a repository `weebo/my-app` generated from
+`batlehub/weebo-base`:
+
+| Variable | Value |
+| --- | --- |
+| `$REPO_NAME` | `my-app` |
+| `$REPO_DESCRIPTION` | the new repository's `spec.description` |
+| `$REPO_OWNER` | `weebo` |
+| `$REPO_LINK` | `/weebo/my-app` (a path, without the host) |
+| `$REPO_HTTPS_URL` | `https://git.example.com/weebo/my-app.git` |
+| `$REPO_SSH_URL` | `ssh://git@git.example.com:2222/weebo/my-app.git` |
+| `$TEMPLATE_NAME` | `weebo-base` |
+| `$TEMPLATE_DESCRIPTION` | the template's description |
+| `$TEMPLATE_OWNER` | `batlehub` |
+| `$TEMPLATE_LINK`, `$TEMPLATE_HTTPS_URL`, `$TEMPLATE_SSH_URL` | as for the repository |
+
+`${REPO_NAME}` is the same as `$REPO_NAME`; use the braces when a letter,
+digit or `_` follows the variable.
+
+### Changing the case
+
+Add a suffix to any variable to change its case. For a repository named
+`my-cool-app`:
+
+| Suffix | Example | Value |
+| --- | --- | --- |
+| `_SNAKE` | `${REPO_NAME_SNAKE}` | `my_cool_app` |
+| `_KEBAB` | `${REPO_NAME_KEBAB}` | `my-cool-app` |
+| `_CAMEL` | `${REPO_NAME_CAMEL}` | `myCoolApp` |
+| `_PASCAL` | `${REPO_NAME_PASCAL}` | `MyCoolApp` |
+| `_LOWER` | `${REPO_NAME_LOWER}` | `my-cool-app` |
+| `_UPPER` | `${REPO_NAME_UPPER}` | `MY-COOL-APP` |
+| `_TITLE` | `${REPO_NAME_TITLE}` | `My-Cool-App` (dashes kept) |
+
+An unknown name, such as `${REPO_NAME_DOT}`, is left as is.
+
+<Callout type="warn" title="No escaping">
+There is no way to keep a literal `$REPO_NAME` in a listed file: `$$REPO_NAME`
+gives `$my-app`. Keep files that must contain `$…` text (shell scripts,
+GitHub Actions expressions) out of `.forgejo/template`, or avoid variable
+names Forgejo knows.
+</Callout>
+
+## Good to know
+
+- **Creation only.** Variables are replaced once, when the repository is
+  generated. Later changes to the template don't reach existing
+  repositories, and changing `fromTemplate` afterwards has no effect.
+- **What else to copy.** `fromTemplate` copies the files (`gitContent`,
+  on by default) and can also copy `topics`, `labels`, `webhooks`,
+  `gitHooks` and `avatar`. Settings (visibility, units, default branch) and
+  team access come from the new repository's own spec.
+- **Copied branch protections.** With `protectedBranches: true`, leave the
+  new repository's `branchProtections` unset to keep the template's rules:
+  the operator then doesn't touch them. Once you set `branchProtections`,
+  it replaces them (a copied rule it doesn't list is deleted).
+- **A template of your own team.** A template that is a `ForgejoRepository`
+  in the same namespace can be referenced by CR name instead:
+  `fromTemplate: { repositoryRef: { name: weebo-base } }`. It isn't subject
+  to `allowedTemplates`.
+- **If it fails.**
+
+  | Reason | Cause |
+  | --- | --- |
+  | `ReferenceNotFound` | No repository `owner/name` in Forgejo. The repository is generated as soon as the template appears (a template CR becoming `Ready` triggers it right away). |
+  | `ForgejoApiError` "this is not a template repo" | The repository exists but isn't marked as a template: set `isTemplate: true`. |
+  | `NamespaceNotAllowed` | No policy rule's `allowedTemplates` covers the template for this namespace. |
+  | `InvalidSpec` | Both `repository` and `repositoryRef` set, or `repository` isn't `owner/name`. |
+
+## Next
+
+[Credentials](/docs/guides/credentials).
