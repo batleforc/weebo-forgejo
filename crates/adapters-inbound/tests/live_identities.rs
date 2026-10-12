@@ -415,11 +415,12 @@ async fn organization_owner_rename_drift_and_collision() {
         id
     );
 
-    // A second CR for a name that's taken is a collision, never an adoption.
+    // A second CR for a name another CR owns is refused before any call,
+    // never an adoption.
     l.create(&orgs, org("squatter", json!({"name": renamed})))
         .await;
     wait_for(&orgs, "squatter", |o| {
-        failed_with(o.status.as_ref(), "ForgejoObjectAlreadyExists")
+        failed_with(o.status.as_ref(), "RemoteObjectClaimed")
     })
     .await;
     assert!(
@@ -775,9 +776,13 @@ async fn namespace_policy_is_enforced_by_the_reconcilers() {
     let namespaces: Api<Namespace> = Api::all(l.client.clone());
     l.create(&namespaces, json!({"metadata": {"name": "team-x"}}))
         .await;
-    let orgs: Api<ForgejoOrganization> = l.api();
+    // The organization lives in team-x with the repository: the policy
+    // governs it too (rule `orgs` below allows it), and it names it by
+    // its Forgejo name.
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(l.client.clone(), "team-x");
     let policies: Api<ForgejoNamespacePolicy> = l.cluster_api();
     let repos: Api<ForgejoRepository> = Api::namespaced(l.client.clone(), "team-x");
+    let orgs_rule = json!({"namespaces": ["team-x"], "allowedKinds": ["ForgejoOrganization"]});
     let org_name = l.name("porg");
     l.create(
         &orgs,
@@ -795,7 +800,8 @@ async fn namespace_policy_is_enforced_by_the_reconcilers() {
         json!({
             "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoNamespacePolicy",
             "metadata": {"name": "teams"},
-            "spec": {"rules": [{"namespaces": ["team-*"], "allowedKinds": ["ForgejoRepository"],
+            "spec": {"rules": [orgs_rule.clone(),
+                               {"namespaces": ["team-*"], "allowedKinds": ["ForgejoRepository"],
                                 "allowedOrganizations": ["someone-else"]}]},
         }),
     )
@@ -826,9 +832,10 @@ async fn namespace_policy_is_enforced_by_the_reconcilers() {
     merge(
         &policies,
         "teams",
-        json!({"spec": {"rules": [{"namespaces": ["team-*"],
+        json!({"spec": {"rules": [orgs_rule.clone(),
+                                  {"namespaces": ["team-*"],
                                     "allowedKinds": ["ForgejoRepository"],
-                                    "allowedOrganizations": ["weebo"]}]}}),
+                                    "allowedOrganizations": [org_name]}]}}),
     )
     .await;
     let id = wait_for(&repos, "app", |r| ready_id(r.status.as_ref())).await;
@@ -842,8 +849,9 @@ async fn namespace_policy_is_enforced_by_the_reconcilers() {
         &policies,
         "teams",
         json!({"spec": {"rules": [
+            orgs_rule,
             {"namespaces": ["team-*"], "allowedKinds": ["ForgejoRepository"],
-             "allowedOrganizations": ["weebo"]},
+             "allowedOrganizations": [org_name]},
             {"namespaces": ["team-x"], "allowedKinds": ["ForgejoRepository"], "effect": "Deny"},
         ]}}),
     )
