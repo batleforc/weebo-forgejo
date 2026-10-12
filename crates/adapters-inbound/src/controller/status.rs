@@ -1,6 +1,6 @@
 //! `Outcome` → `status` translation, shared by every controller: one merge
 //! patch on the status subresource (`observedGeneration`, `forgejoId`,
-//! `forgejoName`, conditions), then Kubernetes Events: a `Warning` for every
+//! `forgejoName`, the resolved `instance`, conditions), then Kubernetes Events: a `Warning` for every
 //! failed reconcile, a `Normal` for every condition change and when the CR
 //! gets bound to a Forgejo object. Only `ReasonCode`s ever reach a
 //! condition or an Event.
@@ -39,6 +39,7 @@ macro_rules! impl_has_status {
 }
 impl_has_status!(
     api::ForgejoInstance,
+    api::ForgejoLocalInstance,
     api::ForgejoUser,
     api::ForgejoOrganization,
     api::ForgejoTeam,
@@ -127,6 +128,10 @@ where
                 .owner_id
                 .map_or(serde_json::Value::Null, |id| id.to_string().into()),
         );
+    }
+    if let Some(instance) = &outcome.instance {
+        let instance = serde_json::to_value(instance).expect("a BoundInstance serializes");
+        fields.insert("instance".into(), instance);
     }
     if let Some(hash) = &outcome.secret_hash {
         fields.insert("appliedSecretHash".into(), hash.clone().into());

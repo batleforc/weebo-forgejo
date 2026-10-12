@@ -3,6 +3,7 @@
 
 mod support;
 
+use api::common::IdentityRef;
 use std::collections::BTreeMap;
 
 use adapters_inbound::controller;
@@ -32,13 +33,14 @@ fn id_when_ready(status: Option<&api::ForgejoStatus>) -> Option<i64> {
 }
 
 async fn org_and_team(client: &kube::Client) {
-    let orgs: Api<ForgejoOrganization> = Api::all(client.clone());
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(client.clone(), "default");
     orgs.create(
         &PostParams::default(),
         &ForgejoOrganization {
             metadata: meta("weebo"),
             spec: ForgejoOrganizationSpec {
                 instance_ref: None,
+                shared_with: None,
                 name: "weebo".into(),
                 full_name: None,
                 description: None,
@@ -55,7 +57,7 @@ async fn org_and_team(client: &kube::Client) {
     )
     .await
     .unwrap();
-    let teams: Api<ForgejoTeam> = Api::all(client.clone());
+    let teams: Api<ForgejoTeam> = Api::namespaced(client.clone(), "default");
     teams
         .create(
             &PostParams::default(),
@@ -63,9 +65,8 @@ async fn org_and_team(client: &kube::Client) {
                 metadata: meta("weebo-devs"),
                 spec: ForgejoTeamSpec {
                     instance_ref: None,
-                    organization_ref: ObjectRef {
-                        name: "weebo".into(),
-                    },
+                    shared_with: None,
+                    organization_ref: IdentityRef::named("weebo"),
                     name: "devs".into(),
                     description: None,
                     permission: TeamPermission::Write,
@@ -86,9 +87,7 @@ async fn org_and_team(client: &kube::Client) {
 fn repo_spec() -> ForgejoRepositorySpec {
     ForgejoRepositorySpec {
         instance_ref: None,
-        organization_ref: Some(ObjectRef {
-            name: "weebo".into(),
-        }),
+        organization_ref: Some(IdentityRef::named("weebo")),
         user_ref: None,
         name: "app".into(),
         description: Some("demo".into()),
@@ -108,9 +107,7 @@ fn repo_spec() -> ForgejoRepositorySpec {
             enable_push: true,
             ..Default::default()
         }]),
-        team_refs: vec![ObjectRef {
-            name: "weebo-devs".into(),
-        }],
+        team_refs: vec![IdentityRef::named("weebo-devs")],
         deletion_policy: DeletionPolicy::Orphan,
     }
 }
@@ -346,7 +343,7 @@ async fn repository_generated_from_a_template_by_name() {
         h.ctx.clone(),
     ));
     org_and_team(&h.client).await;
-    let orgs: Api<ForgejoOrganization> = Api::all(h.client.clone());
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(h.client.clone(), "default");
     wait_for(&orgs, "weebo", |o| id_when_ready(o.status.as_ref())).await;
     // A template no CR manages, made by hand in Forgejo.
     let template = DesiredRepository {

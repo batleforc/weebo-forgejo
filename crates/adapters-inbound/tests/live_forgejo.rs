@@ -7,7 +7,8 @@
 
 mod support;
 
-use api::common::{DeletionPolicy, ManagementPolicy, ObjectRef, SecretTarget, Visibility};
+use api::common::IdentityRef;
+use api::common::{DeletionPolicy, ManagementPolicy, SecretTarget, Visibility};
 use api::organization::ForgejoOrganizationSpec;
 use api::team::{ForgejoTeamSpec, TeamPermission};
 use api::user::ForgejoUserSpec;
@@ -44,7 +45,7 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
     let org_name = format!("e2e-org-{run}");
     let secrets: Api<Secret> = Api::namespaced(client.clone(), "default");
 
-    let users: Api<ForgejoUser> = Api::all(client.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(client.clone(), "default");
     users
         .create(
             &PostParams::default(),
@@ -52,6 +53,7 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
                 metadata: meta("alice"),
                 spec: ForgejoUserSpec {
                     instance_ref: None,
+                    shared_with: None,
                     username: username.clone(),
                     management_policy: ManagementPolicy::Manage,
                     email: Some(format!("{username}@weebo.local")),
@@ -81,13 +83,14 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
         .await
         .unwrap();
 
-    let orgs: Api<ForgejoOrganization> = Api::all(client.clone());
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(client.clone(), "default");
     orgs.create(
         &PostParams::default(),
         &ForgejoOrganization {
             metadata: meta("weebo"),
             spec: ForgejoOrganizationSpec {
                 instance_ref: None,
+                shared_with: None,
                 name: org_name.clone(),
                 full_name: Some("Weebo E2E".into()),
                 description: None,
@@ -96,9 +99,7 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
                 email: None,
                 visibility: Visibility::Private,
                 repo_admin_change_team_access: false,
-                owner_ref: Some(ObjectRef {
-                    name: "alice".into(),
-                }),
+                owner_ref: Some(IdentityRef::named("alice")),
                 deletion_policy: DeletionPolicy::Delete,
             },
             status: None,
@@ -107,7 +108,7 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
     .await
     .unwrap();
 
-    let teams: Api<ForgejoTeam> = Api::all(client.clone());
+    let teams: Api<ForgejoTeam> = Api::namespaced(client.clone(), "default");
     teams
         .create(
             &PostParams::default(),
@@ -115,9 +116,8 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
                 metadata: meta("devs"),
                 spec: ForgejoTeamSpec {
                     instance_ref: None,
-                    organization_ref: ObjectRef {
-                        name: "weebo".into(),
-                    },
+                    shared_with: None,
+                    organization_ref: IdentityRef::named("weebo"),
                     name: "devs".into(),
                     description: Some("e2e".into()),
                     permission: TeamPermission::Write,
@@ -125,9 +125,7 @@ async fn operator_manages_a_user_an_org_and_a_team_end_to_end() {
                     includes_all_repositories: false,
                     can_create_org_repo: false,
                     members_policy: Default::default(),
-                    member_refs: vec![ObjectRef {
-                        name: "alice".into(),
-                    }],
+                    member_refs: vec![IdentityRef::named("alice")],
                     deletion_policy: DeletionPolicy::Delete,
                 },
                 status: None,
@@ -190,13 +188,13 @@ async fn operator_manages_repositories_hooks_and_keys_end_to_end() {
     let bot = format!("e2e-bot-{run}");
     let pp = PostParams::default();
 
-    let users: Api<ForgejoUser> = Api::all(client.clone());
-    let orgs: Api<ForgejoOrganization> = Api::all(client.clone());
-    let teams: Api<ForgejoTeam> = Api::all(client.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(client.clone(), "default");
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(client.clone(), "default");
+    let teams: Api<ForgejoTeam> = Api::namespaced(client.clone(), "default");
     let repos: Api<ForgejoRepository> = Api::namespaced(client.clone(), "default");
     let hooks: Api<ForgejoWebhook> = Api::namespaced(client.clone(), "default");
     let deploy_keys: Api<ForgejoDeployKey> = Api::namespaced(client.clone(), "default");
-    let user_keys: Api<ForgejoUserKey> = Api::all(client.clone());
+    let user_keys: Api<ForgejoUserKey> = Api::namespaced(client.clone(), "default");
     let secrets: Api<Secret> = Api::namespaced(client.clone(), "default");
 
     users
@@ -381,7 +379,7 @@ async fn operator_issues_oauth2_credentials_and_tokens_end_to_end() {
     let (client, url, _token, run) = parts(&l);
     let bot = format!("e2e-sso-{run}");
     let pp = PostParams::default();
-    let users: Api<ForgejoUser> = Api::all(client.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(client.clone(), "default");
     let apps: Api<ForgejoOAuth2Application> = Api::namespaced(client.clone(), "default");
     let tokens: Api<ForgejoAccessToken> = Api::namespaced(client.clone(), "default");
     let secrets: Api<Secret> = Api::namespaced(client.clone(), "default");

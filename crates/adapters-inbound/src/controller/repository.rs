@@ -3,32 +3,38 @@ use std::time::Instant;
 
 use api::repository::ForgejoRepositorySpec;
 use api::{ForgejoOrganization, ForgejoRepository, ForgejoTeam, ForgejoUser};
-use application::ports::{GenerateOptions, MigrateOptions, RefKind};
-use application::use_cases::admission::enforce;
+use application::ports::{BoundInstance, ForgejoGateway, GenerateOptions, MigrateOptions, RefKind};
+use application::use_cases::admission::enforce_on;
 use application::use_cases::reconcile_repository::{
     Owner, RepositoryInput, Source, cleanup_repository, init_options, reconcile_repository,
     validate,
 };
-use application::use_cases::refs::{read_secret_key, resolve_required, resolve_team};
+use application::use_cases::refs::{
+    read_secret_key, resolve_identity_required, resolve_required, resolve_team,
+};
 use application::use_cases::{Failure, Outcome};
 use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::watcher;
 use kube::{Client, ResourceExt};
 
 use super::status::current_ref;
-use super::{Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, status};
+use super::{
+    Ctx, Error, FINALIZER, ScopedWatches, allows_disruptive_update, error_policy, requeue_after,
+    status,
+};
 use crate::metrics::record_reconcile;
 
 const KIND: &str = "ForgejoRepository";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let client_for_policies = client.clone();
-    let controller = super::controller(Api::<ForgejoRepository>::all(client.clone()));
+    let controller = super::controller(
+        ctx.scope.api::<ForgejoRepository>(client.clone()),
+        &ctx.scope,
+    );
     // A policy change may allow or forbid any CR of this kind: re-check
     // them all (policies change rarely, and the check is a local list).
     let by_policy = controller.store();
@@ -40,84 +46,73 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let by_team = controller.store();
     let by_template = controller.store();
     let results = controller
-        .watches(
-            Api::<ForgejoOrganization>::all(client.clone()),
-            watcher::Config::default(),
-            move |org| {
-                let name = org.name_any();
-                by_org
-                    .state()
-                    .into_iter()
-                    .filter(|r| {
-                        r.spec
-                            .organization_ref
-                            .as_ref()
-                            .is_some_and(|o| o.name == name)
+        .watches_in::<ForgejoOrganization, _>(&ctx, &client, move |org| {
+            let (name, ns) = (org.name_any(), org.namespace());
+            by_org
+                .state()
+                .into_iter()
+                .filter(|r| {
+                    r.spec.organization_ref.as_ref().is_some_and(|o| {
+                        o.points_at(r.namespace().as_deref(), ns.as_deref(), &name)
                     })
-                    .map(|r| ObjectRef::from_obj(r.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
-        .watches(
-            Api::<ForgejoUser>::all(client.clone()),
-            watcher::Config::default(),
-            move |user| {
-                let name = user.name_any();
-                by_user
-                    .state()
-                    .into_iter()
-                    .filter(|r| r.spec.user_ref.as_ref().is_some_and(|u| u.name == name))
-                    .map(|r| ObjectRef::from_obj(r.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
-        .watches(
-            Api::<ForgejoTeam>::all(client.clone()),
-            watcher::Config::default(),
-            move |team| {
-                let name = team.name_any();
-                by_team
-                    .state()
-                    .into_iter()
-                    .filter(|r| r.spec.team_refs.iter().any(|t| t.name == name))
-                    .map(|r| ObjectRef::from_obj(r.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
-        .watches(
-            Api::<ForgejoRepository>::all(client),
-            watcher::Config::default(),
-            move |template| {
-                let (name, ns) = (template.name_any(), template.namespace());
-                let forgejo_name = template
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.forgejo_name.clone());
-                by_template
-                    .state()
-                    .into_iter()
-                    .filter(|r| {
-                        r.spec.from_template.as_ref().is_some_and(|t| {
-                            let by_ref = t.repository_ref.as_ref().is_some_and(|t| t.name == name);
-                            (by_ref && r.namespace() == ns)
-                                || (t.repository.is_some() && t.repository == forgejo_name)
-                        })
+                })
+                .map(|r| ObjectRef::from_obj(r.as_ref()))
+                .collect::<Vec<_>>()
+        })
+        .watches_in::<ForgejoUser, _>(&ctx, &client, move |user| {
+            let (name, ns) = (user.name_any(), user.namespace());
+            by_user
+                .state()
+                .into_iter()
+                .filter(|r| {
+                    r.spec.user_ref.as_ref().is_some_and(|u| {
+                        u.points_at(r.namespace().as_deref(), ns.as_deref(), &name)
                     })
-                    .map(|r| ObjectRef::from_obj(r.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
-        .watches(
-            Api::<api::ForgejoNamespacePolicy>::all(client_for_policies),
-            watcher::Config::default(),
-            move |_| {
-                by_policy
-                    .state()
-                    .into_iter()
-                    .map(|o| ObjectRef::from_obj(o.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
+                })
+                .map(|r| ObjectRef::from_obj(r.as_ref()))
+                .collect::<Vec<_>>()
+        })
+        .watches_in::<ForgejoTeam, _>(&ctx, &client, move |team| {
+            let (name, ns) = (team.name_any(), team.namespace());
+            by_team
+                .state()
+                .into_iter()
+                .filter(|r| {
+                    let repo_ns = r.namespace();
+                    r.spec
+                        .team_refs
+                        .iter()
+                        .any(|t| t.points_at(repo_ns.as_deref(), ns.as_deref(), &name))
+                })
+                .map(|r| ObjectRef::from_obj(r.as_ref()))
+                .collect::<Vec<_>>()
+        })
+        .watches_in::<ForgejoRepository, _>(&ctx, &client, move |template| {
+            let (name, ns) = (template.name_any(), template.namespace());
+            let forgejo_name = template
+                .status
+                .as_ref()
+                .and_then(|s| s.forgejo_name.clone());
+            by_template
+                .state()
+                .into_iter()
+                .filter(|r| {
+                    r.spec.from_template.as_ref().is_some_and(|t| {
+                        let by_ref = t.repository_ref.as_ref().is_some_and(|t| t.name == name);
+                        (by_ref && r.namespace() == ns)
+                            || (t.repository.is_some() && t.repository == forgejo_name)
+                    })
+                })
+                .map(|r| ObjectRef::from_obj(r.as_ref()))
+                .collect::<Vec<_>>()
+        })
+        .watches_in::<api::ForgejoNamespacePolicy, _>(&ctx, &client, move |_| {
+            by_policy
+                .state()
+                .into_iter()
+                .map(|o| ObjectRef::from_obj(o.as_ref()))
+                .collect::<Vec<_>>()
+        })
         .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx);
     super::drive(KIND, health, results).await;
@@ -151,39 +146,44 @@ async fn apply(
     let owned = current_ref(&current);
 
     let namespace = current.namespace().unwrap_or_default();
-    let outcome = match enforce(
-        ctx.policies.as_ref(),
-        ctx.refs.as_ref(),
-        &namespace,
-        &current,
-    )
-    .await?
-    {
-        // Re-checked here too: a policy may have changed since admission.
+    let outcome = match super::instance_of(ctx, &current).await {
         Err(f) => Outcome::failed(current_ref(&current), f),
-        Ok(()) => match resolve_inputs(&current, owned.is_none(), ctx).await? {
-            Err(f) => Outcome::failed(owned, f),
-            Ok((owner, source, teams)) => {
-                match ctx
-                    .gateways
-                    .gateway_for(current.spec.instance_ref.as_deref())
-                    .await
-                {
-                    Ok(gateway) => {
-                        let input = RepositoryInput {
-                            spec: &current.spec,
-                            current: owned,
-                            owner,
-                            source,
-                            teams,
-                            allow_disruptive_update: allows_disruptive_update(&current.metadata),
-                        };
-                        reconcile_repository(input, gateway.as_ref()).await
+        Ok(bound) => match enforce_on(
+            ctx.policies.as_ref(),
+            ctx.refs.as_ref(),
+            &namespace,
+            &current,
+            Some(&bound),
+        )
+        .await?
+        {
+            // Re-checked here too: a policy may have changed since admission.
+            Err(f) => Outcome::failed(current_ref(&current), f),
+            Ok(()) => match ctx.gateways.gateway_for(&bound).await {
+                Err(e) => Outcome::failed(owned, Failure::new(e.reason(), e.to_string())),
+                Ok(gateway) => {
+                    match resolve_inputs(&current, owned.is_none(), &bound, gateway.as_ref(), ctx)
+                        .await?
+                    {
+                        Ok((owner, source, teams)) => {
+                            let input = RepositoryInput {
+                                spec: &current.spec,
+                                current: owned,
+                                owner,
+                                source,
+                                teams,
+                                allow_disruptive_update: allows_disruptive_update(
+                                    &current.metadata,
+                                ),
+                            };
+                            reconcile_repository(input, gateway.as_ref()).await
+                        }
+                        Err(f) => Outcome::failed(owned, f),
                     }
-                    Err(e) => Outcome::failed(owned, Failure::new(e.reason(), e.to_string())),
                 }
-            }
-        },
+            },
+        }
+        .on(bound),
     };
 
     record_reconcile("ForgejoRepository", outcome.reason(), started.elapsed());
@@ -196,18 +196,19 @@ type Inputs = (Owner, Result<Source, Failure>, Vec<String>);
 async fn resolve_inputs(
     repo: &ForgejoRepository,
     creating: bool,
+    instance: &BoundInstance,
+    gateway: &dyn ForgejoGateway,
     ctx: &Ctx,
 ) -> Result<Result<Inputs, Failure>, Error> {
     let spec = &repo.spec;
     if let Err(f) = validate(spec) {
         return Ok(Err(f));
     }
-    let instance = spec.instance_ref.as_deref();
     let ns = repo.namespace().unwrap_or_default();
-    let refs = ctx.refs.as_ref();
+    let from = super::referrer(ctx, &ns, instance, Some(gateway));
 
     let owner = if let Some(org) = &spec.organization_ref {
-        match resolve_required(refs, RefKind::Organization, &ns, &org.name, instance).await? {
+        match resolve_identity_required(&from, RefKind::Organization, org).await? {
             Ok(r) => Owner::Organization(r.name),
             Err(f) => return Ok(Err(f)),
         }
@@ -216,7 +217,7 @@ async fn resolve_inputs(
             .user_ref
             .as_ref()
             .expect("validated: exactly one owner");
-        match resolve_required(refs, RefKind::User, &ns, &user.name, instance).await? {
+        match resolve_identity_required(&from, RefKind::User, user).await? {
             Ok(r) => Owner::User(r.name),
             Err(f) => return Ok(Err(f)),
         }
@@ -226,7 +227,7 @@ async fn resolve_inputs(
     // of band; only a create needs it to succeed. An owned repository
     // keeps being reconciled while its source is unreadable (a template
     // CR not ready, a migrate Secret forbidden or an apiserver hiccup).
-    let source = match source(spec, &ns, ctx).await {
+    let source = match source(spec, &ns, instance, ctx).await {
         Ok(Ok(s)) => Ok(s),
         Ok(Err(f)) if creating => return Ok(Err(f)),
         Err(e) if creating => return Err(e),
@@ -242,9 +243,12 @@ async fn resolve_inputs(
     };
 
     let mut teams = Vec::with_capacity(spec.team_refs.len());
-    let org = spec.organization_ref.as_ref().map(|o| o.name.as_str());
+    let org = match &owner {
+        Owner::Organization(name) => Some(name.as_str()),
+        Owner::User(_) => None,
+    };
     for team_ref in &spec.team_refs {
-        match resolve_team(refs, &team_ref.name, org, instance).await? {
+        match resolve_team(&from, team_ref, org).await? {
             Ok(team) => teams.push(team.name),
             Err(f) => return Ok(Err(f)),
         }
@@ -255,6 +259,7 @@ async fn resolve_inputs(
 async fn source(
     spec: &ForgejoRepositorySpec,
     ns: &str,
+    instance: &BoundInstance,
     ctx: &Ctx,
 ) -> Result<Result<Source, Failure>, Error> {
     if let Some(t) = &spec.from_template {
@@ -275,7 +280,6 @@ async fn source(
                 .expect("validated: one template source");
             return Ok(Ok(Source::Template(name, options)));
         };
-        let instance = spec.instance_ref.as_deref();
         let refs = ctx.refs.as_ref();
         let template =
             resolve_required(refs, RefKind::Repository, ns, &template_ref.name, instance);
@@ -316,7 +320,8 @@ async fn source(
 }
 
 async fn cleanup(repo: &ForgejoRepository, ctx: &Ctx) -> Result<Action, Error> {
-    let gateway = super::cleanup_gateway(ctx, repo.spec.instance_ref.as_deref()).await;
+    let instance = super::cleanup_instance(ctx, repo).await;
+    let gateway = super::cleanup_gateway(ctx, &instance).await;
     cleanup_repository(&repo.spec, current_ref(repo).as_ref(), gateway.as_deref())
         .await
         .map_err(Error::Cleanup)?;

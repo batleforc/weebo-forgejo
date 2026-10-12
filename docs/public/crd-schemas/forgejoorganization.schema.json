@@ -1,7 +1,7 @@
 {
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoOrganization",
-  "scope": "Cluster",
+  "scope": "Namespaced",
   "description": "A Forgejo organization.",
   "properties": {
     "deletionPolicy": {
@@ -26,8 +26,38 @@
       "type": "string"
     },
     "instanceRef": {
+      "description": "The `ForgejoInstance` or `ForgejoLocalInstance` this object lives\non. Unset: the cluster's only `ForgejoInstance`, else the only\n`ForgejoLocalInstance` of this namespace.",
       "nullable": true,
-      "type": "string"
+      "properties": {
+        "kind": {
+          "description": "The kind of instance a reference designates.",
+          "enum": [
+            "Instance",
+            "LocalInstance"
+          ],
+          "nullable": true,
+          "type": "string"
+        },
+        "name": {
+          "description": "`metadata.name` of the instance.",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Namespace of a `LocalInstance`. Defaults to this object's own;\nrequired on a cluster-scoped object. Another namespace's local\ninstance must share itself with this one (its `sharedWith`).",
+          "nullable": true,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "namespace only applies to kind LocalInstance",
+          "rule": "!has(self.namespace) || !has(self.kind) || self.kind == 'LocalInstance'"
+        }
+      ]
     },
     "location": {
       "nullable": true,
@@ -38,22 +68,102 @@
       "type": "string"
     },
     "ownerRef": {
-      "description": "`ForgejoUser` that becomes the organization's first owner. Only read\nat creation; without it the operator's admin account owns it.",
+      "description": "The user that becomes the organization's first owner. Only read at\ncreation; without it the operator's admin account owns it.",
       "nullable": true,
       "properties": {
         "name": {
+          "description": "`metadata.name` of the CR.",
+          "nullable": true,
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Namespace of the CR; defaults to this object's own.",
+          "nullable": true,
+          "type": "string"
+        },
+        "remoteName": {
+          "description": "Forgejo name of an object no CR manages (a user's login, an\norganization's or team's name).",
+          "nullable": true,
           "type": "string"
         }
       },
-      "required": [
-        "name"
-      ],
-      "type": "object"
+      "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "set exactly one of name and remoteName",
+          "rule": "has(self.name) != has(self.remoteName)"
+        },
+        {
+          "message": "namespace only applies with name",
+          "rule": "!has(self.namespace) || has(self.name)"
+        }
+      ]
     },
     "repoAdminChangeTeamAccess": {
       "default": false,
       "description": "Let repository admins change which teams can access their repo.",
       "type": "boolean"
+    },
+    "sharedWith": {
+      "description": "Other namespaces allowed to reference this object (when the operator\nenables cross-namespace references). Unset: this namespace only.",
+      "nullable": true,
+      "properties": {
+        "clusterScoped": {
+          "description": "Cluster-scoped objects may use this instance.",
+          "type": "boolean"
+        },
+        "namespaceSelector": {
+          "description": "Namespaces whose labels match this selector may use this instance.",
+          "nullable": true,
+          "properties": {
+            "matchExpressions": {
+              "description": "matchExpressions is a list of label selector requirements. The requirements are ANDed.",
+              "items": {
+                "description": "A label selector requirement is a selector that contains values, a key, and an operator that relates the key and values.",
+                "properties": {
+                  "key": {
+                    "description": "key is the label key that the selector applies to.",
+                    "type": "string"
+                  },
+                  "operator": {
+                    "description": "operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist.",
+                    "type": "string"
+                  },
+                  "values": {
+                    "description": "values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "key",
+                  "operator"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "matchLabels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is \"key\", the operator is \"In\", and the values array contains only \"value\". The requirements are ANDed.",
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "namespaces": {
+          "description": "Namespaces whose objects may use this instance.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     },
     "visibility": {
       "default": "public",

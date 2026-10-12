@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 
 use adapters_outbound::ForgejoHttpGateway;
-use api::common::ObjectRef;
 use application::ports::{
     DesiredHook, DesiredOrganization, DesiredRepository, DesiredTeam, DesiredUser, ForgejoGateway,
     ForgejoInventory, HookTarget, ProtectionRule, RepositoryInitOptions,
@@ -144,18 +143,14 @@ async fn import_round_trips_a_live_organization() {
     let t = &out.teams[0];
     assert_eq!(
         t.spec.member_refs,
-        vec![ObjectRef {
-            name: login.clone()
-        }]
+        vec![api::common::IdentityRef::named(login.clone())]
     );
     let r = &out.repositories[0];
     assert_eq!(r.forgejo.id, created.id);
     assert!(r.spec.private);
     assert_eq!(
         r.spec.team_refs,
-        vec![ObjectRef {
-            name: format!("{org_name}-dev")
-        }]
+        vec![api::common::IdentityRef::named(format!("{org_name}-dev"))]
     );
     assert_eq!(
         r.spec.branch_protections.as_ref().unwrap()[0].push_whitelist_teams,

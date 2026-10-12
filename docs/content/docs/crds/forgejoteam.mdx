@@ -5,7 +5,7 @@ full: true
 ---
 
 - **API version:** `forgejo.weebo.io/v1alpha1`
-- **Scope:** Cluster
+- **Scope:** Namespaced
 - **Short names:** `fjteam`
 - **Guide:** [Users, OIDC and teams](/docs/guides/users-and-oidc#organizations-and-teams)
 
@@ -19,6 +19,7 @@ apiVersion: forgejo.weebo.io/v1alpha1
 kind: ForgejoTeam
 metadata:
   name: my-team
+  namespace: team-a
 spec:
   organizationRef:
     name: weebo
@@ -36,12 +37,13 @@ spec:
 | `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
 | `description` | `string` | no |  |  |
 | `includesAllRepositories` | `boolean` | no | `false` | Grant access to every repository of the organization, current and future. |
-| `instanceRef` | `string` | no |  |  |
-| `memberRefs` | `object[]` | no |  | `ForgejoUser`s in the team. The member list is authoritative: anyone else is removed. A member whose user doesn't exist in Forgejo yet (e.g. an observed OIDC user who never logged in) is reported as `MemberPending` while the others are synced. |
+| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
+| `memberRefs` | `object[]` | no |  | Users in the team. The member list is authoritative: anyone else is removed. A member whose user doesn't exist in Forgejo yet (e.g. an observed OIDC user who never logged in) is reported as `MemberPending` while the others are synced. |
 | `membersPolicy` | `string` | no | `"Managed"` | Who decides the team's members. `Managed` (the default): `memberRefs` is authoritative. `External`: the operator never adds or removes members, leaving them to Forgejo's OIDC group sync (`group-team-map` / `dyn-group-maps` on the authentication source); `memberRefs` must then be empty. |
 | `name` | `string` | yes |  | Team name, unique within the organization. `Owners` is reserved. |
-| `organizationRef` | `object` | yes |  | `ForgejoOrganization` the team belongs to. A team can't move between organizations: changing this deletes and recreates it, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
+| `organizationRef` | `object` | yes |  | The organization the team belongs to. A team can't move between organizations: changing this deletes and recreates it, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
 | `permission` | `string` | no | `"read"` |  |
+| `sharedWith` | `object` | no |  | Other namespaces allowed to reference this object (when the operator enables cross-namespace references). Unset: this namespace only. |
 | `unitsMap` | `object` | no |  | Per-unit access (`repo.code`, `repo.issues`, `repo.pulls`, `repo.releases`, `repo.wiki`, `repo.packages`, `repo.actions`, ...) to `none`, `read`, `write` or `admin`. Empty means every repository unit at `permission` (Forgejo refuses a team without units). Ignored by Forgejo when `permission` is `admin`. |
 
 ## Build a manifest

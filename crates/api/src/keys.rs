@@ -2,7 +2,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DeletionPolicy, ObjectRef, SecretTarget};
+use crate::common::{DeletionPolicy, IdentityRef, InstanceRef, ObjectRef, SecretTarget};
 use crate::status::ForgejoStatus;
 
 /// An SSH deploy key on a `ForgejoRepository` (same namespace). Without
@@ -15,7 +15,6 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoDeployKey",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
     validation = kube::core::Rule::new("has(self.spec.publicKey) || (has(self.spec.secretTargets) && size(self.spec.secretTargets) > 0)").message("a generated key (no spec.publicKey) needs spec.secretTargets"),
     plural = "forgejodeploykeys",
     shortname = "fjdkey",
@@ -29,8 +28,11 @@ use crate::status::ForgejoStatus;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoDeployKeySpec {
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
+    pub instance_ref: Option<InstanceRef>,
     pub repository_ref: ObjectRef,
     /// Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,15 +45,14 @@ pub struct ForgejoDeployKeySpec {
     pub deletion_policy: DeletionPolicy,
 }
 
-/// An SSH public key of a `ForgejoUser` — typically a bot's. Same key
-/// handling as `ForgejoDeployKey`; generated keys need `secretTargets` with
-/// an explicit namespace (this CR is cluster-scoped).
+/// An SSH public key of a user — typically a bot's. Same key handling as
+/// `ForgejoDeployKey`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoUserKey",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    namespaced,
     validation = kube::core::Rule::new("has(self.spec.publicKey) || (has(self.spec.secretTargets) && size(self.spec.secretTargets) > 0)").message("a generated key (no spec.publicKey) needs spec.secretTargets"),
     plural = "forgejouserkeys",
     shortname = "fjukey",
@@ -63,9 +64,12 @@ pub struct ForgejoDeployKeySpec {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoUserKeySpec {
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
-    pub user_ref: ObjectRef,
+    pub instance_ref: Option<InstanceRef>,
+    pub user_ref: IdentityRef,
     /// Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,

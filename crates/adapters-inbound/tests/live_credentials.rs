@@ -22,7 +22,7 @@ const DISRUPTIVE: &str = "forgejo.weebo.io/allow-disruptive-update";
 /// A bot `ForgejoUser` (deleted with its CR); returns its Forgejo login.
 async fn bot(l: &Live, cr_name: &str) -> String {
     let login = l.name(cr_name);
-    let users: Api<ForgejoUser> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
     l.create(
         &users,
         json!({

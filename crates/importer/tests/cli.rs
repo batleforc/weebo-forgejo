@@ -5,7 +5,8 @@
 use std::process::{Command, Output};
 
 use api::{ForgejoOrganization, ForgejoUser};
-use kube::api::Api;
+use k8s_openapi::api::core::v1::Namespace;
+use kube::api::{Api, PostParams};
 use serde_json::json;
 use testkit::envtest::EnvTestCluster;
 use wiremock::matchers::{method, path};
@@ -73,6 +74,12 @@ async fn applies_into_the_cluster_and_is_idempotent() {
     let cluster = EnvTestCluster::start().await;
     let kubeconfig = std::env::temp_dir().join(format!("importer-cli-{}.yaml", std::process::id()));
     cluster.write_kubeconfig(&kubeconfig);
+    // Users and organizations are namespaced: they land in `--namespace`.
+    let ns: Namespace = serde_json::from_value(json!({"metadata": {"name": "forgejo"}})).unwrap();
+    Api::<Namespace>::all(cluster.client())
+        .create(&PostParams::default(), &ns)
+        .await
+        .unwrap();
 
     let first = importer(
         &server.uri(),
@@ -86,14 +93,14 @@ async fn applies_into_the_cluster_and_is_idempotent() {
         "{stderr}"
     );
 
-    let users: Api<ForgejoUser> = Api::all(cluster.client());
+    let users: Api<ForgejoUser> = Api::namespaced(cluster.client(), "forgejo");
     let alice = users.get("alice-x").await.unwrap();
     assert!(
         alice.spec.bot,
         "a managed local user never gets its password reset"
     );
     assert_eq!(alice.status.unwrap().forgejo_id.as_deref(), Some("7"));
-    let orgs: Api<ForgejoOrganization> = Api::all(cluster.client());
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(cluster.client(), "forgejo");
     let weebo = orgs.get("weebo").await.unwrap();
     assert!(
         !weebo

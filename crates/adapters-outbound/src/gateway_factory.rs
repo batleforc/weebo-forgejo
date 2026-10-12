@@ -3,19 +3,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use api::ForgejoInstance;
+use api::common::SecretKeyRef;
 use api::instance::TlsOptions;
-use application::ports::{ForgejoGateway, GatewayFactory, GatewayFactoryError};
-use kube::runtime::reflector::Store;
+use application::ports::{BoundInstance, ForgejoGateway, GatewayFactory, GatewayFactoryError};
 use kube::{Client, ResourceExt};
 
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
 use crate::forgejo_http::ForgejoHttpGateway;
-use crate::instance_resolver::InstanceResolver;
+use crate::instance_resolver::ForgejoInstances;
 use crate::metered::{MeteredGateway, max_inflight};
-use weebo_kit_adapters::SelectError;
-use weebo_kit_adapters::read_secret_key;
+use weebo_kit_adapters::{Resolved, read_secret_key};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Forgejo clones synchronously inside `POST /repos/migrate` (and
@@ -23,16 +22,37 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// next reconcile collides with, so it gets a generous budget.
 const MIGRATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-/// Builds a [`ForgejoHttpGateway`] per call from the selected
-/// `ForgejoInstance`, wrapped in a [`MeteredGateway`]. The token `Secret`
+/// Builds a [`ForgejoHttpGateway`] per call from the resolved
+/// `ForgejoInstance` or `ForgejoLocalInstance` (whose token and CA live in
+/// its own namespace), wrapped in a [`MeteredGateway`]. The token `Secret`
 /// (and CA) are re-read on every call — a rotation needs no restart — but
 /// the HTTP clients (connection pools, TLS sessions) are reused per
 /// instance until its TLS settings or CA content change, and every gateway
 /// of one instance shares its in-flight limit.
 pub struct ForgejoGatewayFactory {
     client: Client,
-    instances: InstanceResolver,
+    instances: Arc<ForgejoInstances>,
     cache: Mutex<HashMap<String, CachedClients>>,
+}
+
+/// What a gateway is built from, whichever the instance kind.
+struct Connection {
+    /// The clients' cache key: the instance (kind, namespace, name).
+    key: String,
+    url: String,
+    token_secret_ref: SecretKeyRef,
+    tls: TlsOptions,
+}
+
+impl Connection {
+    fn of_cluster(instance: &ForgejoInstance) -> Self {
+        Self {
+            key: BoundInstance::cluster(instance.name_any()).to_string(),
+            url: instance.spec.url.clone(),
+            token_secret_ref: instance.spec.token_secret_ref.clone(),
+            tls: instance.spec.tls.clone(),
+        }
+    }
 }
 
 /// What the HTTP clients of an instance were built from.
@@ -50,11 +70,11 @@ struct CachedClients {
 }
 
 impl ForgejoGatewayFactory {
-    /// `store`: the reflector `operator::main` keeps live; `None` reads
-    /// instances from the API on each call.
-    pub fn new(client: Client, store: Option<Store<ForgejoInstance>>) -> Self {
+    /// `instances`: both kinds, from the reflectors `operator::main` keeps
+    /// live, or from the API on each call (tests).
+    pub fn new(client: Client, instances: Arc<ForgejoInstances>) -> Self {
         Self {
-            instances: InstanceResolver::new(client.clone(), store),
+            instances,
             client,
             cache: Mutex::new(HashMap::new()),
         }
@@ -64,22 +84,22 @@ impl ForgejoGatewayFactory {
     /// from changed.
     fn clients(
         &self,
-        instance: &ForgejoInstance,
+        instance: &Connection,
         ca_pem: Option<&[u8]>,
     ) -> Result<(reqwest::Client, reqwest::Client, Arc<Semaphore>), GatewayFactoryError> {
         let key = ClientKey {
-            insecure_skip_verify: instance.spec.tls.insecure_skip_verify,
+            insecure_skip_verify: instance.tls.insecure_skip_verify,
             ca_digest: ca_pem.map(|pem| Sha256::digest(pem).to_vec()),
         };
         let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-        let name = instance.name_any();
+        let name = instance.key.clone();
         if let Some(c) = cache.get(&name)
             && c.key == key
         {
             return Ok((c.http.clone(), c.slow.clone(), c.permits.clone()));
         }
-        let http = build_http_client(&instance.spec.tls, ca_pem, REQUEST_TIMEOUT)?;
-        let slow = build_http_client(&instance.spec.tls, ca_pem, MIGRATION_TIMEOUT)?;
+        let http = build_http_client(&instance.tls, ca_pem, REQUEST_TIMEOUT)?;
+        let slow = build_http_client(&instance.tls, ca_pem, MIGRATION_TIMEOUT)?;
         // A TLS change keeps the in-flight limit: calls still running on
         // the old clients count against it.
         let permits = cache
@@ -98,11 +118,19 @@ impl ForgejoGatewayFactory {
         Ok((http, slow, permits))
     }
 
+    /// The gateway of `instance`, a `ForgejoInstance`.
     pub async fn build(
         &self,
         instance: &ForgejoInstance,
     ) -> Result<Arc<dyn ForgejoGateway>, GatewayFactoryError> {
-        let token_ref = &instance.spec.token_secret_ref;
+        self.connect(Connection::of_cluster(instance)).await
+    }
+
+    async fn connect(
+        &self,
+        instance: Connection,
+    ) -> Result<Arc<dyn ForgejoGateway>, GatewayFactoryError> {
+        let token_ref = &instance.token_secret_ref;
         let token = read_secret_key(&self.client, token_ref)
             .await
             .map_err(GatewayFactoryError::Kubernetes)?
@@ -115,7 +143,7 @@ impl ForgejoGatewayFactory {
         let token = String::from_utf8(token)
             .map_err(|_| GatewayFactoryError::TokenSecret("token is not UTF-8".into()))?;
 
-        let ca_pem = match &instance.spec.tls.ca_secret_ref {
+        let ca_pem = match &instance.tls.ca_secret_ref {
             Some(ca_ref) => Some(
                 read_secret_key(&self.client, ca_ref)
                     .await
@@ -129,9 +157,9 @@ impl ForgejoGatewayFactory {
             ),
             None => None,
         };
-        let (http, slow, permits) = self.clients(instance, ca_pem.as_deref())?;
+        let (http, slow, permits) = self.clients(&instance, ca_pem.as_deref())?;
 
-        let (api_base, web_url) = api::instance::split_urls(&instance.spec.url);
+        let (api_base, web_url) = api::instance::split_urls(&instance.url);
         let gateway = ForgejoHttpGateway::new(api_base, web_url, token.trim().to_string(), http)
             .with_slow_client(slow);
         Ok(Arc::new(MeteredGateway::new(Arc::new(gateway), permits)))
@@ -142,29 +170,28 @@ impl ForgejoGatewayFactory {
 impl GatewayFactory for ForgejoGatewayFactory {
     async fn gateway_for(
         &self,
-        instance_ref: Option<&str>,
+        bound: &BoundInstance,
     ) -> Result<Arc<dyn ForgejoGateway>, GatewayFactoryError> {
-        let instances = self
+        let connection = match self
             .instances
-            .list()
+            .get(bound)
             .await
-            .map_err(GatewayFactoryError::Kubernetes)?;
-        let instance = select(&instances, instance_ref)?;
-        self.build(instance).await
+            .map_err(GatewayFactoryError::Kubernetes)?
+            .ok_or_else(|| GatewayFactoryError::InstanceNotFound(bound.to_string()))?
+        {
+            Resolved::Cluster(instance) => Connection::of_cluster(&instance),
+            Resolved::Local(local) => {
+                let namespace = local.namespace().unwrap_or_default();
+                Connection {
+                    key: bound.to_string(),
+                    url: local.spec.url.clone(),
+                    token_secret_ref: local.spec.token_secret_ref.in_namespace(&namespace),
+                    tls: local.spec.tls.in_namespace(&namespace),
+                }
+            }
+        };
+        self.connect(connection).await
     }
-}
-
-/// `instance_ref` names one instance; without it the cluster must have
-/// exactly one (`.prompt/plan.md`, "Instance par défaut").
-pub(crate) fn select<'a>(
-    instances: &'a [ForgejoInstance],
-    instance_ref: Option<&str>,
-) -> Result<&'a ForgejoInstance, GatewayFactoryError> {
-    weebo_kit_adapters::select(instances, instance_ref).map_err(|e| match e {
-        SelectError::NotFound { name, .. } => GatewayFactoryError::InstanceNotFound(name),
-        SelectError::NoInstance { .. } => GatewayFactoryError::InstanceNotFound(e.to_string()),
-        SelectError::Ambiguous { .. } => GatewayFactoryError::AmbiguousDefault(e.to_string()),
-    })
 }
 
 /// `ca_pem` is added on top of the platform trust store. A configured CA
@@ -199,54 +226,7 @@ fn build_http_client(
 
 #[cfg(test)]
 mod tests {
-    use api::common::SecretKeyRef;
-    use api::instance::ForgejoInstanceSpec;
-    use kube::api::ObjectMeta;
-
     use super::*;
-
-    fn instance(name: &str) -> ForgejoInstance {
-        ForgejoInstance {
-            metadata: ObjectMeta {
-                name: Some(name.into()),
-                ..Default::default()
-            },
-            spec: ForgejoInstanceSpec {
-                url: "https://git.example.com".into(),
-                token_secret_ref: SecretKeyRef {
-                    name: "t".into(),
-                    namespace: "n".into(),
-                    key: "token".into(),
-                },
-                tls: Default::default(),
-                secret_store: Default::default(),
-            },
-            status: None,
-        }
-    }
-
-    #[test]
-    fn default_instance_needs_exactly_one() {
-        assert!(matches!(
-            select(&[], None),
-            Err(GatewayFactoryError::InstanceNotFound(_))
-        ));
-        assert_eq!(select(&[instance("a")], None).unwrap().name_any(), "a");
-        assert!(matches!(
-            select(&[instance("a"), instance("b")], None),
-            Err(GatewayFactoryError::AmbiguousDefault(_))
-        ));
-    }
-
-    #[test]
-    fn named_instance_is_found_among_many() {
-        let all = [instance("a"), instance("b")];
-        assert_eq!(select(&all, Some("b")).unwrap().name_any(), "b");
-        assert!(matches!(
-            select(&all, Some("c")),
-            Err(GatewayFactoryError::InstanceNotFound(_))
-        ));
-    }
 
     #[test]
     fn garbage_ca_is_refused() {

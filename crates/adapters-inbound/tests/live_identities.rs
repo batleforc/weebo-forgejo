@@ -101,7 +101,7 @@ async fn logs_in(l: &Live, login: &str, password: &str) -> bool {
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn observed_user_waits_for_the_account_then_publishes_its_id() {
     let l = live().await;
-    let users: Api<ForgejoUser> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
     let login = l.name("carol");
     l.create(
         &users,
@@ -136,7 +136,7 @@ async fn observed_user_waits_for_the_account_then_publishes_its_id() {
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn local_user_password_is_emitted_and_reset_when_its_secret_is_lost() {
     let l = live().await;
-    let users: Api<ForgejoUser> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
     let secrets: Api<Secret> = l.api();
     let login = l.name("dave");
     l.create(
@@ -200,7 +200,7 @@ async fn local_user_password_is_emitted_and_reset_when_its_secret_is_lost() {
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn user_rename_drift_and_orphan_deletion() {
     let l = live().await;
-    let users: Api<ForgejoUser> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
     let login = l.name("erin");
     let renamed = l.name("erin2");
     l.create(
@@ -260,7 +260,7 @@ async fn user_rename_drift_and_orphan_deletion() {
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn bot_user_emits_no_password() {
     let l = live().await;
-    let users: Api<ForgejoUser> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
     let login = l.name("bot");
     l.create(
         &users,
@@ -295,7 +295,7 @@ async fn external_user_is_linked_to_its_authentication_source() {
         return;
     };
     let l = live().await;
-    let users: Api<ForgejoUser> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
     let login = l.name("ext");
     l.create(
         &users,
@@ -327,8 +327,8 @@ async fn external_user_is_linked_to_its_authentication_source() {
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn organization_owner_rename_drift_and_collision() {
     let l = live().await;
-    let users: Api<ForgejoUser> = l.cluster_api();
-    let orgs: Api<ForgejoOrganization> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
+    let orgs: Api<ForgejoOrganization> = l.api();
     let owner = l.name("owner");
     let name = l.name("org");
     let renamed = l.name("org2");
@@ -445,9 +445,9 @@ async fn organization_owner_rename_drift_and_collision() {
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn team_members_units_and_gated_move() {
     let l = live().await;
-    let users: Api<ForgejoUser> = l.cluster_api();
-    let orgs: Api<ForgejoOrganization> = l.cluster_api();
-    let teams: Api<ForgejoTeam> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
+    let orgs: Api<ForgejoOrganization> = l.api();
+    let teams: Api<ForgejoTeam> = l.api();
     let (a_org, b_org) = (l.name("torg-a"), l.name("torg-b"));
     let member = l.name("member");
     let pending = l.name("pending");
@@ -600,8 +600,8 @@ async fn team_members_units_and_gated_move() {
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn external_team_members_are_left_to_forgejo() {
     let l = live().await;
-    let orgs: Api<ForgejoOrganization> = l.cluster_api();
-    let teams: Api<ForgejoTeam> = l.cluster_api();
+    let orgs: Api<ForgejoOrganization> = l.api();
+    let teams: Api<ForgejoTeam> = l.api();
     let org_name = l.name("ext-org");
     let synced = l.name("synced");
 
@@ -683,7 +683,7 @@ fn instance(name: &str, url: &str, secret: &str) -> serde_json::Value {
 async fn a_second_instance_makes_the_default_ambiguous() {
     let l = live().await;
     let instances: Api<ForgejoInstance> = l.cluster_api();
-    let users: Api<ForgejoUser> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
     l.create(&instances, instance("other", &l.url, "forgejo-admin"))
         .await;
     wait_for(&instances, "other", |i| ready(i.status.as_ref())).await;
@@ -708,7 +708,7 @@ async fn a_second_instance_makes_the_default_ambiguous() {
         &users,
         user(
             "explicit",
-            json!({"username": login, "managementPolicy": "Observe", "instanceRef": "main"}),
+            json!({"username": login, "managementPolicy": "Observe", "instanceRef": {"name": "main"}}),
         ),
     )
     .await;
@@ -717,7 +717,7 @@ async fn a_second_instance_makes_the_default_ambiguous() {
         &users,
         user(
             "nowhere",
-            json!({"username": login, "managementPolicy": "Observe", "instanceRef": "nope"}),
+            json!({"username": login, "managementPolicy": "Observe", "instanceRef": {"name": "nope"}}),
         ),
     )
     .await;
@@ -775,7 +775,7 @@ async fn namespace_policy_is_enforced_by_the_reconcilers() {
     let namespaces: Api<Namespace> = Api::all(l.client.clone());
     l.create(&namespaces, json!({"metadata": {"name": "team-x"}}))
         .await;
-    let orgs: Api<ForgejoOrganization> = l.cluster_api();
+    let orgs: Api<ForgejoOrganization> = l.api();
     let policies: Api<ForgejoNamespacePolicy> = l.cluster_api();
     let repos: Api<ForgejoRepository> = Api::namespaced(l.client.clone(), "team-x");
     let org_name = l.name("porg");

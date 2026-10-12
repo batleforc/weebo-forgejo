@@ -592,8 +592,8 @@ pub trait ForgejoInventory: ForgejoGateway {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayFactoryError {
-    /// `instanceRef` names no `ForgejoInstance`, or none exists at all.
-    #[error("ForgejoInstance not found: {0}")]
+    /// The instance resolved for a CR is gone.
+    #[error("{0} not found")]
     InstanceNotFound(String),
     /// No `instanceRef` and more than one `ForgejoInstance` exists.
     #[error("ambiguous default ForgejoInstance: {0}")]
@@ -623,16 +623,25 @@ impl GatewayFactoryError {
     }
 }
 
-/// Produces a `ForgejoGateway` for a CR's `instanceRef` (`None` → the
-/// cluster's only `ForgejoInstance`). The adapter re-reads the token
-/// `Secret` on every call so rotation needs no restart.
+/// Produces a `ForgejoGateway` for a resolved instance — a
+/// `ForgejoInstance` or a `ForgejoLocalInstance` (see
+/// [`InstanceDirectory`]). The adapter re-reads the token `Secret` on every
+/// call so rotation needs no restart.
 #[async_trait::async_trait]
 pub trait GatewayFactory: Send + Sync {
     async fn gateway_for(
         &self,
-        instance_ref: Option<&str>,
+        instance: &BoundInstance,
     ) -> Result<Arc<dyn ForgejoGateway>, GatewayFactoryError>;
 }
+
+/// Which instance a CR lives on — a `ForgejoInstance` or a
+/// `ForgejoLocalInstance` — resolved by the kit's rules
+/// (`weebo_kit_application::instances`) from its `instanceRef`, its
+/// namespace and the operator's watch scope.
+pub use weebo_kit_application::instances::{
+    BoundInstance, InstanceDirectory, InstanceError, ResolveError, SharedWith,
+};
 
 /// Secret stores are the kit's: Kubernetes `Secret`s and Vault KV, routed
 /// per target (`weebo_kit_adapters`).
@@ -668,10 +677,13 @@ impl RefKind {
 }
 
 /// What a referenced CR says about the Forgejo object behind it.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ReferencedCr {
-    /// Its `spec.instanceRef`.
-    pub instance_ref: Option<String>,
+    /// The instance its status records (`None` before its first
+    /// resolution).
+    pub instance: Option<BoundInstance>,
+    /// Its `spec.sharedWith`: the other namespaces that may reference it.
+    pub shared_with: Option<SharedWith>,
     /// `status.forgejoId`/`forgejoName` (`None` while either is missing
     /// or the id doesn't parse).
     pub forgejo: Option<ForgejoRef>,
@@ -683,8 +695,8 @@ pub struct ReferencedCr {
     /// The Forgejo name its spec asks for (`spec.username` of a user,
     /// `spec.name` otherwise), known before it is ever reconciled.
     pub spec_name: Option<String>,
-    /// A team's `spec.organizationRef`.
-    pub organization_ref: Option<String>,
+    /// A team's organization, by its Forgejo name (`None` while unknown).
+    pub organization: Option<String>,
     /// A user's `spec.admin`: credentials minted for it are site-admin
     /// credentials.
     pub admin: bool,
@@ -693,24 +705,37 @@ pub struct ReferencedCr {
 /// Read access to what the `*Ref` fields of a CR point at.
 #[async_trait::async_trait]
 pub trait ReferenceReader: Send + Sync {
-    /// `namespace` is the referencing CR's; ignored for cluster-scoped
-    /// kinds. `Ok(None)`: no such CR.
+    /// The CR `name` of `kind` in `namespace` (every referenced kind is
+    /// namespaced). `Ok(None)`: no such CR, or outside the watch scope.
     async fn referenced(
         &self,
         kind: RefKind,
         namespace: &str,
         name: &str,
     ) -> Result<Option<ReferencedCr>, ClusterError>;
-    /// The name of the cluster's only `ForgejoInstance` — what an empty
-    /// `instanceRef` means — or `None` when there are none or several.
-    async fn default_instance(&self) -> Result<Option<String>, ClusterError>;
-    /// The CRs (`Kind/[namespace/]name`) bound to ForgejoInstance
-    /// `instance`: naming it, or — when `default` (it is the only one) —
-    /// naming none.
+    /// The CRs (`Kind/namespace/name`) bound to `instance`: recorded in
+    /// their status, or — not resolved yet — naming it in `instanceRef`, or
+    /// naming nothing when `default` (it is the only instance they could
+    /// default to).
     async fn instance_dependents(
         &self,
-        instance: &str,
+        instance: &BoundInstance,
         default: bool,
+    ) -> Result<Vec<String>, ClusterError>;
+    /// Labels of `namespace` (a cross-namespace target shared through a
+    /// `namespaceSelector`). `Ok(None)`: no such namespace.
+    async fn namespace_labels(
+        &self,
+        namespace: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, ClusterError>;
+    /// The CRs (`Kind/namespace/name`) of `kind` owning the Forgejo object
+    /// `forgejo_name` on the server `instance` points at — whatever their
+    /// own instance, as long as it points at the same server.
+    async fn claimants(
+        &self,
+        kind: RefKind,
+        forgejo_name: &str,
+        instance: &BoundInstance,
     ) -> Result<Vec<String>, ClusterError>;
     /// One key of a `Secret` in `namespace`. `Ok(None)` when the Secret or
     /// the key is missing.

@@ -4,7 +4,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DeletionPolicy, ObjectRef};
+use crate::common::{DeletionPolicy, IdentityRef, InstanceRef, SharedWith};
 use crate::status::ForgejoStatus;
 
 /// A team inside a `ForgejoOrganization`, with its members. Repositories
@@ -14,7 +14,7 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoTeam",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    namespaced,
     validation = kube::core::Rule::new("!has(self.spec.membersPolicy) || self.spec.membersPolicy != 'External' || !has(self.spec.memberRefs) || size(self.spec.memberRefs) == 0").message("spec.memberRefs must be empty when membersPolicy is External"),
     plural = "forgejoteams",
     shortname = "fjteam",
@@ -27,12 +27,19 @@ use crate::status::ForgejoStatus;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoTeamSpec {
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
-    /// `ForgejoOrganization` the team belongs to. A team can't move between
+    pub instance_ref: Option<InstanceRef>,
+    /// Other namespaces allowed to reference this object (when the operator
+    /// enables cross-namespace references). Unset: this namespace only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_with: Option<SharedWith>,
+    /// The organization the team belongs to. A team can't move between
     /// organizations: changing this deletes and recreates it, which needs
     /// the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
-    pub organization_ref: ObjectRef,
+    pub organization_ref: IdentityRef,
     /// Team name, unique within the organization. `Owners` is reserved.
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,12 +66,12 @@ pub struct ForgejoTeamSpec {
     /// `memberRefs` must then be empty.
     #[serde(default)]
     pub members_policy: MembersPolicy,
-    /// `ForgejoUser`s in the team. The member list is authoritative:
+    /// Users in the team. The member list is authoritative:
     /// anyone else is removed. A member whose user doesn't exist in Forgejo
     /// yet (e.g. an observed OIDC user who never logged in) is reported as
     /// `MemberPending` while the others are synced.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub member_refs: Vec<ObjectRef>,
+    pub member_refs: Vec<IdentityRef>,
     #[serde(default = "DeletionPolicy::delete")]
     pub deletion_policy: DeletionPolicy,
 }

@@ -1302,21 +1302,15 @@ pub struct FakeCluster {
     policies: Mutex<Vec<Vec<NamespaceRule>>>,
     failure: Mutex<Option<String>>,
     dependents: Mutex<Vec<String>>,
-    default_instance: Mutex<Option<String>>,
+    namespace_labels: Mutex<BTreeMap<String, BTreeMap<String, String>>>,
+    claimants: Mutex<Vec<String>>,
 }
 
 impl FakeCluster {
     fn ref_key(kind: RefKind, namespace: &str, name: &str) -> (String, String, String) {
-        // Only repositories are namespaced among the referenced kinds.
-        let namespace = if kind == RefKind::Repository {
-            namespace
-        } else {
-            ""
-        };
         (kind.as_str().into(), namespace.into(), name.into())
     }
 
-    /// `namespace` is ignored for cluster-scoped kinds.
     pub fn put(&self, kind: RefKind, namespace: &str, name: &str, cr: ReferencedCr) {
         self.refs
             .lock()
@@ -1331,9 +1325,16 @@ impl FakeCluster {
             .insert((namespace.into(), name.into(), key.into()), value);
     }
 
-    /// The cluster's only instance, if any (`default_instance`).
-    pub fn set_default_instance(&self, name: Option<&str>) {
-        *self.default_instance.lock().unwrap() = name.map(str::to_string);
+    pub fn set_namespace_labels(&self, namespace: &str, labels: BTreeMap<String, String>) {
+        self.namespace_labels
+            .lock()
+            .unwrap()
+            .insert(namespace.into(), labels);
+    }
+
+    /// What `claimants` answers, whatever the object.
+    pub fn set_claimants(&self, claimants: Vec<String>) {
+        *self.claimants.lock().unwrap() = claimants;
     }
 
     /// What `instance_dependents` answers, whatever the instance.
@@ -1361,18 +1362,36 @@ impl FakeCluster {
 
 #[async_trait::async_trait]
 impl ReferenceReader for FakeCluster {
-    async fn default_instance(&self) -> Result<Option<String>, ClusterError> {
-        self.check()?;
-        Ok(self.default_instance.lock().unwrap().clone())
-    }
-
     async fn instance_dependents(
         &self,
-        _instance: &str,
+        _instance: &crate::ports::BoundInstance,
         _default: bool,
     ) -> Result<Vec<String>, ClusterError> {
         self.check()?;
         Ok(self.dependents.lock().unwrap().clone())
+    }
+
+    async fn namespace_labels(
+        &self,
+        namespace: &str,
+    ) -> Result<Option<BTreeMap<String, String>>, ClusterError> {
+        self.check()?;
+        Ok(self
+            .namespace_labels
+            .lock()
+            .unwrap()
+            .get(namespace)
+            .cloned())
+    }
+
+    async fn claimants(
+        &self,
+        _kind: RefKind,
+        _forgejo_name: &str,
+        _instance: &crate::ports::BoundInstance,
+    ) -> Result<Vec<String>, ClusterError> {
+        self.check()?;
+        Ok(self.claimants.lock().unwrap().clone())
     }
 
     async fn referenced(

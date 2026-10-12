@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use api::common::{DeletionPolicy, ManagementPolicy, ObjectRef, Visibility};
+use api::common::{DeletionPolicy, IdentityRef, ManagementPolicy, ObjectRef, Visibility};
 use api::keys::{ForgejoDeployKeySpec, KeySource};
 use api::organization::ForgejoOrganizationSpec;
 use api::repository::{BranchProtection, ForgejoRepositorySpec, MigrateSource, RepositoryUnits};
@@ -31,7 +31,8 @@ const OWNERS_TEAM: &str = "Owners";
 
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {
-    /// Written as `spec.instanceRef` (`None` = the cluster's only instance).
+    /// Written as `spec.instanceRef.name` (`None` = no `instanceRef`: the
+    /// cluster's only instance).
     pub instance_ref: Option<String>,
     /// Organizations and users to import, with their repositories. Empty =
     /// everything. Users other than these are only imported when a team or
@@ -124,7 +125,11 @@ pub async fn import(
         }
         let name = org_names.claim(&org.name, org.id);
         let spec = ForgejoOrganizationSpec {
-            instance_ref: options.instance_ref.clone(),
+            instance_ref: options
+                .instance_ref
+                .clone()
+                .map(api::common::InstanceRef::named),
+            shared_with: None,
             name: org.name.clone(),
             full_name: non_empty(&org.full_name),
             description: non_empty(&org.description),
@@ -161,7 +166,7 @@ pub async fn import(
                 match users.get(&login) {
                     Some((name, _)) => {
                         referenced.insert(login);
-                        member_refs.push(ObjectRef { name: name.clone() });
+                        member_refs.push(IdentityRef::named(name.clone()));
                     }
                     None => out.warnings.push(format!(
                         "team {org}/{}: unknown member {login:?}",
@@ -245,7 +250,10 @@ pub async fn import(
     for (repo_cr, full_name) in &repos {
         for key in inventory.list_deploy_keys(full_name).await? {
             let spec = ForgejoDeployKeySpec {
-                instance_ref: options.instance_ref.clone(),
+                instance_ref: options
+                    .instance_ref
+                    .clone()
+                    .map(api::common::InstanceRef::named),
                 repository_ref: ObjectRef {
                     name: repo_cr.clone(),
                 },
@@ -297,7 +305,11 @@ fn user_spec(user: &RemoteUser, options: &ImportOptions) -> ForgejoUserSpec {
     let external = user.source_id != 0;
     let manage = options.manage_users;
     ForgejoUserSpec {
-        instance_ref: options.instance_ref.clone(),
+        instance_ref: options
+            .instance_ref
+            .clone()
+            .map(api::common::InstanceRef::named),
+        shared_with: None,
         username: user.login.clone(),
         management_policy: if manage {
             ManagementPolicy::Manage
@@ -326,14 +338,16 @@ fn team_spec(
     team: RemoteTeam,
     org_cr: &str,
     permission: TeamPermission,
-    member_refs: Vec<ObjectRef>,
+    member_refs: Vec<IdentityRef>,
     options: &ImportOptions,
 ) -> ForgejoTeamSpec {
     ForgejoTeamSpec {
-        instance_ref: options.instance_ref.clone(),
-        organization_ref: ObjectRef {
-            name: org_cr.to_string(),
-        },
+        instance_ref: options
+            .instance_ref
+            .clone()
+            .map(api::common::InstanceRef::named),
+        shared_with: None,
+        organization_ref: IdentityRef::named(org_cr),
         name: team.name,
         description: non_empty(&team.description),
         permission,
@@ -359,15 +373,18 @@ fn repository_spec(
     repo: &RemoteRepository,
     owner: &Owner,
     protections: Vec<ProtectionRule>,
-    team_refs: Vec<ObjectRef>,
+    team_refs: Vec<IdentityRef>,
     options: &ImportOptions,
 ) -> ForgejoRepositorySpec {
     let (organization_ref, user_ref) = match owner {
-        Owner::Organization(n) => (Some(ObjectRef { name: n.clone() }), None),
-        Owner::User(n) => (None, Some(ObjectRef { name: n.clone() })),
+        Owner::Organization(n) => (Some(IdentityRef::named(n.clone())), None),
+        Owner::User(n) => (None, Some(IdentityRef::named(n.clone()))),
     };
     ForgejoRepositorySpec {
-        instance_ref: options.instance_ref.clone(),
+        instance_ref: options
+            .instance_ref
+            .clone()
+            .map(api::common::InstanceRef::named),
         organization_ref,
         user_ref,
         name: repo.name.clone(),
@@ -419,12 +436,12 @@ fn repository_teams(
     granted: &[RemoteTeam],
     teams: &BTreeMap<(String, String), String>,
     warnings: &mut Vec<String>,
-) -> Vec<ObjectRef> {
+) -> Vec<IdentityRef> {
     granted
         .iter()
         .filter(|t| t.name != OWNERS_TEAM && !t.includes_all_repositories)
         .filter_map(|t| match teams.get(&(org.to_string(), t.name.clone())) {
-            Some(name) => Some(ObjectRef { name: name.clone() }),
+            Some(name) => Some(IdentityRef::named(name.clone())),
             None => {
                 warnings.push(format!(
                     "repository {full_name}: team {:?} was not imported, left out of teamRefs",
@@ -472,7 +489,7 @@ fn webhook_spec(
 ) -> ForgejoWebhookSpec {
     let (repository_ref, organization_ref) = match owner {
         HookOwner::Repository(n) => (Some(ObjectRef { name: n.clone() }), None),
-        HookOwner::Organization(n) => (None, Some(ObjectRef { name: n.clone() })),
+        HookOwner::Organization(n) => (None, Some(IdentityRef::named(n.clone()))),
     };
     let mut config = hook.config;
     config.remove("url");
@@ -482,7 +499,10 @@ fn webhook_spec(
         .unwrap_or_else(|| "json".to_string());
     let http_method = config.remove("http_method").filter(|m| !m.is_empty());
     ForgejoWebhookSpec {
-        instance_ref: options.instance_ref.clone(),
+        instance_ref: options
+            .instance_ref
+            .clone()
+            .map(api::common::InstanceRef::named),
         repository_ref,
         organization_ref,
         type_: hook.type_,
@@ -746,12 +766,7 @@ mod tests {
         let team = &out.teams[0];
         assert_eq!(team.name, "weebo-dev");
         assert_eq!(team.spec.permission, TeamPermission::Write);
-        assert_eq!(
-            team.spec.member_refs,
-            vec![ObjectRef {
-                name: "alice-x".into()
-            }]
-        );
+        assert_eq!(team.spec.member_refs, vec![IdentityRef::named("alice-x")]);
 
         let repo = out
             .repositories
@@ -760,16 +775,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             repo.spec.organization_ref,
-            Some(ObjectRef {
-                name: "weebo".into()
-            })
+            Some(IdentityRef::named("weebo"))
         );
-        assert_eq!(
-            repo.spec.team_refs,
-            vec![ObjectRef {
-                name: "weebo-dev".into()
-            }]
-        );
+        assert_eq!(repo.spec.team_refs, vec![IdentityRef::named("weebo-dev")]);
         assert_eq!(
             repo.spec.branch_protections.as_ref().unwrap()[0].required_approvals,
             1
@@ -781,7 +789,7 @@ mod tests {
             .iter()
             .find(|r| r.spec.name == "dots")
             .unwrap();
-        assert_eq!(dots.spec.user_ref, Some(ObjectRef { name: "bob".into() }));
+        assert_eq!(dots.spec.user_ref, Some(IdentityRef::named("bob")));
 
         let hook = &out.webhooks[0];
         assert_eq!(hook.spec.url, "https://ci.example.com/hook");

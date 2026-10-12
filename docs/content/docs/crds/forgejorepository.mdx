@@ -46,15 +46,15 @@ spec:
 | `description` | `string` | no |  |  |
 | `fromTemplate` | `object` | no |  | Generate the repository from a template repository: a `ForgejoRepository` in the same namespace, or any Forgejo template by name (gated by the namespace policy's `allowedTemplates`). Creation-time only. |
 | `init` | `object` | no |  | Creation-time initialization of an empty repository. |
-| `instanceRef` | `string` | no |  |  |
+| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
 | `isTemplate` | `boolean` | no | `false` | Mark the repository as a template others can be generated from. |
 | `migrate` | `object` | no |  | Migrate (or pull-mirror) a remote repository. Creation-time only, except `mirrorInterval`, which stays in sync. |
 | `name` | `string` | yes |  | Repository name. Changing it renames in place (Forgejo keeps a redirect from the old name). Changing the owner transfers the repository, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
-| `organizationRef` | `object` | no |  | Owning `ForgejoOrganization` (cluster-scoped). |
+| `organizationRef` | `object` | no |  | Owning organization. |
 | `private` | `boolean` | no | `false` |  |
 | `teamRefs` | `object[]` | no |  | `ForgejoTeam`s granted access (organization-owned repositories only; the teams must belong to the owning organization). Authoritative, except for the `Owners` team and teams with `includesAllRepositories`, which Forgejo always grants. |
 | `units` | `object` | no | `{}` | Repository units to enable or disable. Unset = Forgejo's default. |
-| `userRef` | `object` | no |  | Owning `ForgejoUser` (cluster-scoped). |
+| `userRef` | `object` | no |  | Owning user. |
 | `website` | `string` | no |  |  |
 
 ## Build a manifest

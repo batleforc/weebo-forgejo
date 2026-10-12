@@ -6,6 +6,7 @@
 
 pub mod deploy_key;
 pub mod instance;
+pub mod local_instance;
 pub mod namespace_policy;
 pub mod oauth2;
 pub mod organization;
@@ -19,17 +20,22 @@ pub mod webhook;
 
 use std::sync::Arc;
 
+use api::common::InstanceRef;
 use application::ports::{
-    ClusterError, GatewayFactory, PolicySource, ReferenceReader, SecretStoreFactory,
+    BoundInstance, ClusterError, GatewayFactory, InstanceDirectory, PolicySource, ReferenceReader,
+    SecretStoreFactory,
 };
-use application::use_cases::Outcome;
+use application::use_cases::{Failure, Outcome, instance_failure};
 use domain::error::ReasonCode;
 use kube::Client;
 use kube::api::{Api, Patch, PatchParams};
+use kube::runtime::Controller;
 use kube::runtime::controller::Action;
 use kube::runtime::events::Recorder;
-use weebo_kit_runtime::Health;
+use kube::runtime::reflector::ObjectRef;
 use weebo_kit_runtime::events;
+use weebo_kit_runtime::scope::KindScope;
+use weebo_kit_runtime::{Health, WatchScope};
 
 pub use api::FINALIZER;
 use api::namespace_policy::NamespaceRule;
@@ -44,6 +50,9 @@ pub struct Ctx {
     pub client: Client,
     pub gateways: Arc<dyn GatewayFactory>,
     pub secrets: Arc<dyn SecretStoreFactory>,
+    /// Which instance a CR lives on (the kit's `Instances`, on the watch
+    /// scope).
+    pub instances: Arc<dyn InstanceDirectory>,
     /// What the `*Ref` fields point at.
     pub refs: Arc<dyn ReferenceReader>,
     /// The `ForgejoNamespacePolicy` rules, re-checked before any Forgejo call.
@@ -52,6 +61,190 @@ pub struct Ctx {
     pub shutdown: Shutdown,
     /// Liveness: controllers report their watch errors here.
     pub health: Arc<Health>,
+    /// What the controllers watch (`WEEBO_WATCH_NAMESPACE`,
+    /// `WEEBO_WATCH_LABEL_SELECTOR`, `WEEBO_WATCH_CLUSTER_KINDS`): every
+    /// watch goes through it.
+    pub scope: WatchScope,
+}
+
+/// A watch on a kind the CRs reference, re-triggering the CRs `map`
+/// returns — through the watch scope, and skipped for a cluster-scoped
+/// kind when the operator watches none (full namespaced).
+pub trait ScopedWatches<C>: Sized
+where
+    C: kube::Resource<DynamicType = ()> + Clone + std::fmt::Debug + Send + Sync + 'static,
+{
+    fn watches_in<K, I>(
+        self,
+        ctx: &Ctx,
+        client: &Client,
+        map: impl Fn(K) -> I + Send + Sync + 'static,
+    ) -> Self
+    where
+        K: kube::Resource<DynamicType = ()>
+            + Clone
+            + std::fmt::Debug
+            + serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + 'static,
+        K::Scope: KindScope,
+        I: IntoIterator<Item = ObjectRef<C>> + 'static,
+        I::IntoIter: Send;
+}
+
+impl<C> ScopedWatches<C> for Controller<C>
+where
+    C: kube::Resource<DynamicType = ()>
+        + Clone
+        + std::fmt::Debug
+        + serde::de::DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
+{
+    fn watches_in<K, I>(
+        self,
+        ctx: &Ctx,
+        client: &Client,
+        map: impl Fn(K) -> I + Send + Sync + 'static,
+    ) -> Self
+    where
+        K: kube::Resource<DynamicType = ()>
+            + Clone
+            + std::fmt::Debug
+            + serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + 'static,
+        K::Scope: KindScope,
+        I: IntoIterator<Item = ObjectRef<C>> + 'static,
+        I::IntoIter: Send,
+    {
+        if !<K::Scope as KindScope>::NAMESPACED && !ctx.scope.cluster_kinds() {
+            return self;
+        }
+        self.watches(
+            ctx.scope.api::<K>(client.clone()),
+            ctx.scope.watcher_config(),
+            map,
+        )
+    }
+}
+
+/// The kinds with an `instanceRef`.
+pub trait HasInstanceRef: kube::Resource<DynamicType = ()> + status::HasStatus {
+    fn instance_ref(&self) -> Option<&InstanceRef>;
+}
+
+macro_rules! impl_has_instance_ref {
+    ($($kind:ty),+) => {$(
+        impl HasInstanceRef for $kind {
+            fn instance_ref(&self) -> Option<&InstanceRef> {
+                self.spec.instance_ref.as_ref()
+            }
+        }
+    )+};
+}
+impl_has_instance_ref!(
+    api::ForgejoUser,
+    api::ForgejoOrganization,
+    api::ForgejoTeam,
+    api::ForgejoRepository,
+    api::ForgejoWebhook,
+    api::ForgejoDeployKey,
+    api::ForgejoUserKey,
+    api::ForgejoOAuth2Application,
+    api::ForgejoAccessToken
+);
+
+/// The instance `obj` lives on: its `instanceRef` resolved (the kit's
+/// rules), and never another one than its status recorded — the ids in
+/// its status belong to the instance they were created on. (Not a CRD
+/// immutability rule: such a rule couldn't read the CRs written when
+/// `instanceRef` was a string, and would refuse their migration.)
+pub async fn instance_of<K: HasInstanceRef>(ctx: &Ctx, obj: &K) -> Result<BoundInstance, Failure> {
+    let recorded = obj.forgejo_status().and_then(|s| s.instance.as_ref());
+    let resolved = ctx
+        .instances
+        .resolve(
+            obj.meta().namespace.as_deref(),
+            obj.instance_ref(),
+            recorded,
+        )
+        .await
+        .map_err(instance_failure)?;
+    match recorded {
+        Some(recorded) if *recorded != resolved => Err(Failure::new(
+            ReasonCode::InstanceBindingChanged,
+            format!(
+                "spec.instanceRef now designates {resolved}, not the {recorded} this CR is bound \
+                 to: a bound CR never moves; restore instanceRef, or delete the CR \
+                 (deletionPolicy: Orphan keeps the Forgejo object) and create it again"
+            ),
+        )),
+        _ => Ok(resolved),
+    }
+}
+
+/// Where the user, organization and team refs of a CR of `namespace`,
+/// bound to `instance`, are followed from: `gateway` checks `remoteName`s
+/// (`None`: a finalizer cleanup, which takes them as they are).
+pub fn referrer<'a>(
+    ctx: &'a Ctx,
+    namespace: &'a str,
+    instance: &'a BoundInstance,
+    gateway: Option<&'a dyn application::ports::ForgejoGateway>,
+) -> application::use_cases::refs::Referrer<'a> {
+    application::use_cases::refs::Referrer {
+        reader: ctx.refs.as_ref(),
+        namespace,
+        instance,
+        cross_namespace: ctx.scope.cross_namespace_refs(),
+        gateway,
+    }
+}
+
+/// The unique claim (D8): before creating or adopting the Forgejo object
+/// `forgejo_name` of `kind` on `instance`'s server, no other CR — any
+/// namespace, any instance of the same server — may own it already.
+/// `me`: the CR's own `Kind/namespace/name`.
+pub async fn claimed_elsewhere(
+    ctx: &Ctx,
+    kind: application::ports::RefKind,
+    forgejo_name: &str,
+    instance: &BoundInstance,
+    me: &str,
+) -> Result<Option<Failure>, Error> {
+    let others: Vec<String> = ctx
+        .refs
+        .claimants(kind, forgejo_name, instance)
+        .await?
+        .into_iter()
+        .filter(|id| id != me)
+        .collect();
+    Ok(others.first().map(|other| {
+        Failure::new(
+            ReasonCode::RemoteObjectClaimed,
+            format!(
+                "{} {forgejo_name:?} on this server is already owned by {other}: reference it \
+                 with remoteName, or rename it",
+                kind.as_str()
+            ),
+        )
+    }))
+}
+
+/// The instance a finalizer cleans up on: the one recorded in the status,
+/// not whatever the ref designates now — else the ref resolved.
+pub async fn cleanup_instance<K: HasInstanceRef>(
+    ctx: &Ctx,
+    obj: &K,
+) -> Result<BoundInstance, Failure> {
+    match obj.forgejo_status().and_then(|s| s.instance.clone()) {
+        Some(bound) => Ok(bound),
+        None => instance_of(ctx, obj).await,
+    }
 }
 
 /// The kit's controller skeleton: predicate-filtered watch, bounded
@@ -84,11 +277,11 @@ pub enum Error {
     Cleanup(application::use_cases::Failure),
 }
 
-/// The gateway and secret store of a CR's `instanceRef`, for kinds that
-/// emit secrets.
+/// The gateway and secret store of a CR's instance, for kinds that emit
+/// secrets.
 pub async fn backends(
     ctx: &Ctx,
-    instance_ref: Option<&str>,
+    instance: &BoundInstance,
 ) -> Result<
     (
         Arc<dyn application::ports::ForgejoGateway>,
@@ -96,16 +289,14 @@ pub async fn backends(
     ),
     application::use_cases::Failure,
 > {
-    use application::use_cases::Failure;
-    use domain::error::ReasonCode;
     let gateway = ctx
         .gateways
-        .gateway_for(instance_ref)
+        .gateway_for(instance)
         .await
         .map_err(|e| Failure::new(e.reason(), e.to_string()))?;
     let secrets = ctx
         .secrets
-        .store_for(instance_ref)
+        .store_for(instance)
         .await
         .map_err(|e| Failure::new(ReasonCode::SecretTargetFailed, e.to_string()))?;
     Ok((gateway, secrets))
@@ -116,21 +307,29 @@ pub async fn backends(
 /// cleanup has to call Forgejo (`application::use_cases::CleanupGateway`).
 pub async fn cleanup_gateway(
     ctx: &Ctx,
-    instance_ref: Option<&str>,
-) -> Result<Arc<dyn application::ports::ForgejoGateway>, application::use_cases::Failure> {
+    instance: &Result<BoundInstance, Failure>,
+) -> Result<Arc<dyn application::ports::ForgejoGateway>, Failure> {
+    let instance = instance.as_ref().map_err(Clone::clone)?;
     ctx.gateways
-        .gateway_for(instance_ref)
+        .gateway_for(instance)
         .await
-        .map_err(|e| application::use_cases::Failure::new(e.reason(), e.to_string()))
+        .map_err(|e| Failure::new(e.reason(), e.to_string()))
 }
 
 /// The secret store for a finalizer cleanup. Like [`cleanup_gateway`], a
 /// resolution failure only surfaces if the cleanup has secrets to delete.
 pub async fn cleanup_secrets(
     ctx: &Ctx,
-    instance_ref: Option<&str>,
+    instance: &Result<BoundInstance, Failure>,
 ) -> Arc<dyn application::ports::SecretStore> {
-    match ctx.secrets.store_for(instance_ref).await {
+    let instance = match instance {
+        Ok(instance) => instance,
+        Err(f) => {
+            let e = application::ports::SecretStoreError(f.message.clone());
+            return Arc::new(UnresolvedSecretStore(e));
+        }
+    };
+    match ctx.secrets.store_for(instance).await {
         Ok(store) => store,
         Err(e) => Arc::new(UnresolvedSecretStore(e)),
     }
@@ -210,6 +409,8 @@ fn needs_a_change(reason: ReasonCode) -> bool {
     matches!(
         reason,
         ReasonCode::InvalidSpec
+            | ReasonCode::InstanceNotAllowed
+            | ReasonCode::InstanceBindingChanged
             | ReasonCode::DisruptiveUpdateRefused
             | ReasonCode::NamespaceNotAllowed
             | ReasonCode::CrossNamespaceReference

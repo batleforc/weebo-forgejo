@@ -5,7 +5,7 @@ full: true
 ---
 
 - **API version:** `forgejo.weebo.io/v1alpha1`
-- **Scope:** Cluster
+- **Scope:** Namespaced
 - **Short names:** `fjuser`
 - **Guide:** [Users, OIDC and teams](/docs/guides/users-and-oidc)
 
@@ -29,6 +29,7 @@ apiVersion: forgejo.weebo.io/v1alpha1
 kind: ForgejoUser
 metadata:
   name: my-user
+  namespace: team-a
 spec:
   username: alice
   email: alice@example.com
@@ -45,7 +46,7 @@ spec:
 | `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR keeps the account and the attribution of everything it authored. Users are never purged. |
 | `email` | `string` | no |  | Required unless `managementPolicy: Observe`. |
 | `fullName` | `string` | no |  |  |
-| `instanceRef` | `string` | no |  | `ForgejoInstance` to manage this user in. Defaults to the cluster's only instance. |
+| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
 | `loginName` | `string` | no |  | Identity of the account at the authentication source (for OIDC, the `sub` claim or the configured username claim). Defaults to `username`. Only used with `loginSourceId`. |
 | `loginSourceId` | `integer` | no |  | ID of the Forgejo authentication source (Site administration → Authentication sources) the account logs in through. Forgejo has no API to list sources, so this is the numeric id, not its name. |
 | `managementPolicy` | `string` | no | `"Manage"` | Whether the operator owns the Forgejo object or only looks it up. |
@@ -54,6 +55,7 @@ spec:
 | `prohibitLogin` | `boolean` | no | `false` | Disable the account entirely — web, git and API tokens alike. |
 | `restricted` | `boolean` | no | `false` | Restricted users only see what they are explicitly granted. |
 | `secretTargets` | `object[]` | no |  | Where the generated password of a local, non-bot user is written (`FORGEJO_USERNAME`, `FORGEJO_PASSWORD`, `FORGEJO_URL`). Required for those users; ignored otherwise. A target deleted later triggers a password reset, since the old value can't be read back. |
+| `sharedWith` | `object` | no |  | Other namespaces allowed to reference this object (when the operator enables cross-namespace references). Unset: this namespace only. |
 | `username` | `string` | yes |  | Forgejo login. Changing it renames the account in place. |
 | `visibility` | `string` | no | `"public"` | Visibility of a Forgejo user or organization. |
 

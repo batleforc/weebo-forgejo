@@ -4,7 +4,8 @@
 mod support;
 
 use adapters_inbound::controller;
-use api::common::{DeletionPolicy, ManagementPolicy, ObjectRef, Visibility};
+use api::common::IdentityRef;
+use api::common::{DeletionPolicy, ManagementPolicy, Visibility};
 use api::organization::ForgejoOrganizationSpec;
 use api::team::{ForgejoTeamSpec, TeamPermission};
 use api::user::ForgejoUserSpec;
@@ -24,6 +25,7 @@ fn org(name: &str) -> ForgejoOrganization {
         metadata: meta(name),
         spec: ForgejoOrganizationSpec {
             instance_ref: None,
+            shared_with: None,
             name: name.into(),
             full_name: None,
             description: None,
@@ -44,7 +46,8 @@ fn team(name: &str, org: &str, members: &[&str]) -> ForgejoTeam {
         metadata: meta(name),
         spec: ForgejoTeamSpec {
             instance_ref: None,
-            organization_ref: ObjectRef { name: org.into() },
+            shared_with: None,
+            organization_ref: IdentityRef::named(org),
             name: name.into(),
             description: None,
             permission: TeamPermission::Write,
@@ -52,12 +55,7 @@ fn team(name: &str, org: &str, members: &[&str]) -> ForgejoTeam {
             includes_all_repositories: false,
             can_create_org_repo: false,
             members_policy: Default::default(),
-            member_refs: members
-                .iter()
-                .map(|m| ObjectRef {
-                    name: m.to_string(),
-                })
-                .collect(),
+            member_refs: members.iter().map(|m| IdentityRef::named(*m)).collect(),
             deletion_policy: DeletionPolicy::Delete,
         },
         status: None,
@@ -69,6 +67,7 @@ fn observed(username: &str) -> ForgejoUser {
         metadata: meta(username),
         spec: ForgejoUserSpec {
             instance_ref: None,
+            shared_with: None,
             username: username.into(),
             management_policy: ManagementPolicy::Observe,
             email: None,
@@ -104,7 +103,7 @@ async fn team_waits_for_its_organization_then_syncs() {
     ));
     tokio::spawn(controller::team::run(h.client.clone(), h.ctx.clone()));
 
-    let teams: Api<ForgejoTeam> = Api::all(h.client.clone());
+    let teams: Api<ForgejoTeam> = Api::namespaced(h.client.clone(), "default");
     teams
         .create(&PostParams::default(), &team("devs", "weebo", &[]))
         .await
@@ -114,7 +113,7 @@ async fn team_waits_for_its_organization_then_syncs() {
 
     // The org showing up re-triggers the team through the watch, well
     // before the 30 s retry.
-    let orgs: Api<ForgejoOrganization> = Api::all(h.client.clone());
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(h.client.clone(), "default");
     orgs.create(&PostParams::default(), &org("weebo"))
         .await
         .unwrap();
@@ -136,9 +135,9 @@ async fn oidc_member_joins_as_soon_as_it_logs_in() {
     ));
     tokio::spawn(controller::team::run(h.client.clone(), h.ctx.clone()));
 
-    let users: Api<ForgejoUser> = Api::all(h.client.clone());
-    let orgs: Api<ForgejoOrganization> = Api::all(h.client.clone());
-    let teams: Api<ForgejoTeam> = Api::all(h.client.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(h.client.clone(), "default");
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(h.client.clone(), "default");
+    let teams: Api<ForgejoTeam> = Api::namespaced(h.client.clone(), "default");
     users
         .create(&PostParams::default(), &observed("carol"))
         .await
@@ -189,7 +188,7 @@ async fn import_pending_cr_is_left_alone() {
         h.client.clone(),
         h.ctx.clone(),
     ));
-    let orgs: Api<ForgejoOrganization> = Api::all(h.client.clone());
+    let orgs: Api<ForgejoOrganization> = Api::namespaced(h.client.clone(), "default");
     let mut paused = org("weebo");
     paused.metadata.annotations = Some(
         [(

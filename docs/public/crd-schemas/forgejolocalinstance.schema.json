@@ -1,0 +1,125 @@
+{
+  "apiVersion": "forgejo.weebo.io/v1alpha1",
+  "kind": "ForgejoLocalInstance",
+  "scope": "Namespaced",
+  "description": "Connection to a real Forgejo server (v16 or later), owned by a\nnamespace: its token is that namespace's, and only the objects of this\nnamespace use it unless `sharedWith` says otherwise. What an operator\nlimited to one namespace uses. Objects bound to it are not governed by\n`ForgejoNamespacePolicy` — the namespace's own token bounds what they\ncan do — and write their secrets as Kubernetes `Secret`s only: the\noperator's Vault identity is shared by every namespace.",
+  "properties": {
+    "sharedWith": {
+      "description": "Other namespaces (or cluster-scoped objects) allowed to use this\ninstance — and its token. Unset: this namespace only.",
+      "nullable": true,
+      "properties": {
+        "clusterScoped": {
+          "description": "Cluster-scoped objects may use this instance.",
+          "type": "boolean"
+        },
+        "namespaceSelector": {
+          "description": "Namespaces whose labels match this selector may use this instance.",
+          "nullable": true,
+          "properties": {
+            "matchExpressions": {
+              "description": "matchExpressions is a list of label selector requirements. The requirements are ANDed.",
+              "items": {
+                "description": "A label selector requirement is a selector that contains values, a key, and an operator that relates the key and values.",
+                "properties": {
+                  "key": {
+                    "description": "key is the label key that the selector applies to.",
+                    "type": "string"
+                  },
+                  "operator": {
+                    "description": "operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist.",
+                    "type": "string"
+                  },
+                  "values": {
+                    "description": "values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "key",
+                  "operator"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "matchLabels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is \"key\", the operator is \"In\", and the values array contains only \"value\". The requirements are ANDed.",
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "namespaces": {
+          "description": "Namespaces whose objects may use this instance.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "tls": {
+      "default": {
+        "insecureSkipVerify": false
+      },
+      "description": "TLS verification for the API connection above; the CA `Secret`\nlives in this namespace.",
+      "properties": {
+        "caSecretRef": {
+          "description": "Optional custom CA certificate (a PEM bundle under `key`) to verify\nthe instance's TLS with, read from a `Secret` of the instance's own\nnamespace. Added on top of the platform trust store.",
+          "nullable": true,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "name"
+          ],
+          "type": "object"
+        },
+        "insecureSkipVerify": {
+          "default": false,
+          "description": "Skip certificate verification entirely — insecure, intended only for\nthrowaway/self-signed instances. Prefer `caSecretRef` below.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "tokenSecretRef": {
+      "description": "Key of a `Secret` of this namespace holding the API token the\noperator acts with (a site admin's for user and organization\nmanagement). Re-read on every gateway call, so rotating it needs no\nrestart.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "name"
+      ],
+      "type": "object"
+    },
+    "url": {
+      "description": "Base web URL of the Forgejo instance, e.g. `https://git.example.com`\n— not the `/api/v1` REST endpoint, which is derived from it. Written\nas `FORGEJO_URL` into emitted secrets.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tokenSecretRef",
+    "url"
+  ],
+  "type": "object"
+}

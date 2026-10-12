@@ -6,10 +6,11 @@ value.
 {{- define "operator.params" -}}
 group: forgejo.weebo.io
 versions: [v1alpha1]
-# Every controller watches its kind cluster-wide (namespaced kinds
-# included) and the kinds it references.
+# Every kind a controller watches (cluster-wide, or the namespaced ones in
+# watch.namespace only), and the kinds it references.
 kinds:
   - forgejoinstances
+  - forgejolocalinstances
   - forgejousers
   - forgejouserkeys
   - forgejoorganizations
@@ -20,16 +21,32 @@ kinds:
   - forgejooauth2applications
   - forgejoaccesstokens
   - forgejonamespacepolicies
-# The namespaced kinds: checked by the ForgejoNamespacePolicy allow-list on
-# admission, and what a team may manage (rbac.namespacedExample).
-# Cluster-scoped kinds stay with cluster admins.
-admitted: &namespaced
+# Checked by the ForgejoNamespacePolicy allow-list on admission (unless
+# bound to a ForgejoLocalInstance).
+admitted:
+  - forgejousers
+  - forgejouserkeys
+  - forgejoorganizations
+  - forgejoteams
   - forgejorepositories
   - forgejowebhooks
   - forgejodeploykeys
   - forgejooauth2applications
   - forgejoaccesstokens
-namespacedKinds: *namespaced
+# The namespaced kinds: what a team may manage (rbac.namespacedExample),
+# and the watch Role's (watch.namespace). ForgejoInstance and
+# ForgejoNamespacePolicy, cluster-scoped, stay with cluster admins.
+namespacedKinds:
+  - forgejolocalinstances
+  - forgejousers
+  - forgejouserkeys
+  - forgejoorganizations
+  - forgejoteams
+  - forgejorepositories
+  - forgejowebhooks
+  - forgejodeploykeys
+  - forgejooauth2applications
+  - forgejoaccesstokens
 env:
   - name: WEEBO_FORGEJO_MAX_INFLIGHT
     value: {{ .Values.forgejoMaxInflight | quote }}

@@ -350,9 +350,7 @@ mod tests {
     fn spec() -> ForgejoAccessTokenSpec {
         ForgejoAccessTokenSpec {
             instance_ref: None,
-            user_ref: api::common::ObjectRef {
-                name: "ci-bot".into(),
-            },
+            user_ref: api::common::IdentityRef::named("ci-bot"),
             name: None,
             scopes: vec!["write:repository".into(), "read:user".into()],
             repository_refs: vec![],

@@ -31,6 +31,9 @@ spec:
             description: |-
               Namespace allow-list for the namespaced kinds, enforced by the
               admission webhook (CREATE/UPDATE) and re-checked by every reconciler.
+              It governs the CRs bound to a `ForgejoInstance` (shared by every
+              namespace); a CR bound to a `ForgejoLocalInstance` is bounded by its
+              namespace's own token instead.
 
               While no `ForgejoNamespacePolicy` exists, everything is allowed. As soon
               as one exists, a namespaced CR is only accepted if some `Allow` rule
@@ -44,6 +47,10 @@ spec:
                     allowedKinds:
                       items:
                         enum:
+                        - ForgejoUser
+                        - ForgejoUserKey
+                        - ForgejoOrganization
+                        - ForgejoTeam
                         - ForgejoRepository
                         - ForgejoWebhook
                         - ForgejoDeployKey
@@ -53,9 +60,11 @@ spec:
                       type: array
                     allowedOrganizations:
                       description: |-
-                        `ForgejoOrganization`s (CR names) the namespace may reference —
-                        owner of its repositories, target of its org webhooks. Unset: any.
-                        On a `Deny` rule: only deny requests referencing one of these.
+                        Organizations (Forgejo names) the namespace may manage or reference —
+                        a `ForgejoOrganization`'s own name, the owner of its repositories
+                        and teams, the target of its org webhooks — whether through a CR or
+                        a `remoteName`. Unset: any. On a `Deny` rule: only deny requests
+                        referencing one of these.
                       items:
                         type: string
                       nullable: true
@@ -74,10 +83,12 @@ spec:
                       type: array
                     allowedUsers:
                       description: |-
-                        `ForgejoUser`s (CR names) the namespace may reference — owner of a
-                        repository or OAuth2 application, holder of an access token. Unset:
-                        any. Restricting this is what stops a namespace from minting tokens
-                        for a privileged account. On a `Deny` rule: only deny requests
+                        Users (Forgejo logins) the namespace may manage or reference — a
+                        `ForgejoUser`'s own login, the owner of a repository, organization
+                        or OAuth2 application, a team member, the holder of an access token
+                        or SSH key — whether through a CR or a `remoteName`. Unset: any.
+                        Restricting this is what stops a namespace from minting tokens for
+                        a privileged account. On a `Deny` rule: only deny requests
                         referencing one of these.
                       items:
                         type: string
@@ -158,6 +169,29 @@ spec:
                   the old name to rename *from*.
                 nullable: true
                 type: string
+              instance:
+                description: |-
+                  The instance this object was resolved to and stays bound to: a
+                  `spec.instanceRef` by name only never silently moves to another
+                  instance created later under that name.
+                nullable: true
+                properties:
+                  kind:
+                    description: '`Instance` or `LocalInstance`.'
+                    enum:
+                    - Instance
+                    - LocalInstance
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    description: The local instance's namespace; absent for a cluster-scoped one.
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               lastRotation:
                 description: |-
                   Value of the `forgejo.weebo.io/rotate-secret` annotation the last

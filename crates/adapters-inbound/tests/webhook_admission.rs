@@ -41,8 +41,10 @@ async fn admit(client: &kube::Client, body: Value) -> (bool, String) {
         WebhookState {
             policies: cluster.clone(),
             refs: cluster,
+            instances: None,
         },
         Default::default(),
+        weebo_kit_runtime::WatchScope::cluster(),
     );
     let request = axum::http::Request::post("/validate")
         .header("content-type", "application/json")

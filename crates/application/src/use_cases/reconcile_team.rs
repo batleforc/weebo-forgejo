@@ -260,9 +260,8 @@ mod tests {
     fn spec(name: &str) -> ForgejoTeamSpec {
         ForgejoTeamSpec {
             instance_ref: None,
-            organization_ref: api::common::ObjectRef {
-                name: "weebo".into(),
-            },
+            shared_with: None,
+            organization_ref: api::common::IdentityRef::named("weebo"),
             name: name.into(),
             description: None,
             permission: TeamPermission::Write,
@@ -410,9 +409,7 @@ mod tests {
         let fj = forgejo_with_orgs(&["weebo"]).await;
         let mut s = spec("devs");
         s.members_policy = MembersPolicy::External;
-        s.member_refs = vec![api::common::ObjectRef {
-            name: "alice".into(),
-        }];
+        s.member_refs = vec![api::common::IdentityRef::named("alice")];
         fj.clear_calls();
 
         let outcome = run(&s, None, "weebo", vec![], false, &fj).await;

@@ -25,6 +25,10 @@ pub const TEMPLATES: &str = "templates";
 /// governed by cluster RBAC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
+    User,
+    UserKey,
+    Organization,
+    Team,
     Repository,
     Webhook,
     DeployKey,
@@ -35,6 +39,10 @@ pub enum Kind {
 impl Kind {
     pub fn from_kind_name(kind: &str) -> Option<Self> {
         Some(match kind {
+            "ForgejoUser" => Kind::User,
+            "ForgejoUserKey" => Kind::UserKey,
+            "ForgejoOrganization" => Kind::Organization,
+            "ForgejoTeam" => Kind::Team,
             "ForgejoRepository" => Kind::Repository,
             "ForgejoWebhook" => Kind::Webhook,
             "ForgejoDeployKey" => Kind::DeployKey,
@@ -249,6 +257,10 @@ mod tests {
     #[test]
     fn kind_names_round_trip() {
         for k in [
+            "ForgejoUser",
+            "ForgejoUserKey",
+            "ForgejoOrganization",
+            "ForgejoTeam",
             "ForgejoRepository",
             "ForgejoWebhook",
             "ForgejoDeployKey",
@@ -257,6 +269,6 @@ mod tests {
         ] {
             assert!(Kind::from_kind_name(k).is_some(), "{k}");
         }
-        assert_eq!(Kind::from_kind_name("ForgejoTeam"), None);
+        assert_eq!(Kind::from_kind_name("ForgejoInstance"), None);
     }
 }

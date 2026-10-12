@@ -61,7 +61,7 @@ where
 }
 
 async fn org(l: &Live, cr: &str, name: &str) {
-    let orgs: Api<ForgejoOrganization> = l.cluster_api();
+    let orgs: Api<ForgejoOrganization> = l.api();
     l.create(
         &orgs,
         json!({"apiVersion": GROUP, "kind": "ForgejoOrganization",
@@ -73,7 +73,7 @@ async fn org(l: &Live, cr: &str, name: &str) {
 }
 
 async fn bot(l: &Live, cr: &str, name: &str) {
-    let users: Api<ForgejoUser> = l.cluster_api();
+    let users: Api<ForgejoUser> = l.api();
     l.create(
         &users,
         json!({"apiVersion": GROUP, "kind": "ForgejoUser",
@@ -86,7 +86,7 @@ async fn bot(l: &Live, cr: &str, name: &str) {
 }
 
 async fn team(l: &Live, cr: &str, org_cr: &str, name: &str, extra: serde_json::Value) {
-    let teams: Api<ForgejoTeam> = l.cluster_api();
+    let teams: Api<ForgejoTeam> = l.api();
     let mut spec = json!({"organizationRef": {"name": org_cr}, "name": name,
                           "permission": "write"});
     spec.as_object_mut()
@@ -822,7 +822,7 @@ async fn user_key_with_a_provided_public_key() {
     let l = live().await;
     let login = l.name("keyed");
     bot(&l, "keyed", &login).await;
-    let keys: Api<ForgejoUserKey> = l.cluster_api();
+    let keys: Api<ForgejoUserKey> = l.api();
     let provided = public_key();
     l.create(
         &keys,

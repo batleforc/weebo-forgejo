@@ -24,6 +24,8 @@ opentelemetry = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+weebo-kit-adapters = { workspace = true }
+weebo-kit-api = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 rustls = { workspace = true }

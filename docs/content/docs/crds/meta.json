@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "forgejoinstance",
+    "forgejolocalinstance",
     "forgejouser",
     "forgejouserkey",
     "forgejoorganization",

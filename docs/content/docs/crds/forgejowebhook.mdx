@@ -42,8 +42,8 @@ spec:
 | `events` | `string[]` | no | `["push"]` | Trigger events (`push`, `pull_request`, `issues`, `release`, `create`, `delete`, ...). |
 | `extraConfig` | `object` | no |  | Type-specific settings (e.g. `username`/`channel` for Slack). |
 | `httpMethod` | `string` | no |  |  |
-| `instanceRef` | `string` | no |  |  |
-| `organizationRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw remote name: a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
+| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
+| `organizationRef` | `object` | no |  | A user, organization or team: a CR (`name`) — of this object's namespace, or of `namespace` when cross-namespace references are enabled for the operator and the target lists this namespace in its `sharedWith` — or an object that exists in Forgejo but no CR manages (`remoteName`, its Forgejo name). The operator never creates, changes nor deletes a `remoteName` object. |
 | `repositoryRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw remote name: a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
 | `secretRef` | `object` | no |  | HMAC secret signing the payloads. Write-only in Forgejo: a change of the Secret's value is detected through `status.appliedSecretHash`. |
 | `type` | `string` | no | `"forgejo"` | `forgejo` (default), `gitea`, `gogs`, `slack`, `discord`, `dingtalk`, `telegram`, `msteams`, `feishu`, `wechatwork` or `packagist`. Changing it recreates the hook. |

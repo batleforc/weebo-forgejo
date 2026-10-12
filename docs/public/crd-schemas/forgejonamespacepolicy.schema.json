@@ -2,7 +2,7 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoNamespacePolicy",
   "scope": "Cluster",
-  "description": "Namespace allow-list for the namespaced kinds, enforced by the\nadmission webhook (CREATE/UPDATE) and re-checked by every reconciler.\n\nWhile no `ForgejoNamespacePolicy` exists, everything is allowed. As soon\nas one exists, a namespaced CR is only accepted if some `Allow` rule\nmatches its namespace and kind and covers the organizations, users and\ntemplates it references — and no `Deny` rule matches. Rules of every\npolicy are pooled; deny always wins.",
+  "description": "Namespace allow-list for the namespaced kinds, enforced by the\nadmission webhook (CREATE/UPDATE) and re-checked by every reconciler.\nIt governs the CRs bound to a `ForgejoInstance` (shared by every\nnamespace); a CR bound to a `ForgejoLocalInstance` is bounded by its\nnamespace's own token instead.\n\nWhile no `ForgejoNamespacePolicy` exists, everything is allowed. As soon\nas one exists, a namespaced CR is only accepted if some `Allow` rule\nmatches its namespace and kind and covers the organizations, users and\ntemplates it references — and no `Deny` rule matches. Rules of every\npolicy are pooled; deny always wins.",
   "properties": {
     "rules": {
       "items": {
@@ -10,6 +10,10 @@
           "allowedKinds": {
             "items": {
               "enum": [
+                "ForgejoUser",
+                "ForgejoUserKey",
+                "ForgejoOrganization",
+                "ForgejoTeam",
                 "ForgejoRepository",
                 "ForgejoWebhook",
                 "ForgejoDeployKey",
@@ -21,7 +25,7 @@
             "type": "array"
           },
           "allowedOrganizations": {
-            "description": "`ForgejoOrganization`s (CR names) the namespace may reference —\nowner of its repositories, target of its org webhooks. Unset: any.\nOn a `Deny` rule: only deny requests referencing one of these.",
+            "description": "Organizations (Forgejo names) the namespace may manage or reference —\na `ForgejoOrganization`'s own name, the owner of its repositories\nand teams, the target of its org webhooks — whether through a CR or\na `remoteName`. Unset: any. On a `Deny` rule: only deny requests\nreferencing one of these.",
             "items": {
               "type": "string"
             },
@@ -37,7 +41,7 @@
             "type": "array"
           },
           "allowedUsers": {
-            "description": "`ForgejoUser`s (CR names) the namespace may reference — owner of a\nrepository or OAuth2 application, holder of an access token. Unset:\nany. Restricting this is what stops a namespace from minting tokens\nfor a privileged account. On a `Deny` rule: only deny requests\nreferencing one of these.",
+            "description": "Users (Forgejo logins) the namespace may manage or reference — a\n`ForgejoUser`'s own login, the owner of a repository, organization\nor OAuth2 application, a team member, the holder of an access token\nor SSH key — whether through a CR or a `remoteName`. Unset: any.\nRestricting this is what stops a namespace from minting tokens for\na privileged account. On a `Deny` rule: only deny requests\nreferencing one of these.",
             "items": {
               "type": "string"
             },

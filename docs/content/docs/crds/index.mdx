@@ -11,10 +11,11 @@ ideas behind the fields, start with [Concepts](/docs/concepts).
 | Kind | Short names | Scope | Description |
 | --- | --- | --- | --- |
 | [`ForgejoInstance`](/docs/crds/forgejoinstance) | `fji` | Cluster | Connection to a real Forgejo server (v16 or later). |
-| [`ForgejoUser`](/docs/crds/forgejouser) | `fjuser` | Cluster | A Forgejo user, in one of three modes. |
-| [`ForgejoUserKey`](/docs/crds/forgejouserkey) | `fjukey` | Cluster | An SSH public key of a `ForgejoUser` — typically a bot's. |
-| [`ForgejoOrganization`](/docs/crds/forgejoorganization) | `fjorg` | Cluster | A Forgejo organization. |
-| [`ForgejoTeam`](/docs/crds/forgejoteam) | `fjteam` | Cluster | A team inside a `ForgejoOrganization`, with its members. |
+| [`ForgejoLocalInstance`](/docs/crds/forgejolocalinstance) | `fjli` | Namespaced | Connection to a real Forgejo server (v16 or later), owned by a namespace: its token is that namespace's, and only the objects of this namespace use it unless `sharedWith` says otherwise. |
+| [`ForgejoUser`](/docs/crds/forgejouser) | `fjuser` | Namespaced | A Forgejo user, in one of three modes. |
+| [`ForgejoUserKey`](/docs/crds/forgejouserkey) | `fjukey` | Namespaced | An SSH public key of a user — typically a bot's. |
+| [`ForgejoOrganization`](/docs/crds/forgejoorganization) | `fjorg` | Namespaced | A Forgejo organization. |
+| [`ForgejoTeam`](/docs/crds/forgejoteam) | `fjteam` | Namespaced | A team inside a `ForgejoOrganization`, with its members. |
 | [`ForgejoNamespacePolicy`](/docs/crds/forgejonamespacepolicy) | `fjnp` | Cluster | Namespace allow-list for the namespaced kinds, enforced by the admission webhook (CREATE/UPDATE) and re-checked by every reconciler. |
 | [`ForgejoRepository`](/docs/crds/forgejorepository) | `fjrepo` | Namespaced | A Forgejo repository, owned by a `ForgejoOrganization` or a `ForgejoUser`. |
 | [`ForgejoWebhook`](/docs/crds/forgejowebhook) | `fjhook` | Namespaced | A webhook on a `ForgejoRepository` (same namespace) or a `ForgejoOrganization` — exactly one of the two refs. |

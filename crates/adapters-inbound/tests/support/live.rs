@@ -137,10 +137,18 @@ pub async fn live_with(options: Options) -> Live {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let cluster = EnvTestCluster::start().await;
     let client = cluster.client();
+    let instances = Arc::new(adapters_outbound::ForgejoInstances::new(client.clone()));
     let ctx = Arc::new(Ctx {
         client: client.clone(),
-        gateways: Arc::new(ForgejoGatewayFactory::new(client.clone(), None)),
-        secrets: Arc::new(ForgejoSecretStoreFactory::new(client.clone(), None)),
+        gateways: Arc::new(ForgejoGatewayFactory::new(
+            client.clone(),
+            instances.clone(),
+        )),
+        secrets: Arc::new(ForgejoSecretStoreFactory::new(
+            client.clone(),
+            instances.clone(),
+        )),
+        instances,
         refs: Arc::new(KubeClusterReader::new(client.clone())),
         policies: Arc::new(KubeClusterReader::new(client.clone())),
         recorder: Recorder::new(
@@ -152,6 +160,7 @@ pub async fn live_with(options: Options) -> Live {
         ),
         shutdown: Shutdown::never(),
         health: Default::default(),
+        scope: weebo_kit_runtime::WatchScope::cluster(),
     });
     tokio::spawn(controller::instance::run(client.clone(), ctx.clone()));
     tokio::spawn(controller::user::run(client.clone(), ctx.clone()));

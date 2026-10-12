@@ -2,7 +2,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DeletionPolicy, ObjectRef, Visibility};
+use crate::common::{DeletionPolicy, IdentityRef, InstanceRef, SharedWith, Visibility};
 use crate::status::ForgejoStatus;
 
 /// A Forgejo organization.
@@ -11,7 +11,7 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoOrganization",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    namespaced,
     plural = "forgejoorganizations",
     shortname = "fjorg",
     status = "ForgejoStatus",
@@ -22,8 +22,15 @@ use crate::status::ForgejoStatus;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoOrganizationSpec {
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
+    pub instance_ref: Option<InstanceRef>,
+    /// Other namespaces allowed to reference this object (when the operator
+    /// enables cross-namespace references). Unset: this namespace only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_with: Option<SharedWith>,
     /// Organization name (its URL slug). Changing it renames in place.
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -41,10 +48,10 @@ pub struct ForgejoOrganizationSpec {
     /// Let repository admins change which teams can access their repo.
     #[serde(default)]
     pub repo_admin_change_team_access: bool,
-    /// `ForgejoUser` that becomes the organization's first owner. Only read
-    /// at creation; without it the operator's admin account owns it.
+    /// The user that becomes the organization's first owner. Only read at
+    /// creation; without it the operator's admin account owns it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_ref: Option<ObjectRef>,
+    pub owner_ref: Option<IdentityRef>,
     /// Defaults to `Orphan`: deleting the CR never deletes the
     /// organization (Forgejo also refuses while it still owns repos).
     #[serde(default = "DeletionPolicy::orphan")]
