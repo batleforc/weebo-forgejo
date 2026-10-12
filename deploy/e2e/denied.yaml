@@ -9,6 +9,7 @@ metadata:
 spec:
   organizationRef:
     name: weebo
+    namespace: identities
   name: rogue
 ---
 # An allowed namespace minting a token for a user outside allowedUsers.
@@ -20,4 +21,5 @@ metadata:
 spec:
   userRef:
     name: alice
+    namespace: identities
   scopes: [read:user]
