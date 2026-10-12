@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.0](https://github.com/batleforc/weebo-forgejo/compare/14a2913c29f528ebb3a04fd1fd140c0698ee6f09..v0.2.0) - 2026-10-12
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) namespaced identities, ForgejoLocalInstance and watch scope (kit v0.10.1) (#4) - ([d160600](https://github.com/batleforc/weebo-forgejo/commit/d160600ab4106d02a9a5bebb730272eda28931e9)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
+- Ajout des templates de projet - ([14a2913](https://github.com/batleforc/weebo-forgejo/commit/14a2913c29f528ebb3a04fd1fd140c0698ee6f09)) - Max Batleforc
+
+- - -
+
 ## [v0.1.0](https://github.com/batleforc/weebo-forgejo/compare/1d177d4ccf1eb089008f8418e667633fcc833051..v0.1.0) - 2026-10-11
 #### Features
 - build on weebo-operator-kit v0.9.0 (library chart, shared tasks, reusable CI) (#2) - ([81addeb](https://github.com/batleforc/weebo-forgejo/commit/81addebe9d97bc8ce0212a0573787c0077a7a911)) - Maxime
