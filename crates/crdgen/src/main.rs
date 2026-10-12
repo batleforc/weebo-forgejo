@@ -19,6 +19,11 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&args.out)?;
 
     write_crd(&args.out, "forgejoinstance", api::ForgejoInstance::crd())?;
+    write_crd(
+        &args.out,
+        "forgejolocalinstance",
+        api::ForgejoLocalInstance::crd(),
+    )?;
     write_crd(&args.out, "forgejouser", api::ForgejoUser::crd())?;
     write_crd(
         &args.out,

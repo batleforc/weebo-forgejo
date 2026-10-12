@@ -13,6 +13,9 @@ full: true
 
 Namespace allow-list for the namespaced kinds, enforced by the
 admission webhook (CREATE/UPDATE) and re-checked by every reconciler.
+It governs the CRs bound to a `ForgejoInstance` (shared by every
+namespace); a CR bound to a `ForgejoLocalInstance` is bounded by its
+namespace's own token instead.
 
 While no `ForgejoNamespacePolicy` exists, everything is allowed. As soon
 as one exists, a namespaced CR is only accepted if some `Allow` rule

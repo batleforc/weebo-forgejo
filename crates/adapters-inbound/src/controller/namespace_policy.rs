@@ -18,9 +18,12 @@ const KIND: &str = "ForgejoNamespacePolicy";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let results = super::controller(Api::<ForgejoNamespacePolicy>::all(client))
-        .graceful_shutdown_on(ctx.shutdown.wait())
-        .run(reconcile, error_policy, ctx);
+    let results = super::controller(
+        ctx.scope.api::<ForgejoNamespacePolicy>(client.clone()),
+        &ctx.scope,
+    )
+    .graceful_shutdown_on(ctx.shutdown.wait())
+    .run(reconcile, error_policy, ctx);
     super::drive(KIND, health, results).await;
 }
 

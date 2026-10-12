@@ -17,15 +17,24 @@ use crate::use_cases::{CleanupGateway, Failure, Outcome, differs, emit};
 
 pub const KIND: &str = "ForgejoUser";
 
-/// The (cluster-scoped) CR named `cr_name`, as the owner of the password
-/// secrets it emits.
-fn secret_owner(cr_name: &str) -> SecretOwner<'_> {
-    SecretOwner::cluster(KIND, cr_name)
+/// The CR `namespace/cr_name`, as the owner of the password secrets it
+/// emits — and of those it wrote under `previous_owner` before it moved
+/// into a namespace (`migrate-to-namespaced`).
+fn secret_owner<'a>(
+    namespace: &'a str,
+    cr_name: &'a str,
+    previous_owner: Option<&'a str>,
+) -> SecretOwner<'a> {
+    SecretOwner::namespaced(KIND, namespace, cr_name).formerly(previous_owner)
 }
 
 pub struct UserInput<'a> {
     pub spec: &'a ForgejoUserSpec,
+    pub namespace: &'a str,
     pub cr_name: &'a str,
+    /// The owner id of its secrets before it moved into a namespace (the
+    /// `previous-owner` annotation).
+    pub previous_owner: Option<&'a str>,
     /// From `status.forgejoId`/`status.forgejoName`.
     pub current: Option<ForgejoRef>,
     /// `metadata.generation != status.observedGeneration`: re-sends the
@@ -45,7 +54,7 @@ pub async fn reconcile_user(
     if spec.management_policy == ManagementPolicy::Observe {
         return observe(spec, gateway).await;
     }
-    let owner = secret_owner(input.cr_name);
+    let owner = secret_owner(input.namespace, input.cr_name, input.previous_owner);
     if let Err(f) = validate(spec, &owner) {
         return Outcome::failed(input.current, f);
     }
@@ -112,7 +121,9 @@ pub async fn reconcile_user(
 /// rename outside the operator, another account may hold the old login.
 pub async fn cleanup_user(
     spec: &ForgejoUserSpec,
+    namespace: &str,
     cr_name: &str,
+    previous_owner: Option<&str>,
     current: Option<&ForgejoRef>,
     gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
@@ -133,7 +144,12 @@ pub async fn cleanup_user(
         }
     }
     if spec.is_local() {
-        emit::delete_all(&spec.secret_targets, &secret_owner(cr_name), secrets).await?;
+        emit::delete_all(
+            &spec.secret_targets,
+            &secret_owner(namespace, cr_name, previous_owner),
+            secrets,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -352,6 +368,7 @@ mod tests {
     fn local(username: &str) -> ForgejoUserSpec {
         ForgejoUserSpec {
             instance_ref: None,
+            shared_with: None,
             username: username.into(),
             management_policy: ManagementPolicy::Manage,
             email: Some(format!("{username}@example.com")),
@@ -380,7 +397,9 @@ mod tests {
     ) -> Outcome {
         let input = UserInput {
             spec,
+            namespace: "team-a",
             cr_name: "alice",
+            previous_owner: None,
             current,
             spec_changed: false,
             secret_pending: false,
@@ -475,7 +494,7 @@ mod tests {
         secrets
             .write(
                 &target(),
-                &secret_owner("alice"),
+                &secret_owner("team-a", "alice", None),
                 &BTreeMap::from([("FORGEJO_PASSWORD".into(), "stale".into())]),
             )
             .await
@@ -483,7 +502,9 @@ mod tests {
 
         let input = UserInput {
             spec: &spec,
+            namespace: "team-a",
             cr_name: "alice",
+            previous_owner: None,
             current: created,
             spec_changed: false,
             secret_pending: true,
@@ -600,9 +621,17 @@ mod tests {
         let spec = local("alice");
         let created = run(&spec, None, &fj, &secrets).await.forgejo;
 
-        cleanup_user(&spec, "alice", created.as_ref(), Ok(&fj), &secrets)
-            .await
-            .unwrap();
+        cleanup_user(
+            &spec,
+            "team-a",
+            "alice",
+            None,
+            created.as_ref(),
+            Ok(&fj),
+            &secrets,
+        )
+        .await
+        .unwrap();
         assert!(fj.user("alice").is_some());
         assert!(secrets.get("team-a/alice-forgejo").is_none());
     }
@@ -614,9 +643,17 @@ mod tests {
         spec.deletion_policy = DeletionPolicy::Delete;
         let created = run(&spec, None, &fj, &secrets).await.forgejo;
 
-        cleanup_user(&spec, "alice", created.as_ref(), Ok(&fj), &secrets)
-            .await
-            .unwrap();
+        cleanup_user(
+            &spec,
+            "team-a",
+            "alice",
+            None,
+            created.as_ref(),
+            Ok(&fj),
+            &secrets,
+        )
+        .await
+        .unwrap();
         assert!(fj.user("alice").is_none());
     }
 
@@ -648,9 +685,17 @@ mod tests {
             .await
             .forgejo
             .unwrap();
-        cleanup_user(&spec, "alice", Some(&created), Ok(&fj), &secrets)
-            .await
-            .unwrap();
+        cleanup_user(
+            &spec,
+            "team-a",
+            "alice",
+            None,
+            Some(&created),
+            Ok(&fj),
+            &secrets,
+        )
+        .await
+        .unwrap();
         assert!(
             fj.get_user("alice2").await.unwrap().is_none(),
             "ours is gone"
@@ -684,7 +729,9 @@ mod tests {
         fj.clear_calls();
         let input = UserInput {
             spec: &spec,
+            namespace: "team-a",
             cr_name: "alice",
+            previous_owner: None,
             current: created,
             spec_changed: true,
             secret_pending: false,

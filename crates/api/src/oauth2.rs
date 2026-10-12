@@ -2,7 +2,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DeletionPolicy, ObjectRef, SecretTarget};
+use crate::common::{DeletionPolicy, IdentityRef, InstanceRef, SecretTarget};
 use crate::status::ForgejoStatus;
 
 /// An OAuth2 application registered in Forgejo, for apps that use Forgejo
@@ -19,7 +19,6 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoOAuth2Application",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
     plural = "forgejooauth2applications",
     shortname = "fjoauth",
     namespaced,
@@ -31,15 +30,18 @@ use crate::status::ForgejoStatus;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoOAuth2ApplicationSpec {
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
+    pub instance_ref: Option<InstanceRef>,
     /// `ForgejoUser` owning the application (typically a `bot`) — the
     /// operator acts as that user through Forgejo's `Sudo` header. Unset:
     /// the operator's admin account. Changing it recreates the application
     /// (new client id), which needs the
     /// `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_ref: Option<ObjectRef>,
+    pub owner_ref: Option<IdentityRef>,
     /// Display name. Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

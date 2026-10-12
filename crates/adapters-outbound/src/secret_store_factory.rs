@@ -1,21 +1,21 @@
 //! Builds the per-instance `RoutingSecretStore` (the kit's) from a
 //! `ForgejoInstance`'s `secretStore`. Vault logins are cached per instance
 //! by the kit's `VaultLogins`, and only attempted when a target actually
-//! routes to Vault.
+//! routes to Vault. A `ForgejoLocalInstance` writes Kubernetes `Secret`s
+//! only: the operator's Vault identity is shared by every namespace.
 
 use std::sync::Arc;
 
-use api::ForgejoInstance;
-use api::instance::VaultSecretStoreSpec;
-use application::ports::{SecretStore, SecretStoreError, SecretStoreFactory};
+use api::instance::{SecretStoreBackend, VaultSecretStoreSpec};
+use application::ports::{BoundInstance, SecretStore, SecretStoreError, SecretStoreFactory};
 use futures::FutureExt;
-use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt};
 use weebo_kit_adapters::{
-    K8sSecretStore, RoutingSecretStore, VaultConfig, VaultLogins, VaultSecretStore, read_secret_key,
+    K8sSecretStore, Resolved, RoutingSecretStore, VaultConfig, VaultLogins, VaultSecretStore,
+    read_secret_key,
 };
 
-use crate::instance_resolver::InstanceResolver;
+use crate::instance_resolver::ForgejoInstances;
 
 /// Server-side-apply manager of the `Secret`s this operator emits.
 pub const FIELD_MANAGER: &str = "weebo-forgejo-operator";
@@ -34,15 +34,15 @@ pub fn kubernetes_secret_store(client: Client) -> K8sSecretStore {
 
 pub struct ForgejoSecretStoreFactory {
     client: Client,
-    instances: InstanceResolver,
+    instances: Arc<ForgejoInstances>,
     kubernetes: Arc<K8sSecretStore>,
     vault: Arc<VaultLogins>,
 }
 
 impl ForgejoSecretStoreFactory {
-    pub fn new(client: Client, store: Option<Store<ForgejoInstance>>) -> Self {
+    pub fn new(client: Client, instances: Arc<ForgejoInstances>) -> Self {
         Self {
-            instances: InstanceResolver::new(client.clone(), store),
+            instances,
             kubernetes: Arc::new(kubernetes_secret_store(client.clone())),
             client,
             vault: Arc::new(VaultLogins::default()),
@@ -89,11 +89,26 @@ async fn vault_for(
 impl SecretStoreFactory for ForgejoSecretStoreFactory {
     async fn store_for(
         &self,
-        instance_ref: Option<&str>,
+        bound: &BoundInstance,
     ) -> Result<Arc<dyn SecretStore>, SecretStoreError> {
-        let instances = self.instances.list().await.map_err(SecretStoreError)?;
-        let instance = crate::gateway_factory::select(&instances, instance_ref)
-            .map_err(|e| SecretStoreError(e.to_string()))?;
+        let instance = match self
+            .instances
+            .get(bound)
+            .await
+            .map_err(SecretStoreError)?
+            .ok_or_else(|| SecretStoreError(format!("{bound} not found")))?
+        {
+            Resolved::Cluster(instance) => instance,
+            Resolved::Local(_) => {
+                return Ok(Arc::new(RoutingSecretStore::new(
+                    self.kubernetes.clone(),
+                    Err(format!(
+                        "{bound} writes Kubernetes Secrets only: Vault targets need a ForgejoInstance"
+                    )),
+                    SecretStoreBackend::Kubernetes,
+                )));
+            }
+        };
         let store_spec = &instance.spec.secret_store;
         // A broken Vault must not block Kubernetes targets: it is only
         // logged in to — and its error surfaced — when a target routes to

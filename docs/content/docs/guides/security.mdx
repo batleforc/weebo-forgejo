@@ -11,14 +11,34 @@ namespace from turning that power against another one.
 
 | Who | Can | Bounded by |
 | --- | --- | --- |
-| Cluster admins | Create cluster-scoped kinds: instances, users, user keys, organizations, teams, namespace policies | Kubernetes RBAC |
-| Application teams | Create namespaced kinds in their namespaces: repositories, webhooks, deploy keys, OAuth2 applications, access tokens | RBAC **and** the [allow-list](/docs/guides/allow-list) |
+| Cluster admins | Create the cluster-scoped kinds: instances, namespace policies | Kubernetes RBAC |
+| Application teams | Create namespaced kinds in their namespaces: local instances, users, user keys, organizations, teams, repositories, webhooks, deploy keys, OAuth2 applications, access tokens | RBAC, **and** the [allow-list](/docs/guides/allow-list) for what is bound to a shared `ForgejoInstance` |
 | The operator | Act as a Forgejo site admin; read referenced Secrets, write the credentials it generates | Its ClusterRole, and the rules below |
 
-Grant the cluster-scoped kinds to cluster admins only: a `ForgejoUser` with
-`admin: true` *is* a Forgejo site admin. The chart's
+Grant the cluster-scoped kinds to cluster admins only. On a shared
+`ForgejoInstance`, govern who may create users, organizations and teams with
+the allow-list (`allowedKinds`, `allowedUsers`, `allowedOrganizations`): a
+`ForgejoUser` with `admin: true` *is* a Forgejo site admin. The chart's
 `rbac.namespacedExample` renders a Role with exactly the namespaced kinds for
 a team.
+
+### References across namespaces
+
+A CR references users, organizations and teams of its own namespace by
+default. A reference to another namespace (`namespace` on the ref) needs
+both the release (`references.crossNamespace: true`) **and** the target
+(`spec.sharedWith` listing the namespace, or selecting it); otherwise the CR
+is `Ready: False` with `ReferenceNotAllowed`. A `remoteName` references a
+Forgejo object no CR manages, by name: the operator only checks it exists,
+and never changes it — the allow-list matches it by that Forgejo name too.
+
+### One owner per Forgejo object
+
+A user, organization or team on a Forgejo server is owned by **one** CR: a
+second CR — in any namespace, through any instance pointing at the same
+server — that would create or adopt it is refused with
+`RemoteObjectClaimed`, before any call to Forgejo. Reference it with
+`remoteName` instead.
 
 ## The operator's RBAC
 
@@ -27,6 +47,7 @@ a team.
 | The `forgejo.weebo.io` kinds (+ `/status`, `/finalizers`) | get, list, watch, update, patch | Its own API, cluster-wide: namespaced kinds live in any namespace |
 | `secrets` | get, create, patch, delete | See below. **Never list or watch** |
 | `events.k8s.io` events | create, patch | An Event on every `Ready` transition |
+| `namespaces` (cluster-wide releases only) | get | The labels of a referencing namespace, when the target of a cross-namespace reference shares itself through a `namespaceSelector` |
 | `coordination.k8s.io` leases, release namespace only | get, create, update, patch | Leader election (a Role, not a ClusterRole) |
 
 ### Why cluster-wide Secrets
@@ -52,12 +73,12 @@ where it writes.
   never overwritten nor deleted by another CR.
 - The operator only overwrites or deletes a Secret it **owns**: one labelled
   `app.kubernetes.io/managed-by: weebo-forgejo` **and** annotated
-  `forgejo.weebo.io/owner: <Kind>/<namespace>/<name>` naming the CR (`<Kind>/<name>` for cluster-scoped ones; a CR re-created under the same name takes its Secrets back). Secrets emitted by 0.1.0 carry the label only: the first CR writing one adopts it. A target naming an existing
+  `forgejo.weebo.io/owner: <Kind>/<namespace>/<name>` naming the CR (a CR re-created under the same name takes its Secrets back). Secrets emitted by 0.1.0 carry the label only: the first CR writing one adopts it. A target naming an existing
   Secret it doesn't own (your database password, another CR's token) fails
   (`SecretTargetFailed`) and the Secret is left untouched.
-- **Cluster-scoped** CRs (`ForgejoUser`, `ForgejoUserKey`) are created by
-  cluster admins and must name a namespace for each Kubernetes target; the
-  same ownership rule applies.
+- Every CR writes into its **own namespace** only (`ForgejoUser` and
+  `ForgejoUserKey` included, since they are namespaced); the same ownership
+  rule applies.
 
 So a team can neither exfiltrate a credential into a namespace it doesn't
 own, nor clobber a Secret it didn't create through the operator.
@@ -87,13 +108,17 @@ spec:
       allowedUsers: [admin-bot]   # explicit: admin-bot is a site admin
 ```
 
-### `instanceRef` is immutable
+### A CR never changes instance
 
-A CR's `spec.instanceRef` can't be changed once the CR exists: the API
-server refuses the update. Moving a CR to another Forgejo would otherwise
-leave its object behind in the first one, and let a CR re-point at an
-instance its namespace wasn't meant to reach. To move a CR, delete it (with
-`deletionPolicy: Orphan` if the object must stay) and create it again.
+The instance a CR was first resolved to is recorded in `status.instance`,
+and the operator never acts on another one for that CR: re-pointing
+`spec.instanceRef` leaves it `Ready: False` (`InstanceBindingChanged`)
+until `instanceRef` designates it again. Moving a CR to another Forgejo
+would otherwise leave its object behind in the first one, and let a CR
+re-point at an instance its namespace wasn't meant to reach. To move a CR,
+delete it (with `deletionPolicy: Orphan` if the object must stay) and create
+it again. A `ForgejoLocalInstance` of another namespace is only usable when
+it lists the CR's namespace in its `sharedWith`.
 
 ## Admission webhook
 

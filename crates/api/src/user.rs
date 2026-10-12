@@ -2,7 +2,9 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DeletionPolicy, ManagementPolicy, SecretTarget, Visibility};
+use crate::common::{
+    DeletionPolicy, InstanceRef, ManagementPolicy, SecretTarget, SharedWith, Visibility,
+};
 use crate::status::ForgejoStatus;
 
 /// A Forgejo user, in one of three modes:
@@ -22,7 +24,7 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoUser",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
+    namespaced,
     validation = kube::core::Rule::new("(has(self.spec.managementPolicy) && self.spec.managementPolicy == 'Observe') || has(self.spec.email)").message("spec.email is required unless managementPolicy is Observe"),
     plural = "forgejousers",
     shortname = "fjuser",
@@ -35,10 +37,15 @@ use crate::status::ForgejoStatus;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoUserSpec {
-    /// `ForgejoInstance` to manage this user in. Defaults to the cluster's
-    /// only instance.
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
+    pub instance_ref: Option<InstanceRef>,
+    /// Other namespaces allowed to reference this object (when the operator
+    /// enables cross-namespace references). Unset: this namespace only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_with: Option<SharedWith>,
     /// Forgejo login. Changing it renames the account in place.
     pub username: String,
     #[serde(default)]

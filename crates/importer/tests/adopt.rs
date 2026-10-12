@@ -147,6 +147,7 @@ async fn imported_objects_are_adopted_without_writes() {
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         gateways: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
+        instances: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
         secrets: Arc::new(StaticSecretStoreFactory::new(Arc::new(
             kubernetes_secret_store(client.clone()),
         ))),
@@ -161,6 +162,7 @@ async fn imported_objects_are_adopted_without_writes() {
         ),
         shutdown: Shutdown::never(),
         health: Default::default(),
+        scope: weebo_kit_runtime::WatchScope::cluster(),
     });
     tokio::spawn(controller::user::run(client.clone(), ctx.clone()));
     tokio::spawn(controller::organization::run(client.clone(), ctx.clone()));
@@ -169,7 +171,7 @@ async fn imported_objects_are_adopted_without_writes() {
     tokio::spawn(controller::webhook::run(client.clone(), ctx.clone()));
     tokio::spawn(controller::deploy_key::run(client.clone(), ctx.clone()));
 
-    let teams: Api<ForgejoTeam> = Api::all(client.clone());
+    let teams: Api<ForgejoTeam> = Api::namespaced(client.clone(), "default");
     wait_ready(&teams, "weebo-dev", |t| t.status.as_ref()).await;
     let repos: Api<ForgejoRepository> = Api::namespaced(client.clone(), "default");
     wait_ready(&repos, "weebo-app", |r| r.status.as_ref()).await;

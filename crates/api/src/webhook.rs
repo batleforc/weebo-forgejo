@@ -4,7 +4,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DeletionPolicy, LocalSecretKeyRef, ObjectRef};
+use crate::common::{DeletionPolicy, IdentityRef, InstanceRef, LocalSecretKeyRef, ObjectRef};
 use crate::status::ForgejoStatus;
 
 /// A webhook on a `ForgejoRepository` (same namespace) or a
@@ -14,7 +14,6 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoWebhook",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
     validation = kube::core::Rule::new("has(self.spec.repositoryRef) != has(self.spec.organizationRef)").message("set exactly one of spec.repositoryRef and spec.organizationRef"),
     plural = "forgejowebhooks",
     shortname = "fjhook",
@@ -28,12 +27,15 @@ use crate::status::ForgejoStatus;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoWebhookSpec {
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
+    pub instance_ref: Option<InstanceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository_ref: Option<ObjectRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization_ref: Option<ObjectRef>,
+    pub organization_ref: Option<IdentityRef>,
     /// `forgejo` (default), `gitea`, `gogs`, `slack`, `discord`,
     /// `dingtalk`, `telegram`, `msteams`, `feishu`, `wechatwork` or
     /// `packagist`. Changing it recreates the hook.

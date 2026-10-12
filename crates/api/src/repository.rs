@@ -2,7 +2,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DeletionPolicy, ObjectRef};
+use crate::common::{DeletionPolicy, IdentityRef, InstanceRef, ObjectRef};
 use crate::status::ForgejoStatus;
 
 /// A Forgejo repository, owned by a `ForgejoOrganization` or a
@@ -18,7 +18,6 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoRepository",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
     validation = kube::core::Rule::new("has(self.spec.organizationRef) != has(self.spec.userRef)").message("set exactly one of spec.organizationRef and spec.userRef"),
     validation = kube::core::Rule::new("(has(self.spec.init) ? 1 : 0) + (has(self.spec.fromTemplate) ? 1 : 0) + (has(self.spec.migrate) ? 1 : 0) <= 1").message("set at most one of spec.init, spec.fromTemplate and spec.migrate"),
     validation = kube::core::Rule::new("!has(self.spec.fromTemplate) || has(self.spec.fromTemplate.repositoryRef) != has(self.spec.fromTemplate.repository)").message("set exactly one of spec.fromTemplate.repositoryRef and spec.fromTemplate.repository"),
@@ -35,14 +34,17 @@ use crate::status::ForgejoStatus;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoRepositorySpec {
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
-    /// Owning `ForgejoOrganization` (cluster-scoped).
+    pub instance_ref: Option<InstanceRef>,
+    /// Owning organization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization_ref: Option<ObjectRef>,
-    /// Owning `ForgejoUser` (cluster-scoped).
+    pub organization_ref: Option<IdentityRef>,
+    /// Owning user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_ref: Option<ObjectRef>,
+    pub user_ref: Option<IdentityRef>,
     /// Repository name. Changing it renames in place (Forgejo keeps a
     /// redirect from the old name). Changing the owner transfers the
     /// repository, which needs the
@@ -90,7 +92,7 @@ pub struct ForgejoRepositorySpec {
     /// except for the `Owners` team and teams with
     /// `includesAllRepositories`, which Forgejo always grants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub team_refs: Vec<ObjectRef>,
+    pub team_refs: Vec<IdentityRef>,
     /// Defaults to `Orphan`: deleting the CR never deletes git history.
     #[serde(default = "DeletionPolicy::orphan")]
     pub deletion_policy: DeletionPolicy,

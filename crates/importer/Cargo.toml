@@ -27,6 +27,7 @@ rustls = { workspace = true }
 
 [dev-dependencies]
 adapters-inbound = { workspace = true }
+weebo-kit-runtime = { workspace = true }
 application = { workspace = true, features = ["test-support"] }
 domain = { workspace = true }
 testkit = { workspace = true }

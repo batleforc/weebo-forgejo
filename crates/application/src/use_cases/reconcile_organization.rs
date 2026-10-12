@@ -147,6 +147,7 @@ mod tests {
     fn spec(name: &str) -> ForgejoOrganizationSpec {
         ForgejoOrganizationSpec {
             instance_ref: None,
+            shared_with: None,
             name: name.into(),
             full_name: Some("Weebo".into()),
             description: None,

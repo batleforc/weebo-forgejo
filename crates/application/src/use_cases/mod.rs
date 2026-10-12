@@ -5,6 +5,7 @@
 pub mod admission;
 pub mod emit;
 pub mod import;
+pub mod namespaced_migration;
 pub mod reconcile_instance;
 pub mod reconcile_key;
 pub mod reconcile_namespace_policy;
@@ -19,7 +20,9 @@ pub mod refs;
 
 use domain::error::ReasonCode;
 
-use crate::ports::{ForgejoGateway, ForgejoRef, GatewayError};
+use crate::ports::{
+    BoundInstance, ForgejoGateway, ForgejoRef, GatewayError, InstanceError, ResolveError,
+};
 
 /// A finalizer cleanup's gateway, resolved by the caller up front — but its
 /// error only matters once the cleanup actually has to call Forgejo: an
@@ -34,6 +37,26 @@ impl From<GatewayError> for Failure {
     fn from(err: GatewayError) -> Self {
         Failure::new(err.reason(), err.to_string())
     }
+}
+
+/// An `instanceRef` that couldn't be resolved (the kit's rules), as a
+/// failure (`Failure` and `InstanceError` both being the kit's, no `From`
+/// between them).
+pub fn instance_failure(err: InstanceError) -> Failure {
+    let reason = match &err {
+        InstanceError::Kubernetes(_) => ReasonCode::KubernetesApiError,
+        InstanceError::Resolve(e) => match e {
+            ResolveError::NotFound { .. }
+            | ResolveError::NoInstance
+            | ResolveError::InvalidRef(_) => ReasonCode::InstanceNotFound,
+            ResolveError::Ambiguous { .. } => ReasonCode::AmbiguousDefaultInstance,
+            ResolveError::OutsideScope(_) | ResolveError::NotShared { .. } => {
+                ReasonCode::InstanceNotAllowed
+            }
+            ResolveError::BindingChanged { .. } => ReasonCode::InstanceBindingChanged,
+        },
+    };
+    Failure::new(reason, err.to_string())
 }
 
 /// A non-blocking condition shown next to `Ready: True` (its `type` is the
@@ -62,6 +85,9 @@ pub struct Outcome {
     /// New `status.ownerId`, the Forgejo id of the account `forgejo`
     /// belongs to; written (or cleared) along with every `forgejo`.
     pub owner_id: Option<i64>,
+    /// New `status.instance`: the instance the CR was resolved to. `None`
+    /// leaves the recorded one (a refused resolution never erases it).
+    pub instance: Option<BoundInstance>,
 }
 
 impl Outcome {
@@ -75,6 +101,7 @@ impl Outcome {
             due_in: None,
             secret_pending: None,
             owner_id: None,
+            instance: None,
         }
     }
 
@@ -88,7 +115,14 @@ impl Outcome {
             due_in: None,
             secret_pending: None,
             owner_id: None,
+            instance: None,
         }
+    }
+
+    /// Records the instance the CR is bound to.
+    pub fn on(mut self, instance: BoundInstance) -> Self {
+        self.instance = Some(instance);
+        self
     }
 
     /// The reason `Ready` ends on — what metrics and Events are keyed by.

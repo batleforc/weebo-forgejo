@@ -1,4 +1,5 @@
-# Namespaced half of the golden path, allowed by the `teams` policy.
+# The team's half of the golden path, allowed by the `teams` policy; its
+# identities are the `identities` namespace's (shared with team-a).
 apiVersion: v1
 kind: Secret
 metadata:
@@ -15,12 +16,14 @@ metadata:
 spec:
   organizationRef:
     name: weebo
+    namespace: identities
   name: app
   private: true
   init:
     readme: Default
   teamRefs:
     - name: weebo-devs
+      namespace: identities
   branchProtections:
     - ruleName: main
       enablePush: true
@@ -60,6 +63,7 @@ metadata:
 spec:
   ownerRef:
     name: ci-bot
+    namespace: identities
   redirectUris:
     - https://grafana.e2e.local/login/generic_oauth
 ---
@@ -71,6 +75,7 @@ metadata:
 spec:
   userRef:
     name: ci-bot
+    namespace: identities
   scopes: [read:repository]
   repositoryRefs:
     - name: app

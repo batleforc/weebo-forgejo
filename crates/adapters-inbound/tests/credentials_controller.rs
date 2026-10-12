@@ -27,7 +27,7 @@ async fn oauth2_app_and_token_emit_credentials() {
     tokio::spawn(controller::token::run(c.clone(), ctx.clone()));
 
     let pp = PostParams::default();
-    let users: Api<ForgejoUser> = Api::all(c.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(c.clone(), "default");
     let apps: Api<ForgejoOAuth2Application> = Api::namespaced(c.clone(), "default");
     let tokens: Api<ForgejoAccessToken> = Api::namespaced(c.clone(), "default");
     let secrets: Api<Secret> = Api::namespaced(c.clone(), "default");
@@ -128,7 +128,7 @@ async fn namespace_policy_gates_tokens_per_user() {
     tokio::spawn(controller::namespace_policy::run(c.clone(), ctx.clone()));
 
     let pp = PostParams::default();
-    let users: Api<ForgejoUser> = Api::all(c.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(c.clone(), "default");
     let policies: Api<ForgejoNamespacePolicy> = Api::all(c.clone());
     let tokens: Api<ForgejoAccessToken> = Api::namespaced(c.clone(), "default");
     for name in ["ci-bot", "admin-bot"] {
@@ -148,7 +148,9 @@ async fn namespace_policy_gates_tokens_per_user() {
         "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoNamespacePolicy",
         "metadata": {"name": "tokens"},
         "spec": {"rules": [{"namespaces": ["default"], "allowedKinds": ["ForgejoAccessToken"],
-                            "allowedUsers": ["ci-bot"]}]},
+                            "allowedUsers": ["ci-bot"]},
+                           // The accounts themselves: the policy governs them too.
+                           {"namespaces": ["default"], "allowedKinds": ["ForgejoUser"]}]},
     }))).await.unwrap();
     let policy_ready = wait_for(&policies, "tokens", |p| {
         condition(p.status.as_ref(), "Ready")
@@ -187,7 +189,8 @@ async fn namespace_policy_gates_tokens_per_user() {
             &PatchParams::default(),
             &Patch::Merge(json!({"spec": {"rules": [{
                 "namespaces": ["default"], "allowedKinds": ["ForgejoAccessToken"],
-                "allowedUsers": ["ci-bot", "admin-bot"]}]}})),
+                "allowedUsers": ["ci-bot", "admin-bot"]},
+                {"namespaces": ["default"], "allowedKinds": ["ForgejoUser"]}]}})),
         )
         .await
         .unwrap();

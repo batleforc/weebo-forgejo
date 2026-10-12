@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # kind e2e (`task e2e`, .github/workflows/e2e.yml): deploys cert-manager, a
 # disposable Forgejo and the operator chart into the current kube context,
-# then walks the golden path — instance → users → org → team → repository
+# then walks the golden path — instance → identities (users, org, team in
+# the `identities` namespace) → the team's repository, across namespaces
 # → hook/keys → OAuth2/token → policy denials — and checks leader election
 # and deletion policies on the real deployment.
 #
@@ -45,11 +46,13 @@ dump() {
   step "diagnostics"
   kubectl -n "$OPERATOR_NS" get pods -o wide
   kubectl -n "$OPERATOR_NS" logs -l app.kubernetes.io/name=weebo-forgejo --tail=200 --prefix --all-containers
-  kubectl get forgejoinstances,forgejousers,forgejoorganizations,forgejoteams,forgejouserkeys -o wide
+  kubectl get forgejoinstances -o wide
+  kubectl -n identities get forgejousers,forgejoorganizations,forgejoteams,forgejouserkeys -o yaml
   kubectl -n team-a get forgejorepositories,forgejowebhooks,forgejodeploykeys,forgejooauth2applications,forgejoaccesstokens -o yaml
   kubectl get events -A --sort-by=.lastTimestamp | tail -n 50
 }
-trap 'dump' ERR
+# dump turns errexit off: leave right after it.
+trap 'dump; exit 1' ERR
 
 ready() { kubectl wait --for=condition=Ready=True --timeout="$WAIT" "$@"; }
 
@@ -61,7 +64,8 @@ forgejo_api() {
 # Every CR of the golden path must be Ready.
 all_ready() {
   ready forgejoinstance/main
-  ready forgejouser/alice forgejouser/ci-bot forgejoorganization/weebo forgejoteam/weebo-devs forgejouserkey/ci-bot
+  ready -n identities forgejouser/alice forgejouser/ci-bot forgejoorganization/weebo \
+    forgejoteam/weebo-devs forgejouserkey/ci-bot
   ready -n team-a forgejorepository/app forgejowebhook/app-ci forgejodeploykey/app-ci \
     forgejooauth2application/grafana forgejoaccesstoken/ci
 }
@@ -115,6 +119,7 @@ if [ -n "$previous" ]; then
     --namespace "$OPERATOR_NS" --create-namespace \
     --set extraEnv[0].name=RUST_LOG --set extraEnv[0].value=info \
     --wait --timeout 5m
+  ensure_ns identities
   ensure_ns team-a
   ensure_ns other
   kubectl apply -f "$HERE/golden-path.yaml"
@@ -139,6 +144,7 @@ helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$OPERATOR_NS" --create-namespace \
   --set image.repository="${IMAGE%:*}" --set image.tag="${IMAGE##*:}" \
   --set image.pullPolicy=Never \
+  --set references.crossNamespace=true \
   --set extraEnv[0].name=RUST_LOG --set extraEnv[0].value=info \
   --wait --timeout 5m
 kubectl -n "$OPERATOR_NS" rollout status "deploy/$RELEASE" --timeout="$WAIT"
@@ -155,13 +161,22 @@ if [ -n "$previous" ]; then
   done
 fi
 
-step "golden path: cluster-scoped kinds"
+step "golden path: instance, policy and identities"
+ensure_ns identities
 ensure_ns team-a
 ensure_ns other
-kubectl apply -f "$HERE/golden-path.yaml"
+# The identities go through the admission webhook: retry while it comes up
+# (cert-manager injecting its CA, endpoints getting ready).
+applied=""
+for _ in $(seq 1 30); do
+  if kubectl apply -f "$HERE/golden-path.yaml"; then applied=1; break; fi
+  sleep 2
+done
+[ -n "$applied" ] || fail "the golden path was never admitted"
 ready forgejoinstance/main
-ready forgejouser/alice forgejouser/ci-bot forgejoorganization/weebo forgejoteam/weebo-devs forgejouserkey/ci-bot
-kubectl -n team-a get secret alice-password ci-bot-ssh >/dev/null
+ready -n identities forgejouser/alice forgejouser/ci-bot forgejoorganization/weebo \
+  forgejoteam/weebo-devs forgejouserkey/ci-bot
+kubectl -n identities get secret alice-password ci-bot-ssh >/dev/null
 
 step "golden path: namespaced kinds (through the admission webhook)"
 kubectl apply -f "$HERE/team-a.yaml"
@@ -174,7 +189,7 @@ forgejo_api /repos/weebo/app | jq -e '.private == true' >/dev/null || fail "weeb
 [ "$(forgejo_api /repos/weebo/app/hooks | jq length)" = 1 ] || fail "expected one hook on weebo/app"
 [ "$(forgejo_api /repos/weebo/app/keys | jq length)" = 1 ] || fail "expected one deploy key"
 forgejo_api /repos/weebo/app/teams | jq -e 'any(.name == "devs")' >/dev/null || fail "devs has no access"
-forgejo_api /teams/"$(kubectl get forgejoteam weebo-devs -o jsonpath='{.status.forgejoId}')"/members \
+forgejo_api /teams/"$(kubectl -n identities get forgejoteam weebo-devs -o jsonpath='{.status.forgejoId}')"/members \
   | jq -e '[.[].login] | sort == ["alice", "ci-bot"]' >/dev/null || fail "team members"
 token="$(kubectl -n team-a get secret ci -o jsonpath='{.data.FORGEJO_TOKEN}' | base64 -d)"
 curl -fsS -H "Authorization: token $token" http://127.0.0.1:13000/api/v1/repos/weebo/app \
@@ -216,7 +231,7 @@ done
 [ "$holder" != e2e-intruder ] || fail "no replica took the lease back"
 echo "lease: $leader -> e2e-intruder -> $holder"
 # The new leader reconciles: a change goes through.
-kubectl patch forgejoorganization weebo --type merge -p '{"spec":{"description":"after failover"}}'
+kubectl -n identities patch forgejoorganization weebo --type merge -p '{"spec":{"description":"after failover"}}'
 for _ in $(seq 1 30); do
   [ "$(forgejo_api /orgs/weebo | jq -r .description)" = "after failover" ] && break
   sleep 2

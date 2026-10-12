@@ -27,6 +27,12 @@ pub struct Harness {
 }
 
 pub async fn harness() -> Harness {
+    harness_with(weebo_kit_runtime::WatchScope::cluster()).await
+}
+
+/// [`harness`] with the controllers on `scope` (e.g. cross-namespace
+/// references enabled).
+pub async fn harness_with(scope: weebo_kit_runtime::WatchScope) -> Harness {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let cluster = EnvTestCluster::start().await;
     let client = cluster.client();
@@ -34,6 +40,7 @@ pub async fn harness() -> Harness {
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         gateways: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
+        instances: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
         secrets: Arc::new(StaticSecretStoreFactory::new(Arc::new(
             kubernetes_secret_store(client.clone()),
         ))),
@@ -48,6 +55,7 @@ pub async fn harness() -> Harness {
         ),
         shutdown: Shutdown::never(),
         health: Default::default(),
+        scope,
     });
     Harness {
         cluster,

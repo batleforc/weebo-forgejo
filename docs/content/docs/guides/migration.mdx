@@ -65,7 +65,7 @@ importer() {
 | `--url` / `FORGEJO_URL` | | Instance URL, as in `ForgejoInstance.spec.url` |
 | `--token` / `FORGEJO_TOKEN` | | Site-administrator token |
 | `--namespace`, `-n` | `default` | Namespace for repositories, webhooks and deploy keys |
-| `--instance-ref` | none | Written as `spec.instanceRef` on every CR |
+| `--instance-ref` | none | Written as `spec.instanceRef.name` on every CR |
 | `--owner` (repeatable) | everything | Only these organizations/users and their repositories. Other users are imported only when a team or repository references them. |
 | `--manage-users` | off | Import users as `Manage` instead of `Observe` |
 | `--apply` | off | Create the CRs and seed their status. Without it, the YAML is printed. |
@@ -169,40 +169,42 @@ server-side apply, seeds their `status` and removes the pause annotation.
 It never reads or writes Secrets. A dedicated identity needs no more than:
 
 ```yaml
-# Cluster-scoped kinds: users, organizations, teams.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: weebo-forgejo-importer
-rules:
-  - apiGroups: ["forgejo.weebo.io"]
-    resources: [forgejousers, forgejoorganizations, forgejoteams]
-    verbs: ["get", "list", "create", "patch"]
-  - apiGroups: ["forgejo.weebo.io"]
-    resources: [forgejousers/status, forgejoorganizations/status, forgejoteams/status]
-    verbs: ["patch"]
----
-# Namespaced kinds, bound only in the import namespace (--namespace).
+# Every imported kind is namespaced: bound only in the import namespace
+# (--namespace).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: weebo-forgejo-importer-namespaced
 rules:
   - apiGroups: ["forgejo.weebo.io"]
-    resources: [forgejorepositories, forgejowebhooks, forgejodeploykeys]
+    resources: [forgejousers, forgejoorganizations, forgejoteams,
+                forgejorepositories, forgejowebhooks, forgejodeploykeys]
     verbs: ["get", "list", "create", "patch"]
   - apiGroups: ["forgejo.weebo.io"]
-    resources: [forgejorepositories/status, forgejowebhooks/status, forgejodeploykeys/status]
+    resources: [forgejousers/status, forgejoorganizations/status, forgejoteams/status,
+                forgejorepositories/status, forgejowebhooks/status, forgejodeploykeys/status]
     verbs: ["patch"]
+---
+# The unique-claim check reads the CRs of every namespace and the
+# instances' URLs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weebo-forgejo-importer-claims
+rules:
+  - apiGroups: ["forgejo.weebo.io"]
+    resources: [forgejousers, forgejoorganizations, forgejoteams,
+                forgejoinstances, forgejolocalinstances]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: weebo-forgejo-importer
+  name: weebo-forgejo-importer-claims
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: weebo-forgejo-importer
+  name: weebo-forgejo-importer-claims
 subjects:
   - kind: ServiceAccount        # or the User/Group running the importer
     name: weebo-forgejo-importer
@@ -225,9 +227,10 @@ subjects:
 
 Patching `status` is what lets it adopt an object: keep this role off
 anyone who shouldn't be able to point a CR at an arbitrary Forgejo object,
-and remove the binding once the migration is done. Namespaced CRs still go
-through the admission webhook, so the [allow-list](/docs/guides/allow-list)
-applies to the import namespace.
+and remove the binding once the migration is done. The CRs still go through
+the admission webhook, so the [allow-list](/docs/guides/allow-list) applies
+to the import namespace. A user, organization or team another CR already
+owns on the same server isn't adopted twice (`RemoteObjectClaimed`).
 
 ## Finish by hand
 
@@ -243,6 +246,75 @@ applies to the import namespace.
   the hook with that secret, which loses its delivery history.
 - **Organization owners** (`ownerRef`) only matter at creation, so they're
   left unset.
+
+## From cluster-scoped users, organizations and teams
+
+Releases before the namespaced identities had `ForgejoUser`,
+`ForgejoOrganization`, `ForgejoTeam` and `ForgejoUserKey` cluster-scoped. A
+CRD's scope can't change in place: its CRD — and with it every CR of the
+kind — must be deleted. `weebo-forgejo-operator migrate-to-namespaced` moves
+them without touching Forgejo:
+
+<Steps>
+<Step>
+
+**Plan.** Choose a namespace per CR — a mapping file of `Kind/name:
+namespace` lines, and a default for the others — and check the plan; it
+writes the new manifests (for your GitOps repository) and `plan.json` to
+`--out`:
+
+```yaml title="mapping.yaml"
+ForgejoUser/alice: team-a
+ForgejoOrganization/weebo: platform
+```
+
+```bash
+weebo-forgejo-operator migrate-to-namespaced --dry-run \
+  --mapping mapping.yaml --default-namespace platform --out ./migration
+```
+
+A reference whose target lands in another namespace gets that `namespace`,
+and the target lists the referencing namespace in its `sharedWith`. Such
+references need `references.crossNamespace: true` on the release, and
+`--allow-cross-namespace` to acknowledge it.
+
+</Step>
+<Step>
+
+**Stop the operator** (`replicas: 0`): no finalizer must run while the old
+CRs are deleted. Nothing is deleted in Forgejo.
+
+</Step>
+<Step>
+
+**Migrate**: the same command with `--yes` instead of `--dry-run`. It
+removes the finalizers of the old CRs, deletes them and their CRDs, then
+waits for the new CRDs: apply them now (`crds.yaml` of the release, or the
+chart with `crds.install`). It recreates each CR in its namespace with its
+binding to Forgejo (`forgejoId`, the resolved instance…), rewrites the
+references of the namespaced CRs, and renames the owner recorded on the
+`Secret`s the users emitted (`ForgejoUser/alice` →
+`ForgejoUser/team-a/alice`). A run interrupted after the deletion resumes
+from `plan.json`.
+
+</Step>
+<Step>
+
+**Start the operator**, and commit the manifests of `--out` in place of the
+old ones (Argo CD would otherwise re-apply cluster-scoped manifests).
+
+</Step>
+</Steps>
+
+**Vault** values keep their old owner id (the tool can't reach Vault): each
+moved `ForgejoUser`/`ForgejoUserKey` carries it in its
+`forgejo.weebo.io/previous-owner` annotation, and the operator takes those
+values back, recording its new id on its next write. Remove the annotation
+once every value is rewritten.
+
+One thing the tool can't do for you: a user that wrote into **another
+namespace** than the one it moves to is refused (`CrossNamespaceReference`)
+until its `secretTargets` follow it (the dry run warns).
 
 ## Next
 

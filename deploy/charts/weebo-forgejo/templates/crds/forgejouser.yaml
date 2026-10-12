@@ -13,7 +13,7 @@ spec:
     shortNames:
     - fjuser
     singular: forgejouser
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.username
@@ -87,10 +87,34 @@ spec:
                 type: string
               instanceRef:
                 description: |-
-                  `ForgejoInstance` to manage this user in. Defaults to the cluster's
-                  only instance.
+                  The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+                  on. Unset: the cluster's only `ForgejoInstance`, else the only
+                  `ForgejoLocalInstance` of this namespace.
                 nullable: true
-                type: string
+                properties:
+                  kind:
+                    description: The kind of instance a reference designates.
+                    enum:
+                    - Instance
+                    - LocalInstance
+                    nullable: true
+                    type: string
+                  name:
+                    description: '`metadata.name` of the instance.'
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of a `LocalInstance`. Defaults to this object's own;
+                      required on a cluster-scoped object. Another namespace's local
+                      instance must share itself with this one (its `sharedWith`).
+                    nullable: true
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: namespace only applies to kind LocalInstance
+                  rule: '!has(self.namespace) || !has(self.kind) || self.kind == ''LocalInstance'''
               loginName:
                 description: |-
                   Identity of the account at the authentication source (for OIDC, the
@@ -177,6 +201,52 @@ spec:
                   - name
                   type: object
                 type: array
+              sharedWith:
+                description: |-
+                  Other namespaces allowed to reference this object (when the operator
+                  enables cross-namespace references). Unset: this namespace only.
+                nullable: true
+                properties:
+                  clusterScoped:
+                    description: Cluster-scoped objects may use this instance.
+                    type: boolean
+                  namespaceSelector:
+                    description: Namespaces whose labels match this selector may use this instance.
+                    nullable: true
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                        items:
+                          description: A label selector requirement is a selector that contains values, a key, and an operator that relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector applies to.
+                              type: string
+                            operator:
+                              description: operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch.
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                  namespaces:
+                    description: Namespaces whose objects may use this instance.
+                    items:
+                      type: string
+                    type: array
+                type: object
               username:
                 description: Forgejo login. Changing it renames the account in place.
                 type: string
@@ -247,6 +317,29 @@ spec:
                   the old name to rename *from*.
                 nullable: true
                 type: string
+              instance:
+                description: |-
+                  The instance this object was resolved to and stays bound to: a
+                  `spec.instanceRef` by name only never silently moves to another
+                  instance created later under that name.
+                nullable: true
+                properties:
+                  kind:
+                    description: '`Instance` or `LocalInstance`.'
+                    enum:
+                    - Instance
+                    - LocalInstance
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    description: The local instance's namespace; absent for a cluster-scoped one.
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               lastRotation:
                 description: |-
                   Value of the `forgejo.weebo.io/rotate-secret` annotation the last
@@ -279,9 +372,6 @@ spec:
         title: ForgejoUser
         type: object
         x-kubernetes-validations:
-        - message: 'spec.instanceRef is immutable: ids in status belong to the instance they were created on'
-          reason: FieldValueForbidden
-          rule: '(has(self.spec.instanceRef) ? self.spec.instanceRef : '''') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '''')'
         - message: spec.email is required unless managementPolicy is Observe
           rule: (has(self.spec.managementPolicy) && self.spec.managementPolicy == 'Observe') || has(self.spec.email)
     served: true

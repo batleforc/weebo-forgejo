@@ -511,7 +511,7 @@ fn normalized(mut r: ProtectionRule) -> ProtectionRule {
 
 #[cfg(test)]
 mod tests {
-    use api::common::ObjectRef;
+    use api::common::{IdentityRef, ObjectRef};
     use api::repository::{MigrateSource, RepositoryUnits, TemplateSource};
 
     use super::*;
@@ -521,9 +521,7 @@ mod tests {
     fn spec(name: &str) -> ForgejoRepositorySpec {
         ForgejoRepositorySpec {
             instance_ref: None,
-            organization_ref: Some(ObjectRef {
-                name: "weebo".into(),
-            }),
+            organization_ref: Some(IdentityRef::named("weebo")),
             user_ref: None,
             name: name.into(),
             description: Some("demo".into()),
@@ -856,7 +854,7 @@ mod tests {
     #[test]
     fn one_of_violations_are_invalid() {
         let mut s = spec("x");
-        s.user_ref = Some(ObjectRef { name: "a".into() });
+        s.user_ref = Some(IdentityRef::named("a"));
         assert!(validate(&s).is_err());
         let mut s = spec("x");
         s.init = Some(Default::default());

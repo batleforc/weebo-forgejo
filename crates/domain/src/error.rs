@@ -12,12 +12,23 @@ reason_codes! {
         /// carry a `ReasonCode`, so this is the one every reconciler uses on
         /// the happy path rather than each inventing its own "it worked" code.
         Reconciled,
-        /// `spec.instanceRef` does not resolve to a `ForgejoInstance`, or no
-        /// `instanceRef` was given and the cluster has no `ForgejoInstance`.
+        /// `spec.instanceRef` does not resolve to a `ForgejoInstance` nor a
+        /// `ForgejoLocalInstance` the operator sees (or can't be satisfied as
+        /// written), or no `instanceRef` was given and there is no instance
+        /// to default to.
         InstanceNotFound,
-        /// No `instanceRef` was given and the cluster has more than one
-        /// `ForgejoInstance` to choose from.
+        /// No `instanceRef` was given and there is more than one instance to
+        /// choose from.
         AmbiguousDefaultInstance,
+        /// The instance named is out of reach: a `ForgejoLocalInstance` of
+        /// another namespace that doesn't share itself with this one, or
+        /// outside the namespace the operator is limited to.
+        InstanceNotAllowed,
+        /// `spec.instanceRef` now designates another instance than the one
+        /// recorded in `status.instance`: a bound CR never moves — the ids in
+        /// its status belong to the instance they were created on. Nothing
+        /// is done until `instanceRef` designates it again.
+        InstanceBindingChanged,
         /// The Forgejo API could not be reached (DNS, TCP, TLS) or answered
         /// with a 5xx.
         InstanceUnreachable,
@@ -44,8 +55,20 @@ reason_codes! {
         /// Catch-all for a Forgejo API call that failed for a reason not
         /// covered by a more specific code.
         ForgejoApiError,
-        /// A `*Ref` field does not resolve to a CR.
+        /// A `*Ref` field does not resolve to a CR (or its `remoteName` to an
+        /// object of the instance).
         ReferenceNotFound,
+        /// A `*Ref` field names a CR of another namespace while the operator
+        /// doesn't allow cross-namespace references
+        /// (`references.crossNamespace`), or the target doesn't list this
+        /// namespace in its `sharedWith`.
+        ReferenceNotAllowed,
+        /// The Forgejo object this CR would create or adopt (same server,
+        /// kind and name) is already owned by another CR, possibly in
+        /// another namespace or through another instance of the same
+        /// server. Nothing is called; reference it with `remoteName`
+        /// instead, or rename it.
+        RemoteObjectClaimed,
         /// A `*Ref` field resolves to a CR that isn't `Ready` yet (no
         /// `status.forgejoId`). The controller watches the referenced kind, so
         /// this clears as soon as the reference becomes ready.
@@ -76,6 +99,10 @@ reason_codes! {
         /// The spec is schema-valid but not a shape a reconciler can act on
         /// (e.g. a one-of discriminator without its matching sub-struct).
         InvalidSpec,
+        /// An update would take a CR still carrying the finalizer out of
+        /// the operator's label selector (`watch.labelSelector`): refused at
+        /// admission.
+        LeavesWatchScope,
     }
 }
 

@@ -27,7 +27,7 @@ Credentials it generates are written to Secrets or Vault.
 | **Reconcile** | One pass where the operator compares a CR with Forgejo and fixes the difference. It runs when the CR changes, when something it refers to changes, and periodically. |
 | **Drift** | A difference that appeared in Forgejo after the fact, such as a setting changed by hand in the UI. The next reconcile undoes it. |
 | **Authoritative** | A field or list the operator enforces completely: for `memberRefs` on a team, anyone not listed is removed. |
-| **Ref** (`organizationRef`, `userRef`…) | A pointer to another CR by its Kubernetes name, not by its Forgejo name. |
+| **Ref** (`organizationRef`, `userRef`…) | A pointer to another CR by its Kubernetes name — of the same namespace, or of another one (`namespace`) when the operator allows it and the target shares itself — or to a Forgejo object no CR manages, by its Forgejo name (`remoteName`). |
 | **Management policy** | `Manage` (the default) lets the operator create and edit the object. `Observe` only looks it up so other CRs can refer to it, without ever changing it. |
 | **Deletion policy** | What happens in Forgejo when the CR is deleted: `Orphan` keeps the object, `Delete` removes it. |
 | **Finalizer** | A marker Kubernetes keeps on a CR until the operator has finished cleaning up, so a deletion is never half done. |
@@ -37,18 +37,20 @@ Credentials it generates are written to Secrets or Vault.
 
 ## The kinds
 
-**Cluster-scoped** kinds describe shared things and are governed by
-Kubernetes RBAC. **Namespaced** kinds belong to an application team and are
-also governed by the [allow-list](/docs/guides/allow-list). Every kind has
-a short name for `kubectl get`.
+Only the instance and the allow-list are **cluster-scoped**, governed by
+Kubernetes RBAC alone. Every other kind is **namespaced**: it belongs to a
+team, and — when bound to a shared `ForgejoInstance` — is also governed by
+the [allow-list](/docs/guides/allow-list). Every kind has a short name for
+`kubectl get`.
 
 | Kind | Short name | Scope | Stands for |
 | --- | --- | --- | --- |
 | [`ForgejoInstance`](/docs/crds/forgejoinstance) | `fji` | Cluster | The connection to a Forgejo |
-| [`ForgejoUser`](/docs/crds/forgejouser) | `fjuser` | Cluster | A user or bot account |
-| [`ForgejoUserKey`](/docs/crds/forgejouserkey) | `fjukey` | Cluster | An SSH key on a user |
-| [`ForgejoOrganization`](/docs/crds/forgejoorganization) | `fjorg` | Cluster | An organization |
-| [`ForgejoTeam`](/docs/crds/forgejoteam) | `fjteam` | Cluster | A team in an organization, and its members |
+| [`ForgejoLocalInstance`](/docs/crds/forgejolocalinstance) | `fjli` | Namespaced | A namespace's own connection to a Forgejo |
+| [`ForgejoUser`](/docs/crds/forgejouser) | `fjuser` | Namespaced | A user or bot account |
+| [`ForgejoUserKey`](/docs/crds/forgejouserkey) | `fjukey` | Namespaced | An SSH key on a user |
+| [`ForgejoOrganization`](/docs/crds/forgejoorganization) | `fjorg` | Namespaced | An organization |
+| [`ForgejoTeam`](/docs/crds/forgejoteam) | `fjteam` | Namespaced | A team in an organization, and its members |
 | [`ForgejoNamespacePolicy`](/docs/crds/forgejonamespacepolicy) | `fjnp` | Cluster | Allow-list rules for the namespaced kinds |
 | [`ForgejoRepository`](/docs/crds/forgejorepository) | `fjrepo` | Namespaced | A repository, its settings, team access and branch protection |
 | [`ForgejoWebhook`](/docs/crds/forgejowebhook) | `fjhook` | Namespaced | A repository or organization webhook |
@@ -66,6 +68,8 @@ listed in [Reason codes](/docs/reference/reason-codes).
 
 ## Which Forgejo?
 
-Every CR has an optional `instanceRef`. Leave it out when the cluster has a
-single `ForgejoInstance`, which is used by default. With several instances,
-set it on every CR. It can't be changed once the CR exists.
+Every CR has an optional `instanceRef` (`{name: main}`). Leave it out when
+the cluster has a single `ForgejoInstance`, which is used by default. With
+several instances, set it on every CR. A namespace can also bring its own
+server as a `ForgejoLocalInstance`. Once a CR is bound to an instance
+(`status.instance`), it never moves to another one.

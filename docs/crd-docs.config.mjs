@@ -14,6 +14,7 @@ ideas behind the fields, start with [Concepts](/docs/concepts).`,
   // Sidebar order follows the order you'd create things in, not the alphabet.
   order: [
     "ForgejoInstance",
+    "ForgejoLocalInstance",
     "ForgejoUser",
     "ForgejoUserKey",
     "ForgejoOrganization",
@@ -28,6 +29,10 @@ ideas behind the fields, start with [Concepts](/docs/concepts).`,
   // The guide that explains each kind, linked from its reference page.
   guides: {
     ForgejoInstance: ["Connect a Forgejo", "/docs/guides/connect-instance"],
+    ForgejoLocalInstance: [
+      "A namespace's own instance",
+      "/docs/guides/connect-instance#a-namespaces-own-instance",
+    ],
     ForgejoUser: ["Users, OIDC and teams", "/docs/guides/users-and-oidc"],
     ForgejoUserKey: ["Users, OIDC and teams", "/docs/guides/users-and-oidc#ssh-keys-for-a-user"],
     ForgejoOrganization: ["Users, OIDC and teams", "/docs/guides/users-and-oidc#organizations-and-teams"],
@@ -47,11 +52,15 @@ ideas behind the fields, start with [Concepts](/docs/concepts).`,
       url: "https://git.example.com",
       tokenSecretRef: { name: "forgejo-admin", namespace: "weebo-forgejo", key: "token" },
     },
+    ForgejoLocalInstance: {
+      url: "https://git.example.com",
+      tokenSecretRef: { name: "forgejo-token", key: "token" },
+    },
     ForgejoUser: { username: "alice", email: "alice@example.com" },
     ForgejoUserKey: {
       userRef: { name: "ci-bot" },
       title: "ci",
-      secretTargets: [{ name: "ci-bot-ssh", namespace: "ci" }],
+      secretTargets: [{ name: "ci-bot-ssh" }],
     },
     ForgejoOrganization: { name: "weebo", visibility: "private" },
     ForgejoTeam: {
@@ -105,6 +114,10 @@ ideas behind the fields, start with [Concepts](/docs/concepts).`,
       Reconciled: "Nothing",
       InstanceNotFound: "[Create the instance](/docs/guides/connect-instance), or fix `instanceRef`",
       AmbiguousDefaultInstance: "Set `instanceRef`",
+      InstanceNotAllowed:
+        "Use an instance of the CR's namespace, or have that `ForgejoLocalInstance` list it in `sharedWith`",
+      InstanceBindingChanged:
+        "Set `instanceRef.kind` to the instance you want (see [A namespace's own instance](/docs/guides/connect-instance#a-namespaces-own-instance))",
       InstanceUnreachable: "Timeouts and rate limiting (408/429) land here too. Check Forgejo's health and the URL/CA; it's retried automatically",
       TokenSecretNotFound: "Fix `tokenSecretRef` or create the Secret",
       Bound: "Nothing",
@@ -124,6 +137,12 @@ ideas behind the fields, start with [Concepts](/docs/concepts).`,
       CrossNamespaceReference: "Typically a `secretTargets` entry in another namespace: write into the CR's own namespace",
       SecretTargetFailed: "Check RBAC or Vault access and the target's namespace/path",
       InvalidSpec: "Fix the spec (e.g. not both `organizationRef` and `userRef`); the message says what's wrong",
+      ReferenceNotAllowed:
+        "Reference a CR of this namespace; or enable `references.crossNamespace` on the release and list this namespace in the target's `sharedWith`",
+      RemoteObjectClaimed:
+        "Another CR owns that Forgejo object: reference it with `remoteName`, or rename this one",
+      LeavesWatchScope:
+        "Set the `force-orphan` annotation first, or move the CR to another release's selector and remove its finalizer",
     },
     // `task perf`'s report (target/perf/weebo-forgejo.json), copied here.
     perfReport: "perf/weebo-forgejo.json",

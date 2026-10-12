@@ -1,0 +1,51 @@
+---
+title: ForgejoLocalInstance
+description: >-
+  Connection to a real Forgejo server (v16 or later), owned by a namespace: its
+  token is that namespace's, and only the objects of this namespace use it
+  unless sharedWith says otherwise.
+full: true
+---
+
+- **API version:** `forgejo.weebo.io/v1alpha1`
+- **Scope:** Namespaced
+- **Short names:** `fjli`
+- **Guide:** [A namespace's own instance](/docs/guides/connect-instance#a-namespaces-own-instance)
+
+Connection to a real Forgejo server (v16 or later), owned by a
+namespace: its token is that namespace's, and only the objects of this
+namespace use it unless `sharedWith` says otherwise. What an operator
+limited to one namespace uses. Objects bound to it are not governed by
+`ForgejoNamespacePolicy` — the namespace's own token bounds what they
+can do — and write their secrets as Kubernetes `Secret`s only: the
+operator's Vault identity is shared by every namespace.
+
+## Example
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoLocalInstance
+metadata:
+  name: my-localinstance
+  namespace: team-a
+spec:
+  url: https://git.example.com
+  tokenSecretRef:
+    name: forgejo-token
+    key: token
+```
+
+## Spec fields
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `sharedWith` | `object` | no |  | Other namespaces (or cluster-scoped objects) allowed to use this instance — and its token. Unset: this namespace only. |
+| `tls` | `object` | no | `{"insecureSkipVerify":false}` | TLS verification for the API connection above; the CA `Secret` lives in this namespace. |
+| `tokenSecretRef` | `object` | yes |  | Key of a `Secret` of this namespace holding the API token the operator acts with (a site admin's for user and organization management). Re-read on every gateway call, so rotating it needs no restart. |
+| `url` | `string` | yes |  | Base web URL of the Forgejo instance, e.g. `https://git.example.com` — not the `/api/v1` REST endpoint, which is derived from it. Written as `FORGEJO_URL` into emitted secrets. |
+
+## Build a manifest
+
+Answer the questions and fill in the fields: the YAML preview updates as you type, ready to copy or download and `kubectl apply`.
+
+<CrdForm kind="ForgejoLocalInstance" />

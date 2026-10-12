@@ -5,24 +5,29 @@
     "scope": "Cluster"
   },
   {
+    "kind": "ForgejoLocalInstance",
+    "singular": "forgejolocalinstance",
+    "scope": "Namespaced"
+  },
+  {
     "kind": "ForgejoUser",
     "singular": "forgejouser",
-    "scope": "Cluster"
+    "scope": "Namespaced"
   },
   {
     "kind": "ForgejoUserKey",
     "singular": "forgejouserkey",
-    "scope": "Cluster"
+    "scope": "Namespaced"
   },
   {
     "kind": "ForgejoOrganization",
     "singular": "forgejoorganization",
-    "scope": "Cluster"
+    "scope": "Namespaced"
   },
   {
     "kind": "ForgejoTeam",
     "singular": "forgejoteam",
-    "scope": "Cluster"
+    "scope": "Namespaced"
   },
   {
     "kind": "ForgejoNamespacePolicy",

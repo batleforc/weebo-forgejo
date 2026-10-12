@@ -2,22 +2,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::{ForgejoOAuth2Application, ForgejoUser};
-use application::ports::{ForgejoRef, RefKind};
-use application::use_cases::admission::enforce;
+use application::ports::{BoundInstance, ForgejoGateway, ForgejoRef, RefKind};
+use application::use_cases::admission::enforce_on;
 use application::use_cases::reconcile_oauth2::{OAuth2Input, cleanup_oauth2, reconcile_oauth2};
-use application::use_cases::refs::resolve_required;
+use application::use_cases::refs::resolve_identity_required;
 use application::use_cases::{Failure, Outcome};
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::watcher;
 use kube::{Client, ResourceExt};
 
 use super::status::{current_ref, owner_id, secret_pending};
 use super::{
-    Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, rotate_nonce,
-    status,
+    Ctx, Error, FINALIZER, ScopedWatches, allows_disruptive_update, error_policy, requeue_after,
+    rotate_nonce, status,
 };
 use crate::metrics::record_reconcile;
 
@@ -25,36 +24,34 @@ const KIND: &str = "ForgejoOAuth2Application";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let client_for_policies = client.clone();
-    let controller = super::controller(Api::<ForgejoOAuth2Application>::all(client.clone()));
+    let controller = super::controller(
+        ctx.scope.api::<ForgejoOAuth2Application>(client.clone()),
+        &ctx.scope,
+    );
     // A policy change may allow or forbid any CR of this kind: re-check
     // them all (policies change rarely, and the check is a local list).
     let by_policy = controller.store();
     let apps = controller.store();
     let results = controller
-        .watches(
-            Api::<ForgejoUser>::all(client),
-            watcher::Config::default(),
-            move |user| {
-                let name = user.name_any();
-                apps.state()
-                    .into_iter()
-                    .filter(|a| a.spec.owner_ref.as_ref().is_some_and(|o| o.name == name))
-                    .map(|a| ObjectRef::from_obj(a.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
-        .watches(
-            Api::<api::ForgejoNamespacePolicy>::all(client_for_policies),
-            watcher::Config::default(),
-            move |_| {
-                by_policy
-                    .state()
-                    .into_iter()
-                    .map(|o| ObjectRef::from_obj(o.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
+        .watches_in::<ForgejoUser, _>(&ctx, &client, move |user| {
+            let (name, ns) = (user.name_any(), user.namespace());
+            apps.state()
+                .into_iter()
+                .filter(|a| {
+                    a.spec.owner_ref.as_ref().is_some_and(|o| {
+                        o.points_at(a.namespace().as_deref(), ns.as_deref(), &name)
+                    })
+                })
+                .map(|a| ObjectRef::from_obj(a.as_ref()))
+                .collect::<Vec<_>>()
+        })
+        .watches_in::<api::ForgejoNamespacePolicy, _>(&ctx, &client, move |_| {
+            by_policy
+                .state()
+                .into_iter()
+                .map(|o| ObjectRef::from_obj(o.as_ref()))
+                .collect::<Vec<_>>()
+        })
         .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx);
     super::drive(KIND, health, results).await;
@@ -78,20 +75,16 @@ async fn reconcile(obj: Arc<ForgejoOAuth2Application>, ctx: Arc<Ctx>) -> Result<
 /// The owner, or `None` for the admin account.
 async fn owner(
     app: &ForgejoOAuth2Application,
+    instance: &BoundInstance,
+    gateway: &dyn ForgejoGateway,
     ctx: &Ctx,
 ) -> Result<Result<Option<ForgejoRef>, Failure>, Error> {
     let Some(owner_ref) = &app.spec.owner_ref else {
         return Ok(Ok(None));
     };
     let ns = app.namespace().unwrap_or_default();
-    let instance = app.spec.instance_ref.as_deref();
-    let user = resolve_required(
-        ctx.refs.as_ref(),
-        RefKind::User,
-        &ns,
-        &owner_ref.name,
-        instance,
-    );
+    let from = super::referrer(ctx, &ns, instance, Some(gateway));
+    let user = resolve_identity_required(&from, RefKind::User, owner_ref);
     Ok(user.await?.map(Some))
 }
 
@@ -106,41 +99,48 @@ async fn apply(
     let (name, ns) = (current.name_any(), current.namespace().unwrap_or_default());
 
     let namespace = current.namespace().unwrap_or_default();
-    let outcome = match enforce(
-        ctx.policies.as_ref(),
-        ctx.refs.as_ref(),
-        &namespace,
-        &current,
-    )
-    .await?
-    {
-        // Re-checked here too: a policy may have changed since admission.
+    let outcome = match super::instance_of(ctx, &current).await {
         Err(f) => Outcome::failed(current_ref(&current), f),
-        Ok(()) => match owner(&current, ctx).await? {
-            Err(f) => Outcome::failed(owned, f),
-            Ok(owner) => match super::backends(ctx, current.spec.instance_ref.as_deref()).await {
-                Ok((gateway, secrets)) => {
-                    let input = OAuth2Input {
-                        spec: &current.spec,
-                        cr_name: &name,
-                        namespace: &ns,
-                        owner_id: owner.as_ref().map(|o| o.id),
-                        owner: owner.map(|o| o.name),
-                        current: owned,
-                        current_owner_id: owner_id(&current.status),
-                        secret_pending: secret_pending(&current.status),
-                        rotate_nonce: rotate_nonce(&current.metadata),
-                        last_rotation: current
-                            .status
-                            .as_ref()
-                            .and_then(|s| s.last_rotation.clone()),
-                        allow_disruptive_update: allows_disruptive_update(&current.metadata),
-                    };
-                    reconcile_oauth2(input, gateway.as_ref(), secrets.as_ref()).await
-                }
+        Ok(bound) => match enforce_on(
+            ctx.policies.as_ref(),
+            ctx.refs.as_ref(),
+            &namespace,
+            &current,
+            Some(&bound),
+        )
+        .await?
+        {
+            // Re-checked here too: a policy may have changed since admission.
+            Err(f) => Outcome::failed(current_ref(&current), f),
+            Ok(()) => match super::backends(ctx, &bound).await {
                 Err(f) => Outcome::failed(owned, f),
+                Ok((gateway, secrets)) => match owner(&current, &bound, gateway.as_ref(), ctx)
+                    .await?
+                {
+                    Ok(owner) => {
+                        let input = OAuth2Input {
+                            spec: &current.spec,
+                            cr_name: &name,
+                            namespace: &ns,
+                            owner_id: owner.as_ref().map(|o| o.id),
+                            owner: owner.map(|o| o.name),
+                            current: owned,
+                            current_owner_id: owner_id(&current.status),
+                            secret_pending: secret_pending(&current.status),
+                            rotate_nonce: rotate_nonce(&current.metadata),
+                            last_rotation: current
+                                .status
+                                .as_ref()
+                                .and_then(|s| s.last_rotation.clone()),
+                            allow_disruptive_update: allows_disruptive_update(&current.metadata),
+                        };
+                        reconcile_oauth2(input, gateway.as_ref(), secrets.as_ref()).await
+                    }
+                    Err(f) => Outcome::failed(owned, f),
+                },
             },
-        },
+        }
+        .on(bound),
     };
 
     record_reconcile(
@@ -153,9 +153,9 @@ async fn apply(
 }
 
 async fn cleanup(app: &ForgejoOAuth2Application, ctx: &Ctx) -> Result<Action, Error> {
-    let instance = app.spec.instance_ref.as_deref();
-    let gateway = super::cleanup_gateway(ctx, instance).await;
-    let secrets = super::cleanup_secrets(ctx, instance).await;
+    let instance = super::cleanup_instance(ctx, app).await;
+    let gateway = super::cleanup_gateway(ctx, &instance).await;
+    let secrets = super::cleanup_secrets(ctx, &instance).await;
     cleanup_oauth2(
         &app.spec,
         &app.name_any(),

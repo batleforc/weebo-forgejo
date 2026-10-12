@@ -2,7 +2,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DeletionPolicy, ObjectRef, SecretTarget};
+use crate::common::{DeletionPolicy, IdentityRef, InstanceRef, ObjectRef, SecretTarget};
 use crate::status::ForgejoStatus;
 
 /// An access token of a `ForgejoUser` (typically a bot), issued through the
@@ -19,7 +19,6 @@ use crate::status::ForgejoStatus;
     group = "forgejo.weebo.io",
     version = "v1alpha1",
     kind = "ForgejoAccessToken",
-    validation = kube::core::Rule::new("(has(self.spec.instanceRef) ? self.spec.instanceRef : '') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '')").message("spec.instanceRef is immutable: ids in status belong to the instance they were created on").reason(kube::core::Reason::FieldValueForbidden),
     plural = "forgejoaccesstokens",
     shortname = "fjtoken",
     namespaced,
@@ -31,10 +30,13 @@ use crate::status::ForgejoStatus;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ForgejoAccessTokenSpec {
+    /// The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+    /// on. Unset: the cluster's only `ForgejoInstance`, else the only
+    /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_ref: Option<String>,
-    /// `ForgejoUser` the token belongs to.
-    pub user_ref: ObjectRef,
+    pub instance_ref: Option<InstanceRef>,
+    /// The user the token belongs to.
+    pub user_ref: IdentityRef,
     /// Token name, unique per user. Defaults to `<namespace>-<cr name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

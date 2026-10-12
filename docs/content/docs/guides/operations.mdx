@@ -12,8 +12,8 @@ from your monitoring stack and from ArgoCD.
 For a quick overview, list the kinds with their `READY` column:
 
 ```bash
-kubectl get fji,fjorg,fjteam,fjuser          # cluster-scoped kinds
-kubectl get fjrepo,fjhook,fjdkey,fjoauth,fjtoken -A
+kubectl get fji                              # cluster-scoped kinds
+kubectl get fjli,fjorg,fjteam,fjuser,fjukey,fjrepo,fjhook,fjdkey,fjoauth,fjtoken -A
 ```
 
 When something reads `False`, look at the condition:

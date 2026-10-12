@@ -1,6 +1,7 @@
 pub mod common;
 pub mod instance;
 pub mod keys;
+pub mod local_instance;
 pub mod namespace_policy;
 pub mod oauth2;
 pub mod organization;
@@ -13,6 +14,7 @@ pub mod webhook;
 
 pub use instance::ForgejoInstance;
 pub use keys::{ForgejoDeployKey, ForgejoUserKey};
+pub use local_instance::ForgejoLocalInstance;
 pub use namespace_policy::ForgejoNamespacePolicy;
 pub use oauth2::ForgejoOAuth2Application;
 pub use organization::ForgejoOrganization;

@@ -40,7 +40,7 @@ spec:
 | --- | --- | --- | --- | --- |
 | `confidentialClient` | `boolean` | no | `true` | Confidential clients authenticate with their secret; public clients (SPAs, CLIs) use PKCE only. |
 | `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
-| `instanceRef` | `string` | no |  |  |
+| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
 | `name` | `string` | no |  | Display name. Defaults to the CR name. |
 | `ownerRef` | `object` | no |  | `ForgejoUser` owning the application (typically a `bot`) — the operator acts as that user through Forgejo's `Sudo` header. Unset: the operator's admin account. Changing it recreates the application (new client id), which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
 | `redirectUris` | `string[]` | yes |  |  |

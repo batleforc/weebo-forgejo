@@ -3,32 +3,66 @@
 //! refuses:
 //!
 //! - `secretTargets` stay in the CR's namespace (`CrossNamespaceReference`);
-//! - the allow-list: what each namespaced kind references ([`Governed`]),
-//!   against the policies read through the [`PolicySource`] port
-//!   (`NamespaceNotAllowed`);
+//! - the allow-list: what each namespaced kind manages or references
+//!   ([`Governed`]) — users and organizations by their **Forgejo** names,
+//!   whether referenced through a CR or a `remoteName` — against the
+//!   policies read through the [`PolicySource`] port (`NamespaceNotAllowed`);
 //! - credentials of a site admin — a token or an OAuth2 application of a
 //!   `ForgejoUser` with `admin: true`, or of the operator's own admin
 //!   account — need an `Allow` rule naming that user in `allowedUsers`,
 //!   even while no policy exists (`NamespaceNotAllowed`).
+//!
+//! A CR bound to a `ForgejoLocalInstance` is not governed by the policies
+//! (its namespace's own token bounds what it can do): only its secret
+//! targets are checked.
 
+use api::common::IdentityRef;
 use api::namespace_policy::{Effect as ApiEffect, NamespaceRule, NamespacedKind};
 use api::{
-    ForgejoAccessToken, ForgejoDeployKey, ForgejoOAuth2Application, ForgejoRepository,
-    ForgejoWebhook,
+    ForgejoAccessToken, ForgejoDeployKey, ForgejoOAuth2Application, ForgejoOrganization,
+    ForgejoRepository, ForgejoTeam, ForgejoUser, ForgejoUserKey, ForgejoWebhook,
 };
 use domain::allow_list::{self, Decision, Effect, Kind, Request, Rule};
 use domain::error::ReasonCode;
 
 use api::common::SecretTarget;
 
-use crate::ports::{ClusterError, PolicySource, RefKind, ReferenceReader, SecretOwner};
+use crate::ports::{
+    BoundInstance, ClusterError, PolicySource, RefKind, ReferenceReader, SecretOwner,
+};
+use crate::use_cases::refs::forgejo_name;
 use crate::use_cases::{Failure, emit};
+
+/// A user or organization a CR manages or references, as the policy sees
+/// it: by its Forgejo name.
+pub enum Named<'a> {
+    /// The CR's own Forgejo name (a `ForgejoUser`'s login, a
+    /// `ForgejoOrganization`'s name).
+    Own(&'a str),
+    /// A reference, resolved to the Forgejo name it stands for.
+    Ref(&'a IdentityRef),
+}
+
+/// A user whose credentials a CR mints.
+pub enum Credential<'a> {
+    /// The operator's own admin account ([`allow_list::INSTANCE_ADMIN`]).
+    InstanceAdmin,
+    /// A referenced user: a site admin when its CR says `admin: true` — or
+    /// whenever it's a `remoteName`, whose flags the policy can't read.
+    User(&'a IdentityRef),
+}
 
 /// A namespaced kind governed by `ForgejoNamespacePolicy`.
 pub trait Governed {
     const KIND: NamespacedKind;
-    /// `(ForgejoOrganization names, ForgejoUser names)` this CR references.
-    fn references(&self) -> (Vec<String>, Vec<String>);
+    /// The organizations this CR manages or references.
+    fn organizations(&self) -> Vec<Named<'_>> {
+        vec![]
+    }
+    /// The users this CR manages or references.
+    fn users(&self) -> Vec<Named<'_>> {
+        vec![]
+    }
     /// Template repositories (Forgejo `owner/name`) the CR generates from
     /// by name.
     fn templates(&self) -> Vec<String> {
@@ -38,24 +72,67 @@ pub trait Governed {
     fn secret_targets(&self) -> &[SecretTarget] {
         &[]
     }
-    /// The users whose credentials the CR mints (`ForgejoUser` names, or
-    /// [`allow_list::INSTANCE_ADMIN`]).
-    fn credential_users(&self) -> Vec<String> {
+    /// The users whose credentials the CR mints.
+    fn credential_users(&self) -> Vec<Credential<'_>> {
         vec![]
     }
 }
 
-fn names<'a>(refs: impl IntoIterator<Item = Option<&'a api::common::ObjectRef>>) -> Vec<String> {
-    refs.into_iter().flatten().map(|r| r.name.clone()).collect()
+fn refs<'a>(refs: impl IntoIterator<Item = Option<&'a IdentityRef>>) -> Vec<Named<'a>> {
+    refs.into_iter().flatten().map(Named::Ref).collect()
+}
+
+impl Governed for ForgejoUser {
+    const KIND: NamespacedKind = NamespacedKind::ForgejoUser;
+    fn users(&self) -> Vec<Named<'_>> {
+        vec![Named::Own(&self.spec.username)]
+    }
+    fn secret_targets(&self) -> &[SecretTarget] {
+        &self.spec.secret_targets
+    }
+}
+
+impl Governed for ForgejoUserKey {
+    const KIND: NamespacedKind = NamespacedKind::ForgejoUserKey;
+    fn users(&self) -> Vec<Named<'_>> {
+        refs([Some(&self.spec.user_ref)])
+    }
+    fn secret_targets(&self) -> &[SecretTarget] {
+        &self.spec.key.secret_targets
+    }
+    /// An SSH key pushes as its user: a site admin's needs an explicit rule.
+    fn credential_users(&self) -> Vec<Credential<'_>> {
+        vec![Credential::User(&self.spec.user_ref)]
+    }
+}
+
+impl Governed for ForgejoOrganization {
+    const KIND: NamespacedKind = NamespacedKind::ForgejoOrganization;
+    fn organizations(&self) -> Vec<Named<'_>> {
+        vec![Named::Own(&self.spec.name)]
+    }
+    fn users(&self) -> Vec<Named<'_>> {
+        refs([self.spec.owner_ref.as_ref()])
+    }
+}
+
+impl Governed for ForgejoTeam {
+    const KIND: NamespacedKind = NamespacedKind::ForgejoTeam;
+    fn organizations(&self) -> Vec<Named<'_>> {
+        refs([Some(&self.spec.organization_ref)])
+    }
+    fn users(&self) -> Vec<Named<'_>> {
+        refs(self.spec.member_refs.iter().map(Some))
+    }
 }
 
 impl Governed for ForgejoRepository {
     const KIND: NamespacedKind = NamespacedKind::ForgejoRepository;
-    fn references(&self) -> (Vec<String>, Vec<String>) {
-        (
-            names([self.spec.organization_ref.as_ref()]),
-            names([self.spec.user_ref.as_ref()]),
-        )
+    fn organizations(&self) -> Vec<Named<'_>> {
+        refs([self.spec.organization_ref.as_ref()])
+    }
+    fn users(&self) -> Vec<Named<'_>> {
+        refs([self.spec.user_ref.as_ref()])
     }
     fn templates(&self) -> Vec<String> {
         let by_name = self.spec.from_template.as_ref();
@@ -68,17 +145,14 @@ impl Governed for ForgejoRepository {
 
 impl Governed for ForgejoWebhook {
     const KIND: NamespacedKind = NamespacedKind::ForgejoWebhook;
-    fn references(&self) -> (Vec<String>, Vec<String>) {
-        (names([self.spec.organization_ref.as_ref()]), vec![])
+    fn organizations(&self) -> Vec<Named<'_>> {
+        refs([self.spec.organization_ref.as_ref()])
     }
 }
 
 impl Governed for ForgejoDeployKey {
     const KIND: NamespacedKind = NamespacedKind::ForgejoDeployKey;
-    fn references(&self) -> (Vec<String>, Vec<String>) {
-        // Only a same-namespace repository, itself governed.
-        (vec![], vec![])
-    }
+    // Only a same-namespace repository, itself governed.
     fn secret_targets(&self) -> &[SecretTarget] {
         &self.spec.key.secret_targets
     }
@@ -86,48 +160,86 @@ impl Governed for ForgejoDeployKey {
 
 impl Governed for ForgejoOAuth2Application {
     const KIND: NamespacedKind = NamespacedKind::ForgejoOAuth2Application;
-    fn references(&self) -> (Vec<String>, Vec<String>) {
-        // Without an owner the app belongs to the operator's admin account:
-        // that is a user too, or `allowedUsers` would vacuously cover it.
-        (vec![], self.credential_users())
+    // Without an owner the app belongs to the operator's admin account:
+    // that is a user too, or `allowedUsers` would vacuously cover it.
+    fn users(&self) -> Vec<Named<'_>> {
+        vec![match &self.spec.owner_ref {
+            Some(r) => Named::Ref(r),
+            None => Named::Own(allow_list::INSTANCE_ADMIN),
+        }]
     }
     fn secret_targets(&self) -> &[SecretTarget] {
         &self.spec.secret_targets
     }
-    fn credential_users(&self) -> Vec<String> {
+    fn credential_users(&self) -> Vec<Credential<'_>> {
         vec![match &self.spec.owner_ref {
-            Some(r) => r.name.clone(),
-            None => allow_list::INSTANCE_ADMIN.to_string(),
+            Some(r) => Credential::User(r),
+            None => Credential::InstanceAdmin,
         }]
     }
 }
 
 impl Governed for ForgejoAccessToken {
     const KIND: NamespacedKind = NamespacedKind::ForgejoAccessToken;
-    fn references(&self) -> (Vec<String>, Vec<String>) {
-        (vec![], self.credential_users())
+    fn users(&self) -> Vec<Named<'_>> {
+        refs([Some(&self.spec.user_ref)])
     }
     fn secret_targets(&self) -> &[SecretTarget] {
         &self.spec.secret_targets
     }
-    fn credential_users(&self) -> Vec<String> {
-        names([Some(&self.spec.user_ref)])
+    fn credential_users(&self) -> Vec<Credential<'_>> {
+        vec![Credential::User(&self.spec.user_ref)]
     }
 }
 
+/// The Forgejo names of `named`, as seen from `namespace`.
+async fn names(
+    reader: &dyn ReferenceReader,
+    kind: RefKind,
+    namespace: &str,
+    named: Vec<Named<'_>>,
+) -> Result<Vec<String>, ClusterError> {
+    let mut names = Vec::with_capacity(named.len());
+    for n in named {
+        names.push(match n {
+            Named::Own(name) => name.to_string(),
+            Named::Ref(r) => forgejo_name(reader, kind, namespace, r).await?,
+        });
+    }
+    Ok(names)
+}
+
 /// Every admission check of `obj` (in `namespace`), in order: its secret
-/// targets, the allow-list, then the site-admin credentials rule.
+/// targets, the allow-list, then the site-admin credentials rule — for a
+/// CR whose instance isn't known (as if bound to a `ForgejoInstance`).
 pub async fn enforce<K: Governed>(
     policies: &dyn PolicySource<NamespaceRule>,
     refs: &dyn ReferenceReader,
     namespace: &str,
     obj: &K,
 ) -> Result<Result<(), Failure>, ClusterError> {
+    enforce_on(policies, refs, namespace, obj, None).await
+}
+
+/// [`enforce`] for a CR bound to `instance`: a `ForgejoLocalInstance`
+/// skips the policies (secret targets only); `None` (not resolved) is
+/// governed.
+pub async fn enforce_on<K: Governed>(
+    policies: &dyn PolicySource<NamespaceRule>,
+    refs: &dyn ReferenceReader,
+    namespace: &str,
+    obj: &K,
+    instance: Option<&BoundInstance>,
+) -> Result<Result<(), Failure>, ClusterError> {
     let owner = SecretOwner::namespaced("", namespace, "");
     if let Err(f) = emit::check_targets(obj.secret_targets(), &owner) {
         return Ok(Err(f));
     }
-    let (organizations, users) = obj.references();
+    if instance.is_some_and(|i| !i.governed_by_policy()) {
+        return Ok(Ok(()));
+    }
+    let organizations = names(refs, RefKind::Organization, namespace, obj.organizations()).await?;
+    let users = names(refs, RefKind::User, namespace, obj.users()).await?;
     let templates = obj.templates();
     let request = allow_list::request(
         namespace,
@@ -142,13 +254,22 @@ pub async fn enforce<K: Governed>(
     }
     let mut admins = Vec::new();
     for user in obj.credential_users() {
-        if user == allow_list::INSTANCE_ADMIN
-            || refs
-                .referenced(RefKind::User, namespace, &user)
-                .await?
-                .is_some_and(|u| u.admin)
-        {
-            admins.push(user);
+        match user {
+            Credential::InstanceAdmin => admins.push(allow_list::INSTANCE_ADMIN.to_string()),
+            Credential::User(r) => {
+                let admin = match r.target(namespace) {
+                    Some((ns, name)) => refs
+                        .referenced(RefKind::User, ns, name)
+                        .await?
+                        .is_some_and(|u| u.admin),
+                    // A remote user's flags aren't known here: treated as
+                    // a site admin, it needs an explicit rule.
+                    None => true,
+                };
+                if admin {
+                    admins.push(forgejo_name(refs, RefKind::User, namespace, r).await?);
+                }
+            }
         }
     }
     Ok(check_admin_credentials(
@@ -195,6 +316,10 @@ pub fn check_admin_credentials(
 
 pub fn kind_of(kind: NamespacedKind) -> Kind {
     match kind {
+        NamespacedKind::ForgejoUser => Kind::User,
+        NamespacedKind::ForgejoUserKey => Kind::UserKey,
+        NamespacedKind::ForgejoOrganization => Kind::Organization,
+        NamespacedKind::ForgejoTeam => Kind::Team,
         NamespacedKind::ForgejoRepository => Kind::Repository,
         NamespacedKind::ForgejoWebhook => Kind::Webhook,
         NamespacedKind::ForgejoDeployKey => Kind::DeployKey,
@@ -267,7 +392,15 @@ mod tests {
     }
 
     fn decide(app: &ForgejoOAuth2Application, users: Option<&[&str]>) -> Decision {
-        let (organizations, refs) = app.references();
+        let organizations: Vec<String> = vec![];
+        let refs: Vec<String> = app
+            .users()
+            .into_iter()
+            .map(|n| match n {
+                Named::Own(name) => name.to_string(),
+                Named::Ref(r) => r.name.clone().unwrap(),
+            })
+            .collect();
         let rule = allow_list::rule(
             vec!["team-a".into()],
             vec![Kind::OAuth2Application],
@@ -366,6 +499,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cr_on_a_local_instance_skips_the_policies_not_its_targets() {
+        let cluster = crate::test_support::FakeCluster::default();
+        cluster.set_policies(vec![vec![NamespaceRule {
+            namespaces: vec!["team-b".into()],
+            allowed_kinds: vec![NamespacedKind::ForgejoRepository],
+            allowed_organizations: None,
+            allowed_users: None,
+            allowed_templates: None,
+            effect: ApiEffect::Allow,
+        }]]);
+        let repo = repository(serde_json::json!({"repository": "ops/secrets"}));
+        let local = BoundInstance::local("team-a", "own");
+        let cluster_instance = BoundInstance::cluster("main");
+        let on = |instance| enforce_on(&cluster, &cluster, "team-a", &repo, instance);
+        assert!(on(Some(&local)).await.unwrap().is_ok());
+        let denied = on(Some(&cluster_instance)).await.unwrap().unwrap_err();
+        assert_eq!(denied.reason, ReasonCode::NamespaceNotAllowed);
+        assert!(on(None).await.unwrap().is_err());
+
+        let elsewhere: ForgejoAccessToken = serde_json::from_value(serde_json::json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoAccessToken",
+            "metadata": {"name": "t", "namespace": "team-a"},
+            "spec": {"userRef": {"name": "bot"}, "scopes": ["read:user"],
+                     "secretTargets": [{"name": "t", "namespace": "team-b"}]},
+        }))
+        .unwrap();
+        let targets = enforce_on(&cluster, &cluster, "team-a", &elsewhere, Some(&local));
+        assert_eq!(
+            targets.await.unwrap().unwrap_err().reason,
+            ReasonCode::CrossNamespaceReference
+        );
+    }
+
+    #[tokio::test]
+    async fn the_policy_matches_forgejo_names_and_distrusts_remote_users() {
+        let cluster = crate::test_support::FakeCluster::default();
+        cluster.put(
+            RefKind::User,
+            "team-a",
+            "bot",
+            crate::ports::ReferencedCr {
+                spec_name: Some("ci-bot".into()),
+                ..Default::default()
+            },
+        );
+        cluster.set_policies(allow_tokens(Some(vec!["ci-bot".into()])));
+        let token = |user: serde_json::Value| -> ForgejoAccessToken {
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoAccessToken",
+                "metadata": {"name": "t", "namespace": "team-a"},
+                "spec": {"userRef": user, "scopes": ["read:user"]},
+            }))
+            .unwrap()
+        };
+        let by_cr = token(serde_json::json!({"name": "bot"}));
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &by_cr)
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        // The CR name isn't what the rule lists: its Forgejo login is.
+        cluster.set_policies(allow_tokens(Some(vec!["bot".into()])));
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &by_cr)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        // A remote user is matched by its name, and treated as a site admin:
+        // allowed by an explicit rule only.
+        let remote = token(serde_json::json!({"remoteName": "ops"}));
+        cluster.set_policies(vec![]);
+        let denied = enforce(&cluster, &cluster, "team-a", &remote)
+            .await
+            .unwrap();
+        assert_eq!(denied.unwrap_err().reason, ReasonCode::NamespaceNotAllowed);
+        cluster.set_policies(allow_tokens(Some(vec!["ops".into()])));
+        assert!(
+            enforce(&cluster, &cluster, "team-a", &remote)
+                .await
+                .unwrap()
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn enforce_reads_the_policies_through_the_port() {
         let cluster = crate::test_support::FakeCluster::default();
         let app = app(Some("sso-bot"));
@@ -413,7 +633,7 @@ mod tests {
         let cluster = crate::test_support::FakeCluster::default();
         cluster.put(
             RefKind::User,
-            "",
+            "team-a",
             "root",
             crate::ports::ReferencedCr {
                 admin: true,

@@ -1,8 +1,8 @@
 {
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoUserKey",
-  "scope": "Cluster",
-  "description": "An SSH public key of a `ForgejoUser` — typically a bot's. Same key\nhandling as `ForgejoDeployKey`; generated keys need `secretTargets` with\nan explicit namespace (this CR is cluster-scoped).",
+  "scope": "Namespaced",
+  "description": "An SSH public key of a user — typically a bot's. Same key handling as\n`ForgejoDeployKey`.",
   "properties": {
     "deletionPolicy": {
       "default": "Delete",
@@ -14,8 +14,38 @@
       "type": "string"
     },
     "instanceRef": {
+      "description": "The `ForgejoInstance` or `ForgejoLocalInstance` this object lives\non. Unset: the cluster's only `ForgejoInstance`, else the only\n`ForgejoLocalInstance` of this namespace.",
       "nullable": true,
-      "type": "string"
+      "properties": {
+        "kind": {
+          "description": "The kind of instance a reference designates.",
+          "enum": [
+            "Instance",
+            "LocalInstance"
+          ],
+          "nullable": true,
+          "type": "string"
+        },
+        "name": {
+          "description": "`metadata.name` of the instance.",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Namespace of a `LocalInstance`. Defaults to this object's own;\nrequired on a cluster-scoped object. Another namespace's local\ninstance must share itself with this one (its `sharedWith`).",
+          "nullable": true,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "namespace only applies to kind LocalInstance",
+          "rule": "!has(self.namespace) || !has(self.kind) || self.kind == 'LocalInstance'"
+        }
+      ]
     },
     "publicKey": {
       "description": "An OpenSSH public key (`ssh-ed25519 AAAA... comment`). Unset: the\noperator generates an ed25519 pair.",
@@ -64,16 +94,35 @@
       "type": "string"
     },
     "userRef": {
-      "description": "Reference to another CR of this operator, by `metadata.name`. Always a\nCR, never a raw remote name: a cluster-scoped target is looked up\ncluster-wide, a namespaced one in the referencing CR's own namespace only.",
+      "description": "A user, organization or team: a CR (`name`) — of this object's\nnamespace, or of `namespace` when cross-namespace references are\nenabled for the operator and the target lists this namespace in its\n`sharedWith` — or an object that exists in Forgejo but no CR manages\n(`remoteName`, its Forgejo name). The operator never creates, changes\nnor deletes a `remoteName` object.",
       "properties": {
         "name": {
+          "description": "`metadata.name` of the CR.",
+          "nullable": true,
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Namespace of the CR; defaults to this object's own.",
+          "nullable": true,
+          "type": "string"
+        },
+        "remoteName": {
+          "description": "Forgejo name of an object no CR manages (a user's login, an\norganization's or team's name).",
+          "nullable": true,
           "type": "string"
         }
       },
-      "required": [
-        "name"
-      ],
-      "type": "object"
+      "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "set exactly one of name and remoteName",
+          "rule": "has(self.name) != has(self.remoteName)"
+        },
+        {
+          "message": "namespace only applies with name",
+          "rule": "!has(self.namespace) || has(self.name)"
+        }
+      ]
     }
   },
   "required": [

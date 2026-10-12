@@ -14,8 +14,38 @@
       "type": "string"
     },
     "instanceRef": {
+      "description": "The `ForgejoInstance` or `ForgejoLocalInstance` this object lives\non. Unset: the cluster's only `ForgejoInstance`, else the only\n`ForgejoLocalInstance` of this namespace.",
       "nullable": true,
-      "type": "string"
+      "properties": {
+        "kind": {
+          "description": "The kind of instance a reference designates.",
+          "enum": [
+            "Instance",
+            "LocalInstance"
+          ],
+          "nullable": true,
+          "type": "string"
+        },
+        "name": {
+          "description": "`metadata.name` of the instance.",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Namespace of a `LocalInstance`. Defaults to this object's own;\nrequired on a cluster-scoped object. Another namespace's local\ninstance must share itself with this one (its `sharedWith`).",
+          "nullable": true,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "namespace only applies to kind LocalInstance",
+          "rule": "!has(self.namespace) || !has(self.kind) || self.kind == 'LocalInstance'"
+        }
+      ]
     },
     "name": {
       "description": "Token name, unique per user. Defaults to `<namespace>-<cr name>`.",
@@ -87,16 +117,35 @@
       "type": "array"
     },
     "userRef": {
-      "description": "`ForgejoUser` the token belongs to.",
+      "description": "The user the token belongs to.",
       "properties": {
         "name": {
+          "description": "`metadata.name` of the CR.",
+          "nullable": true,
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Namespace of the CR; defaults to this object's own.",
+          "nullable": true,
+          "type": "string"
+        },
+        "remoteName": {
+          "description": "Forgejo name of an object no CR manages (a user's login, an\norganization's or team's name).",
+          "nullable": true,
           "type": "string"
         }
       },
-      "required": [
-        "name"
-      ],
-      "type": "object"
+      "type": "object",
+      "x-kubernetes-validations": [
+        {
+          "message": "set exactly one of name and remoteName",
+          "rule": "has(self.name) != has(self.remoteName)"
+        },
+        {
+          "message": "namespace only applies with name",
+          "rule": "!has(self.namespace) || has(self.name)"
+        }
+      ]
     }
   },
   "required": [

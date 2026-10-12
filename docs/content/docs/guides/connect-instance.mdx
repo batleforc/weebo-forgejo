@@ -108,10 +108,54 @@ the cluster's **only** `ForgejoInstance` is used. With zero instances, those
 CRs report `InstanceNotFound`. With several, they report
 `AmbiguousDefaultInstance`, so set `instanceRef` on each of them.
 
-`instanceRef` is **immutable**: the API server refuses to change it on an
-existing CR. Decide it when you create the CR; to move a CR to another
-instance, delete it (`deletionPolicy: Orphan` keeps the Forgejo object) and
-create it again. See [Security model](/docs/guides/security#instanceref-is-immutable).
+Once resolved, the instance is recorded in `status.instance` and a CR
+**never moves**: re-pointing `instanceRef` elsewhere leaves the CR
+`Ready: False` (`InstanceBindingChanged`) without touching anything. Decide
+it when you create the CR; to move a CR to another instance, delete it
+(`deletionPolicy: Orphan` keeps the Forgejo object) and create it again. See
+[Security model](/docs/guides/security#a-cr-never-changes-instance).
+
+## A namespace's own instance
+
+A `ForgejoLocalInstance` is a `ForgejoInstance` owned by a namespace: its
+token (and TLS CA) live in a `Secret` of that namespace, and only the CRs of
+that namespace use it, unless its `sharedWith` lists other namespaces
+(`namespaces`, `namespaceSelector`) or accepts cluster-scoped objects. CRs
+bound to it are not governed by the [allow-list](/docs/guides/allow-list) —
+the namespace's own token bounds what they can do — and write their secrets
+as Kubernetes `Secret`s only (Vault targets need a `ForgejoInstance`: the
+operator's Vault identity is shared by every namespace).
+
+```yaml
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoLocalInstance
+metadata:
+  name: main
+  namespace: team-a
+spec:
+  url: https://git.example.com
+  tokenSecretRef:
+    name: forgejo-token
+    key: token
+```
+
+`instanceRef` finds the instance by name: an operator watching the whole
+cluster tries the `ForgejoInstance` first, then the `ForgejoLocalInstance`
+of the CR's namespace; one limited to a namespace (`watch.namespace`) only
+uses its local instances. `kind` (`Instance` or `LocalInstance`) and
+`namespace` (another namespace's local instance) pin one:
+
+```yaml
+spec:
+  instanceRef:
+    name: main
+    kind: LocalInstance
+```
+
+Upgrading from a release where `instanceRef` was a bare name: stop the
+operator, apply the new CRDs, run `weebo-forgejo-operator
+migrate-instance-ref` (`--dry-run` first), start the operator — and rewrite
+`instanceRef: main` as `instanceRef: {name: main}` in your manifests.
 
 ## Where secrets go
 

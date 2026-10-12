@@ -254,7 +254,10 @@ async fn the_operator_fits_a_small_cluster() {
         OperatorMetrics::new("weebo_forgejo"),
     )
     .await;
-    let orgs = run.workload(Api::<ForgejoOrganization>::all(client.clone()));
+    let orgs = run.workload(Api::<ForgejoOrganization>::namespaced(
+        client.clone(),
+        "default",
+    ));
 
     run.idle("startup", idle).await;
     // The warm-up is a whole cycle at full size: the baseline must follow a

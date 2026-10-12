@@ -52,8 +52,35 @@ spec:
                 - Orphan
                 type: string
               instanceRef:
+                description: |-
+                  The `ForgejoInstance` or `ForgejoLocalInstance` this object lives
+                  on. Unset: the cluster's only `ForgejoInstance`, else the only
+                  `ForgejoLocalInstance` of this namespace.
                 nullable: true
-                type: string
+                properties:
+                  kind:
+                    description: The kind of instance a reference designates.
+                    enum:
+                    - Instance
+                    - LocalInstance
+                    nullable: true
+                    type: string
+                  name:
+                    description: '`metadata.name` of the instance.'
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of a `LocalInstance`. Defaults to this object's own;
+                      required on a cluster-scoped object. Another namespace's local
+                      instance must share itself with this one (its `sharedWith`).
+                    nullable: true
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: namespace only applies to kind LocalInstance
+                  rule: '!has(self.namespace) || !has(self.kind) || self.kind == ''LocalInstance'''
               publicKey:
                 description: |-
                   An OpenSSH public key (`ssh-ed25519 AAAA... comment`). Unset: the
@@ -180,6 +207,29 @@ spec:
                   the old name to rename *from*.
                 nullable: true
                 type: string
+              instance:
+                description: |-
+                  The instance this object was resolved to and stays bound to: a
+                  `spec.instanceRef` by name only never silently moves to another
+                  instance created later under that name.
+                nullable: true
+                properties:
+                  kind:
+                    description: '`Instance` or `LocalInstance`.'
+                    enum:
+                    - Instance
+                    - LocalInstance
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    description: The local instance's namespace; absent for a cluster-scoped one.
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               lastRotation:
                 description: |-
                   Value of the `forgejo.weebo.io/rotate-secret` annotation the last
@@ -212,9 +262,6 @@ spec:
         title: ForgejoDeployKey
         type: object
         x-kubernetes-validations:
-        - message: 'spec.instanceRef is immutable: ids in status belong to the instance they were created on'
-          reason: FieldValueForbidden
-          rule: '(has(self.spec.instanceRef) ? self.spec.instanceRef : '''') == (has(oldSelf.spec.instanceRef) ? oldSelf.spec.instanceRef : '''')'
         - message: a generated key (no spec.publicKey) needs spec.secretTargets
           rule: has(self.spec.publicKey) || (has(self.spec.secretTargets) && size(self.spec.secretTargets) > 0)
     served: true

@@ -5,8 +5,14 @@ description: Local, SSO and bot accounts, people who sign in with OIDC, organiza
 
 This guide covers accounts (`ForgejoUser`, short name `fjuser`), the
 organizations they belong to (`ForgejoOrganization`, `fjorg`) and the teams
-that give them access (`ForgejoTeam`, `fjteam`). All three are
-cluster-scoped, so who can create them is decided by Kubernetes RBAC.
+that give them access (`ForgejoTeam`, `fjteam`). All three are namespaced:
+Kubernetes RBAC decides who may create them in a namespace, and — on a shared
+`ForgejoInstance` — the [allow-list](/docs/guides/allow-list) which ones. They
+are referenced from their own namespace, or from another one when the
+operator allows it (`references.crossNamespace`) and they list that
+namespace in `spec.sharedWith`. A Forgejo object no CR manages is referenced
+by name (`remoteName`); one owned by another CR can't be declared twice
+(`RemoteObjectClaimed`).
 
 ## Before you begin
 

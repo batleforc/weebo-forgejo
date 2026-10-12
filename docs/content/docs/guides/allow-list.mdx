@@ -12,8 +12,9 @@ that prevents this.
 
 | Kinds | Governed by |
 | --- | --- |
-| Cluster-scoped: instances, users, user keys, organizations, teams | Kubernetes RBAC only |
-| Namespaced: repositories, webhooks, deploy keys, OAuth2 applications, access tokens | RBAC **and** the allow-list |
+| Cluster-scoped: instances, namespace policies | Kubernetes RBAC only |
+| Namespaced, bound to a shared `ForgejoInstance`: users, user keys, organizations, teams, repositories, webhooks, deploy keys, OAuth2 applications, access tokens | RBAC **and** the allow-list |
+| Namespaced, bound to a `ForgejoLocalInstance` | RBAC only: the namespace's own token bounds them |
 
 <Callout type="warn" title="No policy means everything is allowed">
 While **no** `ForgejoNamespacePolicy` exists, every namespace may create any
@@ -60,9 +61,15 @@ spec:
       effect: Deny
 ```
 
-`allowedOrganizations` and `allowedUsers` list **CR names**, the
-`metadata.name` of the `ForgejoOrganization` and `ForgejoUser`, which is what
-`organizationRef`, `userRef` and `ownerRef` point at.
+`allowedOrganizations` and `allowedUsers` list **Forgejo names** — an
+organization's name, a user's login — not CR names: a CR name is only unique
+in its namespace, and a `remoteName` reference has none. They cover what a
+CR manages (a `ForgejoUser`'s own login, a `ForgejoOrganization`'s own name)
+and everything it references (`organizationRef`, `userRef`, `ownerRef`,
+`memberRefs`), whether through a CR or a `remoteName`. A user referenced by
+`remoteName` is treated as a site admin by the administrators rule above:
+the operator can't read its flags there, so its credentials need an
+explicit `allowedUsers` entry.
 
 ### Templates
 

@@ -1,6 +1,12 @@
 # kind e2e golden path (deploy/e2e/run.sh applies it in two steps: the
-# cluster-scoped part, then — once the policy exists — the namespaced one).
-# --- cluster-scoped ---------------------------------------------------------
+# instance, the policy and the identities, then — once they are Ready —
+# the team's namespaced kinds).
+#
+# The identities (users, organization, team, user key) live in the
+# `identities` namespace, managed by the platform; `team-a` references
+# them across namespaces: the release enables `references.crossNamespace`
+# and each identity it may use shares itself with it (`sharedWith`).
+# --- instance (cluster-scoped) ----------------------------------------------
 apiVersion: forgejo.weebo.io/v1alpha1
 kind: ForgejoInstance
 metadata:
@@ -13,65 +19,19 @@ spec:
     key: token
 ---
 apiVersion: forgejo.weebo.io/v1alpha1
-kind: ForgejoUser
-metadata:
-  name: alice
-spec:
-  username: alice
-  email: alice@e2e.local
-  secretTargets:
-    - name: alice-password
-      namespace: team-a
----
-apiVersion: forgejo.weebo.io/v1alpha1
-kind: ForgejoUser
-metadata:
-  name: ci-bot
-spec:
-  username: ci-bot
-  email: ci-bot@e2e.local
-  bot: true
----
-apiVersion: forgejo.weebo.io/v1alpha1
-kind: ForgejoOrganization
-metadata:
-  name: weebo
-spec:
-  name: weebo
-  visibility: private
-  ownerRef:
-    name: alice
----
-apiVersion: forgejo.weebo.io/v1alpha1
-kind: ForgejoTeam
-metadata:
-  name: weebo-devs
-spec:
-  organizationRef:
-    name: weebo
-  name: devs
-  permission: write
-  memberRefs:
-    - name: alice
-    - name: ci-bot
----
-apiVersion: forgejo.weebo.io/v1alpha1
-kind: ForgejoUserKey
-metadata:
-  name: ci-bot
-spec:
-  userRef:
-    name: ci-bot
-  secretTargets:
-    - name: ci-bot-ssh
-      namespace: team-a
----
-apiVersion: forgejo.weebo.io/v1alpha1
 kind: ForgejoNamespacePolicy
 metadata:
   name: teams
 spec:
   rules:
+    # The platform's identities.
+    - namespaces: [identities]
+      allowedKinds:
+        - ForgejoUser
+        - ForgejoOrganization
+        - ForgejoTeam
+        - ForgejoUserKey
+      effect: Allow
     - namespaces: ["team-*"]
       allowedKinds:
         - ForgejoRepository
@@ -81,3 +41,68 @@ spec:
         - ForgejoAccessToken
       allowedOrganizations: [weebo]
       allowedUsers: [ci-bot]
+      effect: Allow
+# --- identities -------------------------------------------------------------
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: alice
+  namespace: identities
+spec:
+  username: alice
+  email: alice@e2e.local
+  secretTargets:
+    - name: alice-password
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUser
+metadata:
+  name: ci-bot
+  namespace: identities
+spec:
+  username: ci-bot
+  email: ci-bot@e2e.local
+  bot: true
+  sharedWith:
+    namespaces: [team-a]
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoOrganization
+metadata:
+  name: weebo
+  namespace: identities
+spec:
+  name: weebo
+  visibility: private
+  ownerRef:
+    name: alice
+  sharedWith:
+    namespaces: [team-a]
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoTeam
+metadata:
+  name: weebo-devs
+  namespace: identities
+spec:
+  organizationRef:
+    name: weebo
+  name: devs
+  permission: write
+  memberRefs:
+    - name: alice
+    - name: ci-bot
+  sharedWith:
+    namespaces: [team-a]
+---
+apiVersion: forgejo.weebo.io/v1alpha1
+kind: ForgejoUserKey
+metadata:
+  name: ci-bot
+  namespace: identities
+spec:
+  userRef:
+    name: ci-bot
+  secretTargets:
+    - name: ci-bot-ssh

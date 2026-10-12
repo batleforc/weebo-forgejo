@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use api::ForgejoInstance;
+use application::ports::BoundInstance;
 use application::use_cases::reconcile_instance::reconcile_instance;
 use application::use_cases::{Failure, Outcome};
 use domain::error::ReasonCode;
@@ -22,7 +23,7 @@ const KIND: &str = "ForgejoInstance";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let results = super::controller(Api::<ForgejoInstance>::all(client))
+    let results = super::controller(ctx.scope.api::<ForgejoInstance>(client.clone()), &ctx.scope)
         .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx);
     super::drive(KIND, health, results).await;
@@ -51,7 +52,8 @@ async fn cleanup(
     let name = instance.name_any();
     // Bound by default too when it is the only instance.
     let default = api.list(&Default::default()).await?.items.len() == 1;
-    let dependents = ctx.refs.instance_dependents(&name, default).await?;
+    let bound = BoundInstance::cluster(&name);
+    let dependents = ctx.refs.instance_dependents(&bound, default).await?;
     if dependents.is_empty() {
         return Ok(Action::await_change());
     }
@@ -74,7 +76,11 @@ async fn apply(
     let name = obj.name_any();
     let started = Instant::now();
 
-    let outcome = match ctx.gateways.gateway_for(Some(&name)).await {
+    let outcome = match ctx
+        .gateways
+        .gateway_for(&BoundInstance::cluster(name))
+        .await
+    {
         Ok(gateway) => reconcile_instance(gateway.as_ref()).await,
         Err(e) => Outcome::failed(
             None,

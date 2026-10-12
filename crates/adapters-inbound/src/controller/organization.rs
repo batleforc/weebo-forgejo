@@ -1,45 +1,57 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use api::{ForgejoOrganization, ForgejoUser};
-use application::ports::RefKind;
+use api::{ForgejoNamespacePolicy, ForgejoOrganization, ForgejoUser};
+use application::ports::{BoundInstance, ForgejoGateway, RefKind};
+use application::use_cases::admission::enforce_on;
 use application::use_cases::reconcile_organization::{
     OrganizationInput, cleanup_organization, reconcile_organization,
 };
-use application::use_cases::refs::resolve_required;
+use application::use_cases::refs::resolve_identity_required;
 use application::use_cases::{Failure, Outcome};
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::watcher;
 use kube::{Client, ResourceExt};
 
 use super::status::current_ref;
-use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
+use super::{Ctx, Error, FINALIZER, ScopedWatches, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
 
 const KIND: &str = "ForgejoOrganization";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let controller = super::controller(Api::<ForgejoOrganization>::all(client.clone()));
+    let controller = super::controller(
+        ctx.scope.api::<ForgejoOrganization>(client.clone()),
+        &ctx.scope,
+    );
     // An org waiting on its ownerRef is re-reconciled as soon as that user
     // changes (e.g. becomes Ready), instead of on the 30 s retry.
     let orgs = controller.store();
+    // A policy change may allow or forbid any CR of this kind.
+    let by_policy = controller.store();
     let results = controller
-        .watches(
-            Api::<ForgejoUser>::all(client),
-            watcher::Config::default(),
-            move |user| {
-                let name = user.name_any();
-                orgs.state()
-                    .into_iter()
-                    .filter(|o| o.spec.owner_ref.as_ref().is_some_and(|r| r.name == name))
-                    .map(|o| ObjectRef::from_obj(o.as_ref()))
-                    .collect::<Vec<_>>()
-            },
-        )
+        .watches_in::<ForgejoUser, _>(&ctx, &client, move |user| {
+            let (name, ns) = (user.name_any(), user.namespace());
+            orgs.state()
+                .into_iter()
+                .filter(|o| {
+                    o.spec.owner_ref.as_ref().is_some_and(|r| {
+                        r.points_at(o.namespace().as_deref(), ns.as_deref(), &name)
+                    })
+                })
+                .map(|o| ObjectRef::from_obj(o.as_ref()))
+                .collect::<Vec<_>>()
+        })
+        .watches_in::<ForgejoNamespacePolicy, _>(&ctx, &client, move |_| {
+            by_policy
+                .state()
+                .into_iter()
+                .map(|o| ObjectRef::from_obj(o.as_ref()))
+                .collect::<Vec<_>>()
+        })
         .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx);
     super::drive(KIND, health, results).await;
@@ -49,7 +61,8 @@ async fn reconcile(obj: Arc<ForgejoOrganization>, ctx: Arc<Ctx>) -> Result<Actio
     if super::import_pending(&obj.metadata) {
         return Ok(Action::await_change());
     }
-    let api: Api<ForgejoOrganization> = Api::all(ctx.client.clone());
+    let ns = obj.namespace().unwrap_or_default();
+    let api: Api<ForgejoOrganization> = Api::namespaced(ctx.client.clone(), &ns);
     finalizer(&api, FINALIZER, obj, |event| async {
         match event {
             FinalizerEvent::Apply(org) => apply(&api, &org, &ctx).await,
@@ -70,24 +83,27 @@ async fn apply(
     let current = api.get(&org.name_any()).await?;
     let started = Instant::now();
     let owned = current_ref(&current);
+    let namespace = current.namespace().unwrap_or_default();
 
-    let outcome = match owner(&current, owned.is_some(), ctx).await? {
+    let outcome = match super::instance_of(ctx, &current).await {
         Err(f) => Outcome::failed(owned, f),
-        Ok(owner) => match ctx
-            .gateways
-            .gateway_for(current.spec.instance_ref.as_deref())
-            .await
-        {
+        Ok(bound) => match checked(&current, &namespace, owned.is_some(), &bound, ctx).await? {
+            Err(f) => Outcome::failed(owned, f),
             Ok(gateway) => {
-                let input = OrganizationInput {
-                    spec: &current.spec,
-                    current: owned,
-                    owner,
-                };
-                reconcile_organization(input, gateway.as_ref()).await
+                match owner(&current, owned.is_some(), &bound, gateway.as_ref(), ctx).await? {
+                    Err(f) => Outcome::failed(owned, f),
+                    Ok(owner) => {
+                        let input = OrganizationInput {
+                            spec: &current.spec,
+                            current: owned,
+                            owner,
+                        };
+                        reconcile_organization(input, gateway.as_ref()).await
+                    }
+                }
             }
-            Err(e) => Outcome::failed(owned, Failure::new(e.reason(), e.to_string())),
-        },
+        }
+        .on(bound),
     };
 
     record_reconcile("ForgejoOrganization", outcome.reason(), started.elapsed());
@@ -95,29 +111,55 @@ async fn apply(
     Ok(requeue_after(&outcome))
 }
 
+/// The namespace policy, the instance's gateway, and — before the
+/// organization is created — its unique claim.
+async fn checked(
+    org: &ForgejoOrganization,
+    namespace: &str,
+    exists: bool,
+    bound: &BoundInstance,
+    ctx: &Ctx,
+) -> Result<Result<Arc<dyn ForgejoGateway>, Failure>, Error> {
+    let (policies, refs) = (ctx.policies.as_ref(), ctx.refs.as_ref());
+    if let Err(f) = enforce_on(policies, refs, namespace, org, Some(bound)).await? {
+        return Ok(Err(f));
+    }
+    let gateway = match ctx.gateways.gateway_for(bound).await {
+        Ok(gateway) => gateway,
+        Err(e) => return Ok(Err(Failure::new(e.reason(), e.to_string()))),
+    };
+    if !exists {
+        let me = format!("{KIND}/{namespace}/{}", org.name_any());
+        let claimed =
+            super::claimed_elsewhere(ctx, RefKind::Organization, &org.spec.name, bound, &me);
+        if let Some(f) = claimed.await? {
+            return Ok(Err(f));
+        }
+    }
+    Ok(Ok(gateway))
+}
+
 /// The owner's login — only needed (and only waited for) before the
 /// organization exists: `ownerRef` is a creation-time setting.
 async fn owner(
     org: &ForgejoOrganization,
     exists: bool,
+    instance: &BoundInstance,
+    gateway: &dyn ForgejoGateway,
     ctx: &Ctx,
 ) -> Result<Result<Option<String>, Failure>, Error> {
     let Some(owner_ref) = org.spec.owner_ref.as_ref().filter(|_| !exists) else {
         return Ok(Ok(None));
     };
-    let instance = org.spec.instance_ref.as_deref();
-    let user = resolve_required(
-        ctx.refs.as_ref(),
-        RefKind::User,
-        "",
-        &owner_ref.name,
-        instance,
-    );
+    let ns = org.namespace().unwrap_or_default();
+    let from = super::referrer(ctx, &ns, instance, Some(gateway));
+    let user = resolve_identity_required(&from, RefKind::User, owner_ref);
     Ok(user.await?.map(|r| Some(r.name)))
 }
 
 async fn cleanup(org: &ForgejoOrganization, ctx: &Ctx) -> Result<Action, Error> {
-    let gateway = super::cleanup_gateway(ctx, org.spec.instance_ref.as_deref()).await;
+    let instance = super::cleanup_instance(ctx, org).await;
+    let gateway = super::cleanup_gateway(ctx, &instance).await;
     cleanup_organization(&org.spec, current_ref(org).as_ref(), gateway.as_deref())
         .await
         .map_err(Error::Cleanup)?;

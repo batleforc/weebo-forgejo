@@ -50,10 +50,18 @@ async fn https_forgejo() -> (String, String) {
 async fn tls_options_decide_whether_the_instance_is_trusted() {
     let cluster = EnvTestCluster::start().await;
     let client = cluster.client();
+    let instances = Arc::new(adapters_outbound::ForgejoInstances::new(client.clone()));
     let ctx = Arc::new(Ctx {
         client: client.clone(),
-        gateways: Arc::new(ForgejoGatewayFactory::new(client.clone(), None)),
-        secrets: Arc::new(ForgejoSecretStoreFactory::new(client.clone(), None)),
+        gateways: Arc::new(ForgejoGatewayFactory::new(
+            client.clone(),
+            instances.clone(),
+        )),
+        secrets: Arc::new(ForgejoSecretStoreFactory::new(
+            client.clone(),
+            instances.clone(),
+        )),
+        instances,
         refs: Arc::new(KubeClusterReader::new(client.clone())),
         policies: Arc::new(KubeClusterReader::new(client.clone())),
         recorder: Recorder::new(
@@ -65,6 +73,7 @@ async fn tls_options_decide_whether_the_instance_is_trusted() {
         ),
         shutdown: Shutdown::never(),
         health: Default::default(),
+        scope: weebo_kit_runtime::WatchScope::cluster(),
     });
     tokio::spawn(controller::instance::run(client.clone(), ctx));
     let (url, ca) = https_forgejo().await;

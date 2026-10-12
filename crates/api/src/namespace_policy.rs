@@ -6,6 +6,9 @@ use crate::status::ForgejoStatus;
 
 /// Namespace allow-list for the namespaced kinds, enforced by the
 /// admission webhook (CREATE/UPDATE) and re-checked by every reconciler.
+/// It governs the CRs bound to a `ForgejoInstance` (shared by every
+/// namespace); a CR bound to a `ForgejoLocalInstance` is bounded by its
+/// namespace's own token instead.
 ///
 /// While no `ForgejoNamespacePolicy` exists, everything is allowed. As soon
 /// as one exists, a namespaced CR is only accepted if some `Allow` rule
@@ -34,15 +37,19 @@ pub struct NamespaceRule {
     /// Namespace names, `*` for all, or a prefix glob like `team-*`.
     pub namespaces: Vec<String>,
     pub allowed_kinds: Vec<NamespacedKind>,
-    /// `ForgejoOrganization`s (CR names) the namespace may reference —
-    /// owner of its repositories, target of its org webhooks. Unset: any.
-    /// On a `Deny` rule: only deny requests referencing one of these.
+    /// Organizations (Forgejo names) the namespace may manage or reference —
+    /// a `ForgejoOrganization`'s own name, the owner of its repositories
+    /// and teams, the target of its org webhooks — whether through a CR or
+    /// a `remoteName`. Unset: any. On a `Deny` rule: only deny requests
+    /// referencing one of these.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_organizations: Option<Vec<String>>,
-    /// `ForgejoUser`s (CR names) the namespace may reference — owner of a
-    /// repository or OAuth2 application, holder of an access token. Unset:
-    /// any. Restricting this is what stops a namespace from minting tokens
-    /// for a privileged account. On a `Deny` rule: only deny requests
+    /// Users (Forgejo logins) the namespace may manage or reference — a
+    /// `ForgejoUser`'s own login, the owner of a repository, organization
+    /// or OAuth2 application, a team member, the holder of an access token
+    /// or SSH key — whether through a CR or a `remoteName`. Unset: any.
+    /// Restricting this is what stops a namespace from minting tokens for
+    /// a privileged account. On a `Deny` rule: only deny requests
     /// referencing one of these.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_users: Option<Vec<String>>,
@@ -60,6 +67,10 @@ pub struct NamespaceRule {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
 pub enum NamespacedKind {
+    ForgejoUser,
+    ForgejoUserKey,
+    ForgejoOrganization,
+    ForgejoTeam,
     ForgejoRepository,
     ForgejoWebhook,
     ForgejoDeployKey,

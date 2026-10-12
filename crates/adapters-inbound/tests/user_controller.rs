@@ -26,6 +26,7 @@ fn user(name: &str, spec: ForgejoUserSpec) -> ForgejoUser {
 fn local_spec(username: &str) -> ForgejoUserSpec {
     ForgejoUserSpec {
         instance_ref: None,
+        shared_with: None,
         username: username.into(),
         management_policy: ManagementPolicy::Manage,
         email: Some(format!("{username}@example.com")),
@@ -56,7 +57,7 @@ async fn local_user_gets_an_id_a_secret_and_is_orphaned_on_delete() {
     let h = harness().await;
     tokio::spawn(controller::user::run(h.client.clone(), h.ctx.clone()));
 
-    let users: Api<ForgejoUser> = Api::all(h.client.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(h.client.clone(), "default");
     users
         .create(&PostParams::default(), &user("alice", local_spec("alice")))
         .await
@@ -95,7 +96,7 @@ async fn observed_user_becomes_ready_once_it_exists() {
     let h = harness().await;
     tokio::spawn(controller::user::run(h.client.clone(), h.ctx.clone()));
 
-    let users: Api<ForgejoUser> = Api::all(h.client.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(h.client.clone(), "default");
     let mut spec = local_spec("carol");
     spec.management_policy = ManagementPolicy::Observe;
     spec.email = None;
@@ -134,7 +135,7 @@ async fn invalid_spec_is_reported_without_touching_forgejo() {
     let h = harness().await;
     tokio::spawn(controller::user::run(h.client.clone(), h.ctx.clone()));
 
-    let users: Api<ForgejoUser> = Api::all(h.client.clone());
+    let users: Api<ForgejoUser> = Api::namespaced(h.client.clone(), "default");
     let mut spec = local_spec("dave");
     spec.secret_targets.clear();
     users

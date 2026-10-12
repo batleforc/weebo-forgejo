@@ -9,14 +9,17 @@ publish.workspace = true
 application = { workspace = true }
 adapters-outbound = { workspace = true }
 adapters-inbound = { workspace = true }
+importer = { workspace = true }
 api = { workspace = true }
 weebo-kit-runtime = { workspace = true }
+weebo-kit-adapters = { workspace = true }
 kube = { workspace = true }
 futures = "0.3"
 tokio = { workspace = true }
 tracing = { workspace = true }
 rustls = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 uuid = { workspace = true }
 opentelemetry = { workspace = true }
 
