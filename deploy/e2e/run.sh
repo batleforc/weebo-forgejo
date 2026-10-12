@@ -51,7 +51,8 @@ dump() {
   kubectl -n team-a get forgejorepositories,forgejowebhooks,forgejodeploykeys,forgejooauth2applications,forgejoaccesstokens -o yaml
   kubectl get events -A --sort-by=.lastTimestamp | tail -n 50
 }
-trap 'dump' ERR
+# dump turns errexit off: leave right after it.
+trap 'dump; exit 1' ERR
 
 ready() { kubectl wait --for=condition=Ready=True --timeout="$WAIT" "$@"; }
 
@@ -164,7 +165,14 @@ step "golden path: instance, policy and identities"
 ensure_ns identities
 ensure_ns team-a
 ensure_ns other
-kubectl apply -f "$HERE/golden-path.yaml"
+# The identities go through the admission webhook: retry while it comes up
+# (cert-manager injecting its CA, endpoints getting ready).
+applied=""
+for _ in $(seq 1 30); do
+  if kubectl apply -f "$HERE/golden-path.yaml"; then applied=1; break; fi
+  sleep 2
+done
+[ -n "$applied" ] || fail "the golden path was never admitted"
 ready forgejoinstance/main
 ready -n identities forgejouser/alice forgejouser/ci-bot forgejoorganization/weebo \
   forgejoteam/weebo-devs forgejouserkey/ci-bot
