@@ -72,7 +72,7 @@ pub fn require(kind: RefKind, name: &str, state: RefState) -> Result<ForgejoRef,
     state.require().map_err(|e| {
         let reason = match e {
             RefError::NotFound => ReasonCode::ReferenceNotFound,
-            RefError::NotReady(_) => ReasonCode::ReferenceNotReady,
+            RefError::NotReconciled | RefError::NotReady(_) => ReasonCode::ReferenceNotReady,
             RefError::OtherInstance(_) => ReasonCode::InvalidSpec,
         };
         Failure::new(reason, e.describe(kind.as_str(), name))
@@ -317,7 +317,11 @@ pub async fn resolve_member(
             },
             login: r.remote_name.clone(),
         },
-        RefState::NotReady(why) => {
+        state @ (RefState::NotReconciled | RefState::NotReady(_)) => {
+            let why = match state {
+                RefState::NotReady(why) => why,
+                _ => "not reconciled yet".into(),
+            };
             let login = match r.target(from.namespace) {
                 Some((namespace, name)) => from
                     .reader
@@ -429,10 +433,7 @@ mod tests {
             state("oidc").await,
             RefState::NotReady("UserNotFound".into())
         );
-        assert_eq!(
-            state("fresh").await,
-            RefState::NotReady("NotReconciledYet".into())
-        );
+        assert_eq!(state("fresh").await, RefState::NotReconciled);
         assert_eq!(
             state("elsewhere").await,
             RefState::OtherInstance(BoundInstance::cluster("other"))

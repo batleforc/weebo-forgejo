@@ -603,6 +603,9 @@ pub enum GatewayFactoryError {
     /// The token `Secret` or its key is missing / not UTF-8.
     #[error("ForgejoInstance token secret: {0}")]
     TokenSecret(String),
+    /// A `ForgejoLocalInstance`'s token `Secret` isn't labelled for it.
+    #[error("ForgejoLocalInstance token secret: {0}")]
+    TokenSecretNotAllowed(String),
     /// A Kubernetes API call (listing instances, reading a `Secret`)
     /// failed — usually transient, never a spec problem.
     #[error("Kubernetes API error resolving ForgejoInstance: {0}")]
@@ -619,6 +622,7 @@ impl GatewayFactoryError {
             GatewayFactoryError::InstanceNotFound(_) => ReasonCode::InstanceNotFound,
             GatewayFactoryError::AmbiguousDefault(_) => ReasonCode::AmbiguousDefaultInstance,
             GatewayFactoryError::TokenSecret(_) => ReasonCode::TokenSecretNotFound,
+            GatewayFactoryError::TokenSecretNotAllowed(_) => ReasonCode::TokenSecretNotAllowed,
             GatewayFactoryError::Kubernetes(_) => ReasonCode::KubernetesApiError,
             GatewayFactoryError::ResolutionFailed(_) => ReasonCode::InvalidSpec,
         }

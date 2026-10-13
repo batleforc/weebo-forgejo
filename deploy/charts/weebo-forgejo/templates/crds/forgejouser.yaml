@@ -172,9 +172,9 @@ spec:
                     backend:
                       default: kubernetes
                       description: |-
-                        `kubernetes` (default) or `vault`. A Vault target reuses the
-                        connection (address, mount, auth) of the instance's
-                        `secretStore.vault`, which must then be set.
+                        `kubernetes` (default) or `vault`. A Vault target reuses the Vault
+                        connection (address, mount, auth) the instance configures, which it
+                        must then do.
                       enum:
                       - kubernetes
                       - vault
@@ -211,7 +211,10 @@ spec:
                     description: Cluster-scoped objects may use this instance.
                     type: boolean
                   namespaceSelector:
-                    description: Namespaces whose labels match this selector may use this instance.
+                    description: |-
+                      Namespaces whose labels match this selector may use this instance.
+                      An empty selector (`{}`) matches every namespace: the instance —
+                      and the token it holds — is then shared with the whole cluster.
                     nullable: true
                     properties:
                       matchExpressions:

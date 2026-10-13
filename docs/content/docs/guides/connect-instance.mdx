@@ -106,7 +106,10 @@ lacks permissions can still connect; the other CRs then report
 Every other CR has an optional `instanceRef: { name: main }`. Without it,
 the cluster's **only** `ForgejoInstance` is used. With zero instances, those
 CRs report `InstanceNotFound`. With several, they report
-`AmbiguousDefaultInstance`, so set `instanceRef` on each of them.
+`AmbiguousDefaultInstance`, so set `instanceRef` on each of them. A CR
+already bound without `instanceRef` keeps its instance: creating a second
+one doesn't move it (if its instance is deleted and another becomes the
+default, it reports `InstanceBindingChanged`).
 
 Once resolved, the instance is recorded in `status.instance` and a CR
 **never moves**: re-pointing `instanceRef` elsewhere leaves the CR
@@ -125,6 +128,19 @@ bound to it are not governed by the [allow-list](/docs/guides/allow-list) —
 the namespace's own token bounds what they can do — and write their secrets
 as Kubernetes `Secret`s only (Vault targets need a `ForgejoInstance`: the
 operator's Vault identity is shared by every namespace).
+
+The token `Secret` must carry the label
+`forgejo.weebo.io/instance-token: "true"`. The operator reads it with its
+own rights, not with those of whoever created the instance: without that
+consent, anyone allowed to create a `ForgejoLocalInstance` could have the
+operator send any `Secret` of the namespace to a URL of their choosing. An
+unlabelled Secret leaves the instance `Ready: False`
+(`TokenSecretNotAllowed`); labelling it is picked up at the next retry.
+
+```bash
+kubectl -n team-a create secret generic forgejo-token --from-literal=token=<token>
+kubectl -n team-a label secret forgejo-token forgejo.weebo.io/instance-token=true
+```
 
 ```yaml
 apiVersion: forgejo.weebo.io/v1alpha1

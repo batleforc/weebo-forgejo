@@ -171,6 +171,24 @@ helm upgrade weebo-forgejo oci://ghcr.io/batleforc/charts/weebo-forgejo \
 The CRDs are upgraded with the chart. Read the release notes first: they
 list any CRD or value change.
 
+### Upgrading to a release on weebo-operator-kit v0.14
+
+The token `Secret` of every `ForgejoLocalInstance` must carry the label
+`forgejo.weebo.io/instance-token: "true"`; without it the instance is
+`Ready: False` (`TokenSecretNotAllowed`) and its CRs stop reconciling.
+Label them **before** upgrading:
+
+```bash
+kubectl get forgejolocalinstances -A \
+  -o jsonpath='{range .items[*]}{.metadata.namespace} {.spec.tokenSecretRef.name}{"\n"}{end}' |
+  while read -r ns secret; do
+    kubectl -n "$ns" label secret "$secret" forgejo.weebo.io/instance-token=true --overwrite
+  done
+```
+
+`ForgejoInstance` (cluster-scoped, created by cluster admins) needs no
+label.
+
 ### Upgrading from chart 0.1.0
 
 Chart 0.1.0 installed the CRDs from `crds/`, outside the Helm release.

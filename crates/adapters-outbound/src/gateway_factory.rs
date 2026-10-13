@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 use crate::forgejo_http::ForgejoHttpGateway;
 use crate::instance_resolver::ForgejoInstances;
 use crate::metered::{MeteredGateway, max_inflight};
-use weebo_kit_adapters::{Resolved, read_secret_key};
+use weebo_kit_adapters::{Resolved, TokenSecretError, read_local_instance_token, read_secret_key};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Forgejo clones synchronously inside `POST /repos/migrate` (and
@@ -41,6 +41,9 @@ struct Connection {
     key: String,
     url: String,
     token_secret_ref: SecretKeyRef,
+    /// A `ForgejoLocalInstance`: its token `Secret` must be labelled for
+    /// it (`forgejo.weebo.io/instance-token: "true"`).
+    local: bool,
     tls: TlsOptions,
 }
 
@@ -50,6 +53,7 @@ impl Connection {
             key: BoundInstance::cluster(instance.name_any()).to_string(),
             url: instance.spec.url.clone(),
             token_secret_ref: instance.spec.token_secret_ref.clone(),
+            local: false,
             tls: instance.spec.tls.clone(),
         }
     }
@@ -131,15 +135,26 @@ impl ForgejoGatewayFactory {
         instance: Connection,
     ) -> Result<Arc<dyn ForgejoGateway>, GatewayFactoryError> {
         let token_ref = &instance.token_secret_ref;
-        let token = read_secret_key(&self.client, token_ref)
-            .await
-            .map_err(GatewayFactoryError::Kubernetes)?
-            .ok_or_else(|| {
-                GatewayFactoryError::TokenSecret(format!(
-                    "secret {}/{} has no key {:?}",
-                    token_ref.namespace, token_ref.name, token_ref.key
-                ))
-            })?;
+        let token = if instance.local {
+            read_local_instance_token(&self.client, token_ref, &api::ANNOTATIONS)
+                .await
+                .map_err(|e| match e {
+                    TokenSecretError::NotAllowed { .. } => {
+                        GatewayFactoryError::TokenSecretNotAllowed(e.to_string())
+                    }
+                    TokenSecretError::Kubernetes(e) => GatewayFactoryError::Kubernetes(e),
+                })?
+        } else {
+            read_secret_key(&self.client, token_ref)
+                .await
+                .map_err(GatewayFactoryError::Kubernetes)?
+        }
+        .ok_or_else(|| {
+            GatewayFactoryError::TokenSecret(format!(
+                "secret {}/{} has no key {:?}",
+                token_ref.namespace, token_ref.name, token_ref.key
+            ))
+        })?;
         let token = String::from_utf8(token)
             .map_err(|_| GatewayFactoryError::TokenSecret("token is not UTF-8".into()))?;
 
@@ -186,6 +201,7 @@ impl GatewayFactory for ForgejoGatewayFactory {
                     key: bound.to_string(),
                     url: local.spec.url.clone(),
                     token_secret_ref: local.spec.token_secret_ref.in_namespace(&namespace),
+                    local: true,
                     tls: local.spec.tls.in_namespace(&namespace),
                 }
             }

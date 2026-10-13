@@ -38,6 +38,11 @@ reason_codes! {
         /// admin: the admin APIs the operator relies on would fail on every
         /// CR. Use a site admin's token.
         InstanceTokenNotAdmin,
+        /// The token `Secret` of a `ForgejoLocalInstance` doesn't carry the
+        /// `forgejo.weebo.io/instance-token: "true"` label. The operator
+        /// reads Secrets with its own rights: a local instance may only use
+        /// a Secret its namespace labelled for it. Label the Secret.
+        TokenSecretNotAllowed,
         /// This CR is now bound to a Forgejo object — created, adopted by the
         /// importer, or observed (Event only: `status.forgejoId` was just
         /// recorded).

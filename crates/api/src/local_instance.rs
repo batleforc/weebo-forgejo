@@ -36,7 +36,10 @@ pub struct ForgejoLocalInstanceSpec {
     /// Key of a `Secret` of this namespace holding the API token the
     /// operator acts with (a site admin's for user and organization
     /// management). Re-read on every gateway call, so rotating it needs no
-    /// restart.
+    /// restart. The `Secret` must carry the label
+    /// `forgejo.weebo.io/instance-token: "true"`: the operator reads it with
+    /// its own rights, so only a Secret labelled for that use is ever sent
+    /// to the instance's URL.
     pub token_secret_ref: LocalSecretKeyRef,
     /// TLS verification for the API connection above; the CA `Secret`
     /// lives in this namespace.

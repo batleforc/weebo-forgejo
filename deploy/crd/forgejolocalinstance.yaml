@@ -47,7 +47,10 @@ spec:
                     description: Cluster-scoped objects may use this instance.
                     type: boolean
                   namespaceSelector:
-                    description: Namespaces whose labels match this selector may use this instance.
+                    description: |-
+                      Namespaces whose labels match this selector may use this instance.
+                      An empty selector (`{}`) matches every namespace: the instance —
+                      and the token it holds — is then shared with the whole cluster.
                     nullable: true
                     properties:
                       matchExpressions:
@@ -117,7 +120,10 @@ spec:
                   Key of a `Secret` of this namespace holding the API token the
                   operator acts with (a site admin's for user and organization
                   management). Re-read on every gateway call, so rotating it needs no
-                  restart.
+                  restart. The `Secret` must carry the label
+                  `forgejo.weebo.io/instance-token: "true"`: the operator reads it with
+                  its own rights, so only a Secret labelled for that use is ever sent
+                  to the instance's URL.
                 properties:
                   key:
                     type: string

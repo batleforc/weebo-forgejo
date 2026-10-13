@@ -134,6 +134,14 @@ delete it (with `deletionPolicy: Orphan` if the object must stay) and create
 it again. A `ForgejoLocalInstance` of another namespace is only usable when
 it lists the CR's namespace in its `sharedWith`.
 
+### A local instance only uses a Secret labelled for it
+
+The operator reads Secrets with its own rights. A `ForgejoLocalInstance`
+picks its URL and its token `Secret`, so the operator only reads a token
+`Secret` labelled `forgejo.weebo.io/instance-token: "true"`: being allowed
+to create a local instance doesn't let anyone send another `Secret` of the
+namespace to a server of their choosing (`TokenSecretNotAllowed`).
+
 ## Admission webhook
 
 - The `failurePolicy` is `Fail`: while no replica answers, namespaced CRs
