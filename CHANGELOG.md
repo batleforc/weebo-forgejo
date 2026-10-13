@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.2](https://github.com/batleforc/weebo-forgejo/compare/62df9f72f5d82f50a6dc05dbb502d85c9f6c6ec1..v0.3.2) - 2026-10-13
+#### Bug Fixes
+- (**admission**) revoke OAuth2 applications and SSH keys of new site admins, kit v0.14.1 (#10) - ([62df9f7](https://github.com/batleforc/weebo-forgejo/commit/62df9f72f5d82f50a6dc05dbb502d85c9f6c6ec1)) - Maxime, Claude Opus 5.5
+
+- - -
+
 ## [v0.3.1](https://github.com/batleforc/weebo-forgejo/compare/4d39018a99c19ff3c5d28f18a1d5b22474f7f171..v0.3.1) - 2026-10-13
 #### Bug Fixes
 - (**e2e**) the upgrade test's old release allows cross-namespace references (#9) - ([4d39018](https://github.com/batleforc/weebo-forgejo/commit/4d39018a99c19ff3c5d28f18a1d5b22474f7f171)) - Maxime, Claude Opus 5.5
