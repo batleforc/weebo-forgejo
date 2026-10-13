@@ -34,7 +34,7 @@ allow = ["MPL-2.0"]
 # The generated client inherits the spec's license field verbatim; it is
 # this repository's own code.
 crate = "forgejo-client"
-expression = "MIT"
+expression = "Apache-2.0"
 license-files = []
 
 [bans]
