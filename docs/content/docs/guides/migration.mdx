@@ -238,7 +238,14 @@ owns on the same server isn't adopted twice (`RemoteObjectClaimed`).
   up, so teams and repositories can reference them.
   - With `--manage-users` they become `Manage`. A local account is then
     marked `bot: true`, because its password can't be known, and the
-    operator never resets it.
+    operator never resets it, whatever later changes to the CR: only a
+    password the operator handed out itself (`status.passwordEmitted`) is
+    ever replaced.
+  - A site admin imported with `--manage-users` keeps `admin: true`, which
+    needs an `Allow` rule naming it in `allowedUsers` for the `ForgejoUser`
+    kind and the import namespace, even without any policy (see
+    [Security model](/docs/guides/security#tokens-and-oauth2-applications-for-administrators)).
+    Without one, its CR is refused.
   - Turning such a user into a regular local user (`bot: false` plus
     `secretTargets`) **resets its password** into the targets.
 - **Webhook secrets** are write-only in Forgejo. An imported hook keeps its

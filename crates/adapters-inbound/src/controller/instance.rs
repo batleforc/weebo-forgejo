@@ -81,7 +81,7 @@ async fn apply(
         .gateway_for(&BoundInstance::cluster(name))
         .await
     {
-        Ok(gateway) => reconcile_instance(gateway.as_ref()).await,
+        Ok(gateway) => reconcile_instance(gateway.as_ref(), true).await,
         Err(e) => Outcome::failed(
             None,
             application::use_cases::Failure::new(e.reason(), e.to_string()),

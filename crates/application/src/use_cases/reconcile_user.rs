@@ -43,6 +43,8 @@ pub struct UserInput<'a> {
     /// `status.secretPending`: the last generated password never reached
     /// every target, which may still hold an outdated one.
     pub secret_pending: bool,
+    /// `status.passwordEmitted`: a generated password was handed out.
+    pub password_emitted: bool,
 }
 
 pub async fn reconcile_user(
@@ -90,12 +92,16 @@ pub async fn reconcile_user(
             }
             Err(f) => return Outcome::failed(current, f),
         }
-    } else if spec.is_local() && input.spec_changed {
-        // Turned into a bot (or its targets dropped): the password handed
-        // out before must stop working. A bot's password is discarded, so
-        // replacing it on any spec change is harmless.
-        desired.password = Some(generate_password());
-        needs_edit = true;
+    }
+    // Turned into a bot or an external account: the password handed out
+    // before must stop working. Only a password the operator handed out —
+    // an adopted account's own password is never touched.
+    let revoke_password = !spec.emits_password() && input.password_emitted;
+    if revoke_password {
+        if spec.is_local() {
+            desired.password = Some(generate_password());
+            needs_edit = true;
+        }
         if let Err(f) = emit::delete_all(&spec.secret_targets, &owner, secrets).await {
             return Outcome::failed(current, f);
         }
@@ -110,6 +116,13 @@ pub async fn reconcile_user(
             return pending(current, f);
         }
         outcome.secret_pending = Some(false);
+    }
+    // Recorded on every sync of an emitting user (users created before the
+    // field existed included), cleared once replaced.
+    if spec.emits_password() {
+        outcome.password_emitted = Some(true);
+    } else if revoke_password {
+        outcome.password_emitted = Some(false);
     }
     outcome
 }
@@ -255,6 +268,7 @@ async fn create(
     let mut outcome = Outcome::synced(current, "user created");
     if spec.emits_password() {
         outcome.secret_pending = Some(false);
+        outcome.password_emitted = Some(true);
     }
     outcome
 }
@@ -284,6 +298,8 @@ fn source_failure(spec: &ForgejoUserSpec, e: GatewayError) -> Failure {
 fn pending(current: Option<ForgejoRef>, f: Failure) -> Outcome {
     let mut outcome = Outcome::failed(current, f);
     outcome.secret_pending = Some(true);
+    // Some targets may hold it already.
+    outcome.password_emitted = Some(true);
     outcome
 }
 
@@ -403,6 +419,7 @@ mod tests {
             current,
             spec_changed: false,
             secret_pending: false,
+            password_emitted: false,
         };
         reconcile_user(input, fj, secrets).await
     }
@@ -508,6 +525,7 @@ mod tests {
             current: created,
             spec_changed: false,
             secret_pending: true,
+            password_emitted: false,
         };
         let fixed = reconcile_user(input, &fj, &secrets).await;
         assert!(fixed.ready.is_ok(), "{fixed:?}");
@@ -723,8 +741,10 @@ mod tests {
     async fn becoming_a_bot_revokes_the_emitted_password() {
         let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
         let mut spec = local("alice");
-        let created = run(&spec, None, &fj, &secrets).await.forgejo;
+        let created = run(&spec, None, &fj, &secrets).await;
+        assert_eq!(created.password_emitted, Some(true));
         assert!(secrets.get("team-a/alice-forgejo").is_some());
+        let handed_out = fj.user("alice").unwrap().password;
         spec.bot = true;
         fj.clear_calls();
         let input = UserInput {
@@ -732,17 +752,46 @@ mod tests {
             namespace: "team-a",
             cr_name: "alice",
             previous_owner: None,
-            current: created,
+            current: created.forgejo,
             spec_changed: true,
             secret_pending: false,
+            password_emitted: true,
         };
         let outcome = reconcile_user(input, &fj, &secrets).await;
         assert!(outcome.ready.is_ok(), "{outcome:?}");
+        assert_eq!(outcome.password_emitted, Some(false));
         assert!(secrets.get("team-a/alice-forgejo").is_none());
-        assert!(
-            fj.calls().iter().any(|c| c.starts_with("edit_user")),
-            "{:?}",
-            fj.calls()
-        );
+        assert_ne!(fj.user("alice").unwrap().password, handed_out);
+    }
+
+    /// An adopted account (the importer marks it `bot`, `--manage-users`)
+    /// keeps its own password whatever its spec changes.
+    #[tokio::test]
+    async fn an_adopted_account_keeps_its_password() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let id = fj.insert_user("alice");
+        let mut spec = local("alice");
+        spec.bot = true;
+        spec.secret_targets = vec![];
+        spec.email = Some(String::new());
+        for spec_changed in [true, false] {
+            let input = UserInput {
+                spec: &spec,
+                namespace: "team-a",
+                cr_name: "alice",
+                previous_owner: None,
+                current: Some(ForgejoRef {
+                    id,
+                    name: "alice".into(),
+                }),
+                spec_changed,
+                secret_pending: false,
+                password_emitted: false,
+            };
+            let outcome = reconcile_user(input, &fj, &secrets).await;
+            assert!(outcome.ready.is_ok(), "{outcome:?}");
+            assert_eq!(outcome.password_emitted, None);
+            assert_eq!(fj.user("alice").unwrap().password, None, "never set");
+        }
     }
 }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use api::namespace_policy::NamespacedKind;
 use api::{ForgejoNamespacePolicy, ForgejoUser, ForgejoUserKey};
 use application::ports::{BoundInstance, ForgejoGateway, RefKind, SecretOwner};
 use application::use_cases::admission::enforce_on;
@@ -68,7 +69,8 @@ async fn reconcile(obj: Arc<ForgejoUserKey>, ctx: Arc<Ctx>) -> Result<Action, Er
     .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
-/// The namespace policy, then the user's login.
+/// The namespace policy, then the user's login (the site-admin rule
+/// checked on it in Forgejo).
 async fn user(
     key: &ForgejoUserKey,
     instance: &BoundInstance,
@@ -82,7 +84,18 @@ async fn user(
     }
     let from = super::referrer(ctx, &ns, instance, Some(gateway));
     let user = resolve_identity_required(&from, RefKind::User, &key.spec.user_ref);
-    Ok(user.await?.map(|r| r.name))
+    let login = match user.await? {
+        Ok(user) => user.name,
+        Err(f) => return Ok(Err(f)),
+    };
+    // The account may be a site admin in Forgejo whatever its CR declares.
+    let kind = NamespacedKind::ForgejoUserKey;
+    let logins = [login];
+    if let Err(f) = super::remote_admins(ctx, instance, gateway, &ns, kind, &logins).await? {
+        return Ok(Err(f));
+    }
+    let [login] = logins;
+    Ok(Ok(login))
 }
 
 async fn apply(

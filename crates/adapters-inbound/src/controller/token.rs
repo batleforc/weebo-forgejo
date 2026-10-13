@@ -1,12 +1,16 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use api::namespace_policy::NamespacedKind;
 use api::{ForgejoAccessToken, ForgejoRepository, ForgejoUser};
 use application::ports::{BoundInstance, ForgejoGateway, ForgejoRef, RefKind};
 use application::use_cases::admission::enforce_on;
-use application::use_cases::reconcile_token::{TokenInput, cleanup_token, reconcile_token};
+use application::use_cases::reconcile_token::{
+    TokenInput, cleanup_token, reconcile_token, revoke_denied, token_name,
+};
 use application::use_cases::refs::{resolve_identity_required, resolve_required};
 use application::use_cases::{Failure, Outcome};
+use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -21,6 +25,7 @@ use super::{
 use crate::metrics::record_reconcile;
 
 const KIND: &str = "ForgejoAccessToken";
+const KIND_POLICY: NamespacedKind = NamespacedKind::ForgejoAccessToken;
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
@@ -117,64 +122,138 @@ async fn apply(
 ) -> Result<Action, Error> {
     let current = api.get(&token.name_any()).await?;
     let started = Instant::now();
-    let owned = current_ref(&current);
-    let (name, ns) = (current.name_any(), current.namespace().unwrap_or_default());
 
-    let namespace = current.namespace().unwrap_or_default();
     let outcome = match super::instance_of(ctx, &current).await {
         Err(f) => Outcome::failed(current_ref(&current), f),
-        Ok(bound) => match enforce_on(
-            ctx.policies.as_ref(),
-            ctx.refs.as_ref(),
-            &namespace,
-            &current,
-            Some(&bound),
-        )
-        .await?
-        {
-            // Re-checked here too: a policy may have changed since admission.
-            Err(f) => Outcome::failed(current_ref(&current), f),
-            Ok(()) => match super::backends(ctx, &bound).await {
-                Err(f) => Outcome::failed(owned, f),
-                Ok((gateway, secrets)) => {
-                    match resolve_inputs(&current, &bound, gateway.as_ref(), ctx).await? {
-                        Ok((user, repositories)) => {
-                            let input = TokenInput {
-                                spec: &current.spec,
-                                cr_name: &name,
-                                namespace: &ns,
-                                user: user.name,
-                                user_id: Some(user.id),
-                                repositories,
-                                current: owned,
-                                owner_id: owner_id(&current.status),
-                                secret_pending: secret_pending(&current.status),
-                                rotate_nonce: rotate_nonce(&current.metadata),
-                                last_rotation: current
-                                    .status
-                                    .as_ref()
-                                    .and_then(|s| s.last_rotation.clone()),
-                                allow_disruptive_update: allows_disruptive_update(
-                                    &current.metadata,
-                                ),
-                                now: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs() as i64)
-                                    .unwrap_or_default(),
-                            };
-                            reconcile_token(input, gateway.as_ref(), secrets.as_ref()).await
-                        }
-                        Err(f) => Outcome::failed(owned, f),
-                    }
-                }
-            },
-        }
-        .on(bound),
+        Ok(bound) => issue(&current, &bound, ctx).await?.on(bound),
     };
 
     record_reconcile("ForgejoAccessToken", outcome.reason(), started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
+}
+
+async fn issue(
+    current: &ForgejoAccessToken,
+    bound: &BoundInstance,
+    ctx: &Ctx,
+) -> Result<Outcome, Error> {
+    let owned = current_ref(current);
+    let (name, ns) = (current.name_any(), current.namespace().unwrap_or_default());
+    // Re-checked here too: a policy may have changed since admission.
+    let admitted = enforce_on(
+        ctx.policies.as_ref(),
+        ctx.refs.as_ref(),
+        &ns,
+        current,
+        Some(bound),
+    )
+    .await?;
+    let (gateway, secrets) = match super::backends(ctx, bound).await {
+        Ok(b) => b,
+        Err(f) => return Ok(Outcome::failed(owned, admitted.err().unwrap_or(f))),
+    };
+    let stored_owner = owner_id(&current.status);
+    if let Err(f) = admitted {
+        // The token issued earlier may be a site admin's now (its user
+        // made one since): refused, it is revoked, not just left to live.
+        let revoke = match &owned {
+            Some(c) => !admin_allowed(ctx, bound, gateway.as_ref(), &ns, &c.name).await?,
+            None => false,
+        };
+        if revoke {
+            return Ok(revoked(gateway.as_ref(), owned, stored_owner, f).await);
+        }
+        return Ok(Outcome::failed(owned, f));
+    }
+    let (user, repositories) = match resolve_inputs(current, bound, gateway.as_ref(), ctx).await? {
+        Ok(resolved) => resolved,
+        Err(f) => return Ok(Outcome::failed(owned, f)),
+    };
+    // What the CRs say isn't all: the account may be a site admin in
+    // Forgejo whatever its CR declares.
+    let logins = [user.name.clone()];
+    match super::remote_admins(ctx, bound, gateway.as_ref(), &ns, KIND_POLICY, &logins).await? {
+        Ok(()) => {}
+        Err(f) if f.reason == ReasonCode::NamespaceNotAllowed => {
+            return Ok(revoked(gateway.as_ref(), owned, stored_owner, f).await);
+        }
+        Err(f) => return Ok(Outcome::failed(owned, f)),
+    }
+    // The unique claim (D8): token names are unique per user, so another
+    // CR issuing the same name for the same account would revoke this
+    // one's at each rotation — refused before the first issue.
+    if owned.is_none() {
+        let token = token_name(&current.spec, &ns, &name);
+        let me = format!("{KIND}/{ns}/{name}");
+        let claimants = ctx.refs.token_claimants(&user.name, &token, bound).await?;
+        if let Some(other) = claimants.iter().find(|c| **c != me) {
+            let f = Failure::new(
+                ReasonCode::RemoteObjectClaimed,
+                format!(
+                    "token {token:?} of user {:?} on this server is already issued by {other}: \
+                     set another spec.name",
+                    user.name
+                ),
+            );
+            return Ok(Outcome::failed(owned, f));
+        }
+    }
+    let input = TokenInput {
+        spec: &current.spec,
+        cr_name: &name,
+        namespace: &ns,
+        user: user.name,
+        user_id: Some(user.id),
+        repositories,
+        current: owned,
+        owner_id: stored_owner,
+        secret_pending: secret_pending(&current.status),
+        rotate_nonce: rotate_nonce(&current.metadata),
+        last_rotation: current
+            .status
+            .as_ref()
+            .and_then(|s| s.last_rotation.clone()),
+        allow_disruptive_update: allows_disruptive_update(&current.metadata),
+        now: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default(),
+    };
+    Ok(reconcile_token(input, gateway.as_ref(), secrets.as_ref()).await)
+}
+
+/// The token is revoked; its status forgets it once it's gone.
+async fn revoked(
+    gateway: &dyn ForgejoGateway,
+    owned: Option<ForgejoRef>,
+    owner_id: Option<i64>,
+    failure: Failure,
+) -> Outcome {
+    let had = owned.is_some();
+    match revoke_denied(gateway, owned, owner_id).await {
+        Some(kept) => Outcome::failed(Some(kept), failure),
+        None if had => Outcome::failed(None, failure).released(),
+        None => Outcome::failed(None, failure),
+    }
+}
+
+/// `false` only when Forgejo says `login` is a site admin the namespace
+/// isn't allowed to hold credentials of (an error or a local instance:
+/// `true`, nothing is revoked on a doubt).
+async fn admin_allowed(
+    ctx: &Ctx,
+    bound: &BoundInstance,
+    gateway: &dyn ForgejoGateway,
+    ns: &str,
+    login: &str,
+) -> Result<bool, Error> {
+    if login.is_empty() {
+        return Ok(true);
+    }
+    let logins = [login.to_string()];
+    let verdict = super::remote_admins(ctx, bound, gateway, ns, KIND_POLICY, &logins).await?;
+    Ok(!matches!(verdict, Err(f) if f.reason == ReasonCode::NamespaceNotAllowed))
 }
 
 async fn cleanup(token: &ForgejoAccessToken, ctx: &Ctx) -> Result<Action, Error> {

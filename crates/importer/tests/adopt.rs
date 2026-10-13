@@ -238,3 +238,80 @@ async fn imported_objects_are_adopted_without_writes() {
     let kept = repos.get("weebo-app").await.unwrap();
     assert_ne!(kept.status.unwrap().forgejo_id.as_deref(), Some("999"));
 }
+
+/// `--manage-users`: an adopted account is managed from then on, but its
+/// password stays the person's — never reset by the first reconcile nor
+/// by a later spec change.
+#[tokio::test]
+async fn managed_users_keep_their_password() {
+    use api::ForgejoUser;
+
+    let cluster = EnvTestCluster::start().await;
+    let client = cluster.client();
+    let forgejo = forgejo().await;
+    let options = ImportOptions {
+        manage_users: true,
+        ..Default::default()
+    };
+    let imported = manifests(
+        &import(forgejo.as_ref(), &options).await.unwrap(),
+        "default",
+    );
+    let summary = apply_all(&client, &imported).await;
+    assert_eq!(summary.failed, 0, "{summary:?}");
+
+    let ctx = Arc::new(Ctx {
+        client: client.clone(),
+        gateways: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
+        instances: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
+        secrets: Arc::new(StaticSecretStoreFactory::new(Arc::new(
+            kubernetes_secret_store(client.clone()),
+        ))),
+        refs: Arc::new(KubeClusterReader::new(client.clone())),
+        policies: Arc::new(KubeClusterReader::new(client.clone())),
+        recorder: Recorder::new(
+            client.clone(),
+            Reporter {
+                controller: "weebo-forgejo-test".into(),
+                instance: None,
+            },
+        ),
+        shutdown: Shutdown::never(),
+        health: Default::default(),
+        scope: weebo_kit_runtime::WatchScope::cluster(),
+    });
+    tokio::spawn(controller::user::run(client.clone(), ctx.clone()));
+
+    let users: Api<ForgejoUser> = Api::namespaced(client.clone(), "default");
+    let name = imported.users[0].metadata.name.clone().unwrap();
+    wait_ready(&users, &name, |u| u.status.as_ref()).await;
+    assert_eq!(
+        forgejo.user("alice").unwrap().password.as_deref(),
+        Some("pw")
+    );
+
+    users
+        .patch(
+            &name,
+            &PatchParams::default(),
+            &Patch::Merge(json!({"spec": {"fullName": "Alice"}})),
+        )
+        .await
+        .unwrap();
+    testkit::polling::wait_for(
+        &users,
+        &name,
+        Duration::from_secs(30),
+        Duration::from_millis(200),
+        |u| {
+            let s = u.status.as_ref()?;
+            (s.observed_generation == u.metadata.generation).then_some(())
+        },
+    )
+    .await;
+    assert_eq!(forgejo.user("alice").unwrap().remote.full_name, "Alice");
+    assert_eq!(
+        forgejo.user("alice").unwrap().password.as_deref(),
+        Some("pw")
+    );
+}

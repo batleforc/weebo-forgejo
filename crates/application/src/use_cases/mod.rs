@@ -88,6 +88,13 @@ pub struct Outcome {
     /// New `status.instance`: the instance the CR was resolved to. `None`
     /// leaves the recorded one (a refused resolution never erases it).
     pub instance: Option<BoundInstance>,
+    /// The Forgejo object the status recorded is gone (deleted by the
+    /// operator, e.g. a revoked token): its id is dropped from the status.
+    /// Only meaningful with `forgejo: None`.
+    pub released: bool,
+    /// New `status.passwordEmitted`: `Some(true)` once a user's generated
+    /// password was handed out, `Some(false)` once it was replaced.
+    pub password_emitted: Option<bool>,
 }
 
 impl Outcome {
@@ -102,6 +109,8 @@ impl Outcome {
             secret_pending: None,
             owner_id: None,
             instance: None,
+            released: false,
+            password_emitted: None,
         }
     }
 
@@ -116,7 +125,16 @@ impl Outcome {
             secret_pending: None,
             owner_id: None,
             instance: None,
+            released: false,
+            password_emitted: None,
         }
+    }
+
+    /// Drops the recorded Forgejo object from the status (see `released`).
+    pub fn released(mut self) -> Self {
+        self.forgejo = None;
+        self.released = true;
+        self
     }
 
     /// Records the instance the CR is bound to.

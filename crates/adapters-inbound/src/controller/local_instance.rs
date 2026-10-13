@@ -84,7 +84,7 @@ async fn apply(
 ) -> Result<Action, Error> {
     let started = Instant::now();
     let outcome = match ctx.gateways.gateway_for(&bound(&obj)).await {
-        Ok(gateway) => reconcile_instance(gateway.as_ref()).await,
+        Ok(gateway) => reconcile_instance(gateway.as_ref(), false).await,
         Err(e) => Outcome::failed(None, Failure::new(e.reason(), e.to_string())),
     };
 

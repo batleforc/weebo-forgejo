@@ -3,7 +3,8 @@
 //! change of title, key or access deletes and recreates. Without a
 //! `publicKey`, an ed25519 pair is generated and its private half written
 //! to `secretTargets`; a missing target or a new rotation nonce generates
-//! a fresh pair (a private key can't be read back).
+//! a fresh pair (a private key can't be read back), added before the old
+//! key is deleted (the title alternates with `<title>-next`).
 
 use std::collections::BTreeMap;
 
@@ -114,9 +115,19 @@ pub async fn reconcile_key(
         },
     };
 
+    // A renewed pair alternates between the title and its rotated one.
     let up_to_date = remote.as_ref().is_some_and(|r| {
-        same_key(&r.key, &wanted_key) && r.title == input.title && r.read_only == input.read_only
+        same_key(&r.key, &wanted_key)
+            && (r.title == input.title || r.title == rotated_title(&input.title))
+            && r.read_only == input.read_only
     });
+    // A generated pair renewed while the old key exists: the new key is
+    // added first (under the title the old one doesn't use), written to
+    // every target, and only then is the old one deleted — consumers never
+    // hold a key Forgejo already refuses.
+    if !up_to_date && let (Some(old), Some((private, public))) = (&remote, &new_pair) {
+        return rotate(&input, old, private, public, gateway, secrets).await;
+    }
     let current = if up_to_date {
         input.current.clone()
     } else {
@@ -155,6 +166,69 @@ pub async fn reconcile_key(
         outcome.secret_pending = Some(false);
         outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
     }
+    outcome
+}
+
+/// The title a renewed key is added under while `title` is still taken
+/// by the key it replaces.
+pub fn rotated_title(title: &str) -> String {
+    format!("{title}-next")
+}
+
+async fn rotate(
+    input: &KeyInput<'_>,
+    old: &RemoteKey,
+    private: &str,
+    public: &str,
+    gateway: &dyn ForgejoGateway,
+    secrets: &dyn SecretStore,
+) -> Outcome {
+    let title = if old.title == input.title {
+        rotated_title(&input.title)
+    } else {
+        input.title.clone()
+    };
+    let added = match &input.owner {
+        KeyOwner::Repository(repo) => {
+            gateway
+                .create_deploy_key(repo, &title, public, input.read_only)
+                .await
+        }
+        KeyOwner::User(user) => gateway.create_user_key(user, &title, public).await,
+    };
+    let added = match added {
+        Ok(added) => added,
+        Err(e) => return Outcome::failed(input.current.clone(), e),
+    };
+    let data = BTreeMap::from([
+        ("ssh-privatekey".to_string(), private.to_string()),
+        ("ssh-publickey".to_string(), public.to_string()),
+    ]);
+    let targets = &input.source.secret_targets;
+    if let Err(f) = emit::write_all(targets, &input.secret_owner, &data, secrets).await {
+        // Keep the old key (consumers may still hold it); the new one's
+        // private half is lost: delete it, renew next time.
+        if let Err(e) = gone_ok(delete(&input.owner, added.id, gateway).await) {
+            tracing::error!(error = %e, key = added.id, "deleting an unused renewed key failed: delete it by hand");
+        }
+        let mut failed = Outcome::failed(input.current.clone(), f);
+        failed.secret_pending = Some(true);
+        return failed;
+    }
+    let mut outcome = Outcome::synced(Some(added), "key renewed");
+    // Every target holds the new key: the old one goes.
+    if let Err(e) = gone_ok(delete(&input.owner, old.id, gateway).await) {
+        let failure = Failure::from(e);
+        let message = format!(
+            "the renewed key is in place, but deleting the replaced key {} failed: it is \
+             still accepted, delete it by hand: {}",
+            old.id, failure.message
+        );
+        tracing::error!(key = old.id, "{message}");
+        outcome = Outcome::failed(outcome.forgejo, Failure::new(failure.reason, message));
+    }
+    outcome.secret_pending = Some(false);
+    outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
     outcome
 }
 
@@ -600,5 +674,62 @@ mod tests {
         let outcome = reconcile_key(input(&source, None), &fj, &secrets).await;
         assert_eq!(outcome.reason(), ReasonCode::CrossNamespaceReference);
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+    }
+
+    /// A renewed pair is added before the old key goes, and the old key
+    /// stays when the new one can't be handed out.
+    #[tokio::test]
+    async fn a_renewed_pair_is_added_before_the_old_key_goes() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        fj.insert_user("ci-bot");
+        let source = KeySource {
+            public_key: None,
+            secret_targets: vec![api::common::SecretTarget {
+                backend: Default::default(),
+                name: "ssh".into(),
+                namespace: None,
+                path: None,
+            }],
+        };
+        let input = |current, nonce: Option<&str>| KeyInput {
+            owner: KeyOwner::User("ci-bot".into()),
+            title: "ci".into(),
+            read_only: false,
+            source: &source,
+            secret_owner: SecretOwner::namespaced("ForgejoUserKey", "team-a", "k"),
+            current,
+            created_on: None,
+            rotate_nonce: nonce.map(String::from),
+            last_rotation: None,
+            secret_pending: false,
+        };
+        let first = reconcile_key(input(None, None), &fj, &secrets).await;
+        let old = first.forgejo.clone().unwrap();
+        let private = secrets.get("team-a/ssh").unwrap()["ssh-privatekey"].clone();
+
+        // The write fails: the old key and its secret stay.
+        secrets.fail_writes(true);
+        let failed = reconcile_key(input(Some(old.clone()), Some("1")), &fj, &secrets).await;
+        assert_eq!(failed.secret_pending, Some(true));
+        assert_eq!(failed.forgejo, Some(old.clone()));
+        assert!(fj.get_user_key("ci-bot", old.id).await.unwrap().is_some());
+        secrets.fail_writes(false);
+
+        fj.clear_calls();
+        let renewed = reconcile_key(input(Some(old.clone()), Some("1")), &fj, &secrets).await;
+        assert!(renewed.ready.is_ok(), "{renewed:?}");
+        let new = renewed.forgejo.unwrap();
+        assert_ne!(new.id, old.id);
+        let calls = fj.calls();
+        let added = calls.iter().position(|c| c.starts_with("create_user_key"));
+        let deleted = calls.iter().position(|c| c.starts_with("delete_user_key"));
+        assert!(added.is_some() && added < deleted, "{calls:?}");
+        assert!(fj.get_user_key("ci-bot", old.id).await.unwrap().is_none());
+        let key = fj.get_user_key("ci-bot", new.id).await.unwrap().unwrap();
+        assert_eq!(key.title, "ci-next");
+        assert_ne!(
+            secrets.get("team-a/ssh").unwrap()["ssh-privatekey"],
+            private
+        );
     }
 }

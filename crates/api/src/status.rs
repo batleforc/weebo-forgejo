@@ -1,5 +1,5 @@
-//! Kubernetes-side mirror of `domain::status`. Shared by every CRD's
-//! `#[kube(status = "ForgejoStatus")]`. See `.prompt/plan.md`,
+//! The status shared by every CRD's `#[kube(status = "ForgejoStatus")]`
+//! (its conditions are the kit's). See `.prompt/plan.md`,
 //! "Modèle de status commun".
 
 use schemars::JsonSchema;
@@ -39,6 +39,12 @@ pub struct ForgejoStatus {
     /// so the next reconcile issues a new one instead of trusting them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_pending: Option<bool>,
+    /// A `ForgejoUser`'s generated password was handed out to its
+    /// `secretTargets`: turning it into a bot (or an external account) then
+    /// replaces the password, so the one handed out stops working. Never
+    /// set on an adopted account: its password isn't the operator's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_emitted: Option<bool>,
     /// Forgejo id of the account owning the object (an access token's
     /// user, an OAuth2 application's owner), so a renamed owner isn't
     /// mistaken for a different one.

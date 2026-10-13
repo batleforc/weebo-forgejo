@@ -48,7 +48,7 @@
       ]
     },
     "name": {
-      "description": "Token name, unique per user. Defaults to `<namespace>-<cr name>`.",
+      "description": "Token name, unique per user. Defaults to `<namespace>-<cr name>`.\nA token of that name the user already has, or another CR issues, is\nnever revoked: the CR fails (`ForgejoObjectAlreadyExists`,\n`RemoteObjectClaimed`). Rotation alternates with `<name>-next`.",
       "nullable": true,
       "type": "string"
     },

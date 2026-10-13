@@ -574,3 +574,19 @@ async fn user_login_searches_by_id() {
     assert_eq!(gw.user_login(7).await.unwrap().as_deref(), Some("alicia"));
     assert_eq!(gw.user_login(8).await.unwrap(), None, "account gone");
 }
+
+#[tokio::test]
+async fn token_user_reads_the_authenticated_account() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .and(header("Authorization", "token s3cr3t"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"id": 1, "login": "root", "is_admin": true})),
+        )
+        .mount(&server)
+        .await;
+    let user = gateway(&server).token_user().await.unwrap();
+    assert_eq!((user.login.as_str(), user.admin), ("root", true));
+}

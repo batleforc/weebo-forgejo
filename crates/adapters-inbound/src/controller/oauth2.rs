@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use api::namespace_policy::NamespacedKind;
 use api::{ForgejoOAuth2Application, ForgejoUser};
 use application::ports::{BoundInstance, ForgejoGateway, ForgejoRef, RefKind};
 use application::use_cases::admission::enforce_on;
@@ -118,23 +119,36 @@ async fn apply(
                     .await?
                 {
                     Ok(owner) => {
-                        let input = OAuth2Input {
-                            spec: &current.spec,
-                            cr_name: &name,
-                            namespace: &ns,
-                            owner_id: owner.as_ref().map(|o| o.id),
-                            owner: owner.map(|o| o.name),
-                            current: owned,
-                            current_owner_id: owner_id(&current.status),
-                            secret_pending: secret_pending(&current.status),
-                            rotate_nonce: rotate_nonce(&current.metadata),
-                            last_rotation: current
-                                .status
-                                .as_ref()
-                                .and_then(|s| s.last_rotation.clone()),
-                            allow_disruptive_update: allows_disruptive_update(&current.metadata),
-                        };
-                        reconcile_oauth2(input, gateway.as_ref(), secrets.as_ref()).await
+                        // The owner may be a site admin in Forgejo whatever
+                        // its CR declares (no owner: the admin account,
+                        // already checked).
+                        let logins: Vec<String> = owner.iter().map(|o| o.name.clone()).collect();
+                        let kind = NamespacedKind::ForgejoOAuth2Application;
+                        let gw = gateway.as_ref();
+                        match super::remote_admins(ctx, &bound, gw, &ns, kind, &logins).await? {
+                            Err(f) => Outcome::failed(owned, f),
+                            Ok(()) => {
+                                let input = OAuth2Input {
+                                    spec: &current.spec,
+                                    cr_name: &name,
+                                    namespace: &ns,
+                                    owner_id: owner.as_ref().map(|o| o.id),
+                                    owner: owner.map(|o| o.name),
+                                    current: owned,
+                                    current_owner_id: owner_id(&current.status),
+                                    secret_pending: secret_pending(&current.status),
+                                    rotate_nonce: rotate_nonce(&current.metadata),
+                                    last_rotation: current
+                                        .status
+                                        .as_ref()
+                                        .and_then(|s| s.last_rotation.clone()),
+                                    allow_disruptive_update: allows_disruptive_update(
+                                        &current.metadata,
+                                    ),
+                                };
+                                reconcile_oauth2(input, gateway.as_ref(), secrets.as_ref()).await
+                            }
+                        }
                     }
                     Err(f) => Outcome::failed(owned, f),
                 },

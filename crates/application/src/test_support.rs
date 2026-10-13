@@ -78,6 +78,11 @@ struct State {
     /// Unix seconds stamped on new tokens.
     clock: i64,
     failures: VecDeque<GatewayError>,
+    /// `(prefix, error)`: the next mutating call starting with `prefix`
+    /// fails, whatever comes before it.
+    failing_call: Option<(String, GatewayError)>,
+    /// The instance token belongs to a non-admin account.
+    token_not_admin: bool,
     calls: Vec<String>,
 }
 
@@ -105,6 +110,17 @@ impl FakeForgejo {
     /// The next gateway call fails with `err` (queued, one per call).
     pub fn fail_next(&self, err: GatewayError) {
         self.state.lock().unwrap().failures.push_back(err);
+    }
+
+    /// Whether the instance token is a site admin's (it is by default).
+    pub fn set_token_admin(&self, admin: bool) {
+        self.state.lock().unwrap().token_not_admin = !admin;
+    }
+
+    /// The next mutating call starting with `prefix` (e.g.
+    /// `"delete_access_token"`) fails with `err`.
+    pub fn fail_call(&self, prefix: &str, err: GatewayError) {
+        self.state.lock().unwrap().failing_call = Some((prefix.to_string(), err));
     }
 
     /// Every mutating call so far, e.g. `"edit_user alice"`.
@@ -237,6 +253,12 @@ impl FakeForgejo {
         id
     }
 
+    /// Makes `login` a site admin (or not), as an admin would by hand.
+    pub fn set_admin(&self, login: &str, admin: bool) {
+        let mut s = self.state.lock().unwrap();
+        s.users.get_mut(login).unwrap().remote.admin = admin;
+    }
+
     pub fn insert_team_member(&self, team: i64, login: &str) {
         let mut s = self.state.lock().unwrap();
         s.teams
@@ -261,6 +283,13 @@ impl FakeForgejo {
         let mut s = self.state.lock().unwrap();
         if let Some(err) = s.failures.pop_front() {
             return Err(err);
+        }
+        if let Some(call) = &call
+            && s.failing_call
+                .as_ref()
+                .is_some_and(|(p, _)| call.starts_with(p.as_str()))
+        {
+            return Err(s.failing_call.take().unwrap().1);
         }
         if let Some(call) = call {
             s.calls.push(call);
@@ -434,6 +463,17 @@ impl ForgejoGateway for FakeForgejo {
 
     fn web_url(&self) -> &str {
         "https://git.example.com"
+    }
+
+    async fn token_user(&self) -> Result<RemoteUser, GatewayError> {
+        let s = self.begin(None)?;
+        Ok(RemoteUser {
+            id: 1,
+            login: "admin".into(),
+            admin: !s.token_not_admin,
+            active: true,
+            ..Default::default()
+        })
     }
 
     async fn get_user(&self, username: &str) -> Result<Option<RemoteUser>, GatewayError> {
@@ -1388,6 +1428,16 @@ impl ReferenceReader for FakeCluster {
         &self,
         _kind: RefKind,
         _forgejo_name: &str,
+        _instance: &crate::ports::BoundInstance,
+    ) -> Result<Vec<String>, ClusterError> {
+        self.check()?;
+        Ok(self.claimants.lock().unwrap().clone())
+    }
+
+    async fn token_claimants(
+        &self,
+        _user: &str,
+        _token_name: &str,
         _instance: &crate::ports::BoundInstance,
     ) -> Result<Vec<String>, ClusterError> {
         self.check()?;

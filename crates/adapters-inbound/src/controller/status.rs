@@ -67,6 +67,11 @@ pub fn secret_pending(status: &Option<ForgejoStatus>) -> bool {
     status.as_ref().and_then(|s| s.secret_pending) == Some(true)
 }
 
+/// `status.passwordEmitted`: a user's generated password was handed out.
+pub fn password_emitted(status: &Option<ForgejoStatus>) -> bool {
+    status.as_ref().and_then(|s| s.password_emitted) == Some(true)
+}
+
 /// `status.ownerId`, the Forgejo id of the owning account.
 pub fn owner_id(status: &Option<ForgejoStatus>) -> Option<i64> {
     status.as_ref()?.owner_id.as_deref()?.parse().ok()
@@ -102,7 +107,8 @@ pub fn conditions(
 /// Patches the outcome onto `obj` (freshly read from the API server) and
 /// emits its Events (see the module doc). `observedGeneration`
 /// only advances on success. A failed outcome
-/// without a `forgejo` ref keeps whatever id the status already had.
+/// without a `forgejo` ref keeps whatever id the status already had,
+/// unless it `released` it.
 pub async fn publish<K>(
     api: &Api<K>,
     recorder: &Recorder,
@@ -129,6 +135,11 @@ where
                 .map_or(serde_json::Value::Null, |id| id.to_string().into()),
         );
     }
+    if outcome.forgejo.is_none() && outcome.released {
+        for field in ["forgejoId", "forgejoName", "ownerId"] {
+            fields.insert(field.into(), serde_json::Value::Null);
+        }
+    }
     if let Some(instance) = &outcome.instance {
         let instance = serde_json::to_value(instance).expect("a BoundInstance serializes");
         fields.insert("instance".into(), instance);
@@ -149,6 +160,14 @@ where
                 serde_json::Value::Null
             },
         );
+    }
+    if let Some(emitted) = outcome.password_emitted {
+        let value = if emitted {
+            true.into()
+        } else {
+            serde_json::Value::Null
+        };
+        fields.insert("passwordEmitted".into(), value);
     }
     let published = weebo_kit_runtime::status::publish(
         api,

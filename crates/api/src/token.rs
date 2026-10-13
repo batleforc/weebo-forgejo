@@ -38,6 +38,9 @@ pub struct ForgejoAccessTokenSpec {
     /// The user the token belongs to.
     pub user_ref: IdentityRef,
     /// Token name, unique per user. Defaults to `<namespace>-<cr name>`.
+    /// A token of that name the user already has, or another CR issues, is
+    /// never revoked: the CR fails (`ForgejoObjectAlreadyExists`,
+    /// `RemoteObjectClaimed`). Rotation alternates with `<name>-next`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// `all`, or `read:`/`write:` + `activitypub`, `admin`, `issue`,

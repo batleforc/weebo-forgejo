@@ -371,6 +371,8 @@ pub trait ForgejoGateway: Send + Sync {
     fn web_url(&self) -> &str;
 
     /// `Ok(None)` when no user has that login.
+    /// The account the instance token belongs to (`GET /user`).
+    async fn token_user(&self) -> Result<RemoteUser, GatewayError>;
     async fn get_user(&self, username: &str) -> Result<Option<RemoteUser>, GatewayError>;
     /// Current login of the user with that Forgejo id; `Ok(None)` when
     /// the account is gone.
@@ -697,8 +699,9 @@ pub struct ReferencedCr {
     pub spec_name: Option<String>,
     /// A team's organization, by its Forgejo name (`None` while unknown).
     pub organization: Option<String>,
-    /// A user's `spec.admin`: credentials minted for it are site-admin
-    /// credentials.
+    /// A user's `spec.admin`, or its `managementPolicy: Observe` (the
+    /// account's flags aren't known): credentials minted for it are
+    /// site-admin credentials.
     pub admin: bool,
 }
 
@@ -735,6 +738,16 @@ pub trait ReferenceReader: Send + Sync {
         &self,
         kind: RefKind,
         forgejo_name: &str,
+        instance: &BoundInstance,
+    ) -> Result<Vec<String>, ClusterError>;
+    /// The `ForgejoAccessToken` CRs (`Kind/namespace/name`) issuing a
+    /// token named `token_name` — or its rotated name — for the account
+    /// `user` on the server `instance` points at (token names are unique
+    /// per user only).
+    async fn token_claimants(
+        &self,
+        user: &str,
+        token_name: &str,
         instance: &BoundInstance,
     ) -> Result<Vec<String>, ClusterError>;
     /// One key of a `Secret` in `namespace`. `Ok(None)` when the Secret or

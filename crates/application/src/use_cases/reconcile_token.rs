@@ -227,7 +227,11 @@ async fn issue(
     let old_user = previous.clone().unwrap_or_else(|| input.user.clone());
     let base = desired.name.clone();
     desired.name = next_name(&base, remote.as_ref().map(|r| r.name.as_str()));
-    let (token, value) = match create_token(gateway, &input.user, &desired, remote.as_ref()).await {
+    // A same-name token is one of ours only under a derived name, or when
+    // an earlier issue left one it couldn't revoke (`secretPending`).
+    let ours = spec.name.is_none() || input.secret_pending;
+    let created = create_token(gateway, &input.user, &desired, remote.as_ref(), ours);
+    let (token, value) = match created.await {
         Ok(t) => t,
         Err(e) => return Outcome::failed(input.current.clone(), e),
     };
@@ -241,28 +245,32 @@ async fn issue(
         ("FORGEJO_URL".to_string(), gateway.web_url().to_string()),
     ]);
     if let Err(f) = emit::write_all(&targets, &owner, &data, secrets).await {
-        // Keep the old token (consumers may still hold it) and revoke the
-        // new one, whose value is lost: the next reconcile issues again
-        // under the then free name, whether the targets exist or not.
-        let mut outcome = match gone_ok(gateway.delete_access_token(&input.user, token.id).await) {
-            Ok(()) => Outcome::failed(input.current.clone(), f),
-            // Can't revoke it: track it so it's the one replaced next time.
-            Err(_) => Outcome::failed(Some(issued), f),
-        };
+        // Keep the old token (consumers may still hold it, and its id is
+        // what revokes it later) and revoke the new one, whose value is
+        // lost: the next reconcile issues again, whether the targets exist
+        // or not. Can't revoke it either: it holds the next token's name,
+        // and `secretPending` lets the next issue revoke it by that name.
+        if let Err(e) = gone_ok(gateway.delete_access_token(&input.user, token.id).await) {
+            tracing::warn!(error = %e, token = token.id, "revoking an undelivered token failed");
+        }
+        let mut outcome = Outcome::failed(input.current.clone(), f);
         outcome.secret_pending = Some(true);
         return outcome;
     }
     // Every target holds the new token: revoke the old one. A failure
-    // leaves it to expire or to the next rotation — never block on it.
+    // leaves it under the name the next token takes: `secretPending`
+    // renews at the next reconcile, which revokes it by that name.
+    let mut revoked = true;
     if let Some(c) = &input.current
         && c.id != token.id
         && let Err(e) = gone_ok(gateway.delete_access_token(&old_user, c.id).await)
     {
         tracing::warn!(error = %e, token = c.id, "revoking the replaced token failed");
+        revoked = false;
     }
     let current = Some(issued);
     let mut outcome = Outcome::synced(current, "token issued");
-    outcome.secret_pending = Some(false);
+    outcome.secret_pending = Some(!revoked);
     outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
     outcome.due_in = spec
         .rotation_period
@@ -299,17 +307,57 @@ pub async fn cleanup_token(
     emit::delete_all(&targets, &owner, secrets).await
 }
 
+/// The site-admin rule now refuses this token (its user is a site admin
+/// the namespace isn't allowed to mint credentials for): the token issued
+/// earlier is revoked — refusing to renew it would leave it live. Returns
+/// what `status.forgejoId` should keep: `None` once revoked (or its user
+/// gone), the token still when the revocation failed (retried next time).
+pub async fn revoke_denied(
+    gateway: &dyn ForgejoGateway,
+    current: Option<ForgejoRef>,
+    owner_id: Option<i64>,
+) -> Option<ForgejoRef> {
+    let c = current?;
+    let revoked = match owner_login_now(gateway, &c.name, owner_id).await {
+        Ok(Some(user)) => gone_ok(gateway.delete_access_token(&user, c.id).await),
+        Ok(None) => Ok(()),
+        Err(e) => Err(e),
+    };
+    match revoked {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, token = c.id, "revoking a denied site-admin token failed");
+            Some(c)
+        }
+    }
+}
+
 /// Issues `desired`. A token already holding its name that isn't the one
-/// being replaced is ours from an earlier attempt whose response was lost
-/// (the name is derived from the CR): revoked, then issued again.
+/// being replaced is ours (`ours`) when the name is derived from the CR or
+/// an earlier issue of this CR left one behind (a lost response, a failed
+/// revocation): revoked, then issued again. Otherwise — an explicit
+/// `spec.name` — it may be anyone's (a person's own token, another CR's):
+/// never revoked, `ForgejoObjectAlreadyExists`.
 async fn create_token(
     gateway: &dyn ForgejoGateway,
     user: &str,
     desired: &DesiredToken,
     replacing: Option<&RemoteToken>,
+    ours: bool,
 ) -> Result<(ForgejoRef, String), Failure> {
     match gateway.create_access_token(user, desired).await {
         Err(e) if e.reason() == ReasonCode::ForgejoObjectAlreadyExists => {
+            if !ours {
+                return Err(Failure::new(
+                    ReasonCode::ForgejoObjectAlreadyExists,
+                    format!(
+                        "user {user:?} already has a token named {:?} this CR didn't issue: \
+                         it is never revoked for you — pick another spec.name, or delete that \
+                         token in Forgejo",
+                        desired.name
+                    ),
+                ));
+            }
             let stale = gateway
                 .list_access_tokens(user)
                 .await?
@@ -675,5 +723,108 @@ mod tests {
         let outcome = reconcile_token(input(&s, None, 0), &fj, &secrets).await;
         assert_eq!(outcome.reason(), ReasonCode::InvalidSpec);
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+    }
+
+    /// An explicit `spec.name` already used by someone else's token: that
+    /// token is never revoked. A derived name is ours: a leftover from a
+    /// lost response is replaced.
+    #[tokio::test]
+    async fn a_foreign_token_of_the_same_name_is_never_revoked() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let theirs = |name: &str| DesiredToken {
+            name: name.into(),
+            scopes: vec!["read:user".into()],
+            repositories: vec![],
+        };
+        let personal = fj
+            .create_access_token("ci-bot", &theirs("ci"))
+            .await
+            .unwrap()
+            .0;
+        let mut s = spec();
+        s.name = Some("ci".into());
+        let outcome = reconcile_token(input(&s, None, 0), &fj, &secrets).await;
+        assert_eq!(outcome.reason(), ReasonCode::ForgejoObjectAlreadyExists);
+        assert!(fj.token(personal.id).is_some(), "still live");
+
+        let leftover = fj
+            .create_access_token("ci-bot", &theirs("team-a-ci"))
+            .await
+            .unwrap()
+            .0;
+        let issued = reconcile_token(input(&spec(), None, 0), &fj, &secrets).await;
+        assert!(issued.ready.is_ok(), "{issued:?}");
+        assert!(fj.token(leftover.id).is_none(), "ours, replaced");
+    }
+
+    /// A replaced token that can't be revoked isn't forgotten: the next
+    /// reconcile renews and revokes it by name — even under an explicit
+    /// `spec.name`.
+    #[tokio::test]
+    async fn an_unrevoked_token_is_revoked_by_the_next_issue() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let mut s = spec();
+        s.name = Some("ci".into());
+        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        let mut rotate = input(&s, Some(first.clone()), 0);
+        rotate.rotate_nonce = Some("r1".into());
+        fj.fail_call(
+            "delete_access_token",
+            crate::ports::GatewayError::Unreachable("down".into()),
+        );
+        let second = reconcile_token(rotate, &fj, &secrets).await;
+        assert_eq!(second.secret_pending, Some(true), "{second:?}");
+        assert!(fj.token(first.id).is_some(), "not revoked yet");
+        let second = second.forgejo.unwrap();
+
+        let mut again = input(&s, Some(second.clone()), 0);
+        again.secret_pending = true;
+        again.last_rotation = Some("r1".into());
+        again.rotate_nonce = Some("r1".into());
+        let third = reconcile_token(again, &fj, &secrets).await;
+        assert!(third.ready.is_ok(), "{third:?}");
+        assert_eq!(third.secret_pending, Some(false));
+        assert!(fj.token(first.id).is_none(), "revoked by name");
+        assert!(fj.token(second.id).is_none(), "replaced");
+    }
+
+    /// The new token's write fails and so does its revocation: the status
+    /// keeps the old token (its id still revokes it).
+    #[tokio::test]
+    async fn an_undelivered_token_never_takes_the_old_ones_place() {
+        let (fj, secrets) = (forgejo(), FakeSecretStore::default());
+        let mut s = spec();
+        s.secret_targets = vec![api::common::SecretTarget {
+            backend: Default::default(),
+            name: "ci".into(),
+            namespace: None,
+            path: None,
+        }];
+        let first = reconcile_token(input(&s, None, 0), &fj, &secrets)
+            .await
+            .forgejo
+            .unwrap();
+        secrets.fail_writes(true);
+        fj.fail_call(
+            "delete_access_token",
+            crate::ports::GatewayError::Unreachable("down".into()),
+        );
+        let mut rotate = input(&s, Some(first.clone()), 0);
+        rotate.rotate_nonce = Some("r1".into());
+        let failed = reconcile_token(rotate, &fj, &secrets).await;
+        assert_eq!(failed.forgejo, Some(first.clone()));
+        assert_eq!(failed.secret_pending, Some(true));
+        secrets.fail_writes(false);
+
+        let mut again = input(&s, Some(first.clone()), 0);
+        again.secret_pending = true;
+        let renewed = reconcile_token(again, &fj, &secrets).await;
+        assert!(renewed.ready.is_ok(), "{renewed:?}");
+        assert!(fj.token(first.id).is_none(), "the old one revoked");
+        let live = fj.list_access_tokens("ci-bot").await.unwrap();
+        assert_eq!(live.len(), 1, "{live:?}");
     }
 }

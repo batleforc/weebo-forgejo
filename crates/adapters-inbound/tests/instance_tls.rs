@@ -20,7 +20,7 @@ use serde_json::json;
 use support::{condition, wait_for};
 use testkit::envtest::EnvTestCluster;
 
-/// `GET /api/v1/version` over TLS with a fresh self-signed certificate;
+/// `GET /api/v1/version` and `/api/v1/user` (a site admin) over TLS with a fresh self-signed certificate;
 /// returns the URL and the certificate's PEM.
 async fn https_forgejo() -> (String, String) {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -32,10 +32,15 @@ async fn https_forgejo() -> (String, String) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let app = axum::Router::new().route(
-        "/api/v1/version",
-        get(|| async { Json(json!({"version": "16.0.5"})) }),
-    );
+    let app = axum::Router::new()
+        .route(
+            "/api/v1/version",
+            get(|| async { Json(json!({"version": "16.0.5"})) }),
+        )
+        .route(
+            "/api/v1/user",
+            get(|| async { Json(json!({"id": 1, "login": "root", "is_admin": true})) }),
+        );
     tokio::spawn(async move {
         axum_server::from_tcp_rustls(listener, tls)
             .unwrap()

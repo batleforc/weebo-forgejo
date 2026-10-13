@@ -25,7 +25,7 @@ use application::ports::{
     BoundInstance, ClusterError, GatewayFactory, InstanceDirectory, PolicySource, ReferenceReader,
     SecretStoreFactory,
 };
-use application::use_cases::{Failure, Outcome, instance_failure};
+use application::use_cases::{Failure, Outcome, admission, instance_failure};
 use domain::error::ReasonCode;
 use kube::Client;
 use kube::api::{Api, Patch, PatchParams};
@@ -275,6 +275,26 @@ pub enum Error {
         api::FORCE_ORPHAN_ANNOTATION
     )]
     Cleanup(application::use_cases::Failure),
+}
+
+/// The site-admin rule on what Forgejo says
+/// (`admission::enforce_remote_admins`): `logins`, the users whose
+/// credentials a `kind` CR mints, against the policies — for a CR whose
+/// instance they govern only.
+pub async fn remote_admins(
+    ctx: &Ctx,
+    instance: &BoundInstance,
+    gateway: &dyn application::ports::ForgejoGateway,
+    namespace: &str,
+    kind: api::namespace_policy::NamespacedKind,
+    logins: &[String],
+) -> Result<Result<(), Failure>, Error> {
+    if !instance.governed_by_policy() {
+        return Ok(Ok(()));
+    }
+    let policies = ctx.policies.as_ref();
+    let check = admission::enforce_remote_admins(policies, gateway, namespace, kind, logins);
+    Ok(check.await?)
 }
 
 /// The gateway and secret store of a CR's instance, for kinds that emit
