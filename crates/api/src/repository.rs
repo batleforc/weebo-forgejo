@@ -206,6 +206,7 @@ pub struct MigrateSource {
     #[serde(default)]
     pub milestones: bool,
     /// Credentials for the remote, from a `Secret` in this namespace.
+    /// The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_secret_ref: Option<MigrateAuth>,
 }

@@ -267,7 +267,9 @@ spec:
                 nullable: true
                 properties:
                   authSecretRef:
-                    description: Credentials for the remote, from a `Secret` in this namespace.
+                    description: |-
+                      Credentials for the remote, from a `Secret` in this namespace.
+                      The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`.
                     nullable: true
                     properties:
                       name:

@@ -189,6 +189,19 @@ kubectl get forgejolocalinstances -A \
 `ForgejoInstance` (cluster-scoped, created by cluster admins) needs no
 label.
 
+Likewise, the Secrets a CR hands to Forgejo — `migrate.authSecretRef` of a
+`ForgejoRepository`, `secretRef` and `authorizationHeaderSecretRef` of a
+`ForgejoWebhook` — must carry `forgejo.weebo.io/credential: "true"`
+(`SecretNotAllowed` otherwise; webhooks re-read theirs on every reconcile):
+
+```bash
+kubectl get forgejowebhooks -A -o json | jq -r '.items[] | .metadata.namespace as $ns |
+  (.spec.secretRef.name, .spec.authorizationHeaderSecretRef.name) // empty | "\($ns) \(.)"' |
+  sort -u | while read -r ns secret; do
+    kubectl -n "$ns" label secret "$secret" forgejo.weebo.io/credential=true --overwrite
+  done
+```
+
 ### Upgrading from chart 0.1.0
 
 Chart 0.1.0 installed the CRDs from `crds/`, outside the Helm release.

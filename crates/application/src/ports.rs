@@ -662,6 +662,17 @@ pub use weebo_kit_application::ports::{
 /// controller rather than surfaced as a `Ready` reason. The kit's.
 pub use weebo_kit_application::ports::ClusterError;
 
+/// What [`ReferenceReader::secret_key`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretKey {
+    /// No such `Secret`, or no such key in it.
+    Missing,
+    /// The `Secret` exists but isn't labelled
+    /// `forgejo.weebo.io/credential: "true"`: its content wasn't read.
+    NotLabelled,
+    Value(Vec<u8>),
+}
+
 /// The kinds a `*Ref` field can point at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
@@ -754,14 +765,15 @@ pub trait ReferenceReader: Send + Sync {
         token_name: &str,
         instance: &BoundInstance,
     ) -> Result<Vec<String>, ClusterError>;
-    /// One key of a `Secret` in `namespace`. `Ok(None)` when the Secret or
-    /// the key is missing.
+    /// One key of a `Secret` in `namespace` that a CR hands to Forgejo as a
+    /// credential: only read from a `Secret` labelled
+    /// `forgejo.weebo.io/credential: "true"`.
     async fn secret_key(
         &self,
         namespace: &str,
         name: &str,
         key: &str,
-    ) -> Result<Option<Vec<u8>>, ClusterError>;
+    ) -> Result<SecretKey, ClusterError>;
 }
 
 /// The `spec.rules` of every `ForgejoNamespacePolicy`, one entry per

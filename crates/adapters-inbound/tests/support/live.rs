@@ -68,12 +68,15 @@ impl Live {
             .unwrap_or_else(|e| panic!("create failed: {e}"))
     }
 
-    /// A `Secret` with one key in the test namespace.
+    /// A `Secret` with one key in the test namespace, labelled for the CRs
+    /// that hand it to Forgejo (`forgejo.weebo.io/credential`).
     pub async fn secret(&self, name: &str, key: &str, value: &str) {
         let secrets: Api<Secret> = self.api();
         self.create(
             &secrets,
-            json!({"metadata": {"name": name}, "stringData": {key: value}}),
+            json!({"metadata": {"name": name,
+                                "labels": {"forgejo.weebo.io/credential": "true"}},
+                   "stringData": {key: value}}),
         )
         .await;
     }

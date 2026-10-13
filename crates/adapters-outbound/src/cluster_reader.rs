@@ -18,15 +18,13 @@ use api::{
     ForgejoRepository, ForgejoTeam, ForgejoUser,
 };
 use application::ports::{
-    ClusterError, ForgejoRef, PolicySource, RefKind, ReferenceReader, ReferencedCr,
+    ClusterError, ForgejoRef, PolicySource, RefKind, ReferenceReader, ReferencedCr, SecretKey,
 };
-use k8s_openapi::api::core::v1::Namespace;
+use k8s_openapi::api::core::v1::{Namespace, Secret};
 use kube::api::ListParams;
 use kube::core::{Selector, SelectorExt};
 use kube::{Api, Client, Resource};
 use serde::de::DeserializeOwned;
-
-use weebo_kit_adapters::read_secret_key;
 
 pub struct KubeClusterReader {
     client: Client,
@@ -560,15 +558,28 @@ impl ReferenceReader for KubeClusterReader {
         namespace: &str,
         name: &str,
         key: &str,
-    ) -> Result<Option<Vec<u8>>, ClusterError> {
-        let secret_ref = api::common::SecretKeyRef {
-            namespace: namespace.to_string(),
-            name: name.to_string(),
-            key: key.to_string(),
-        };
-        read_secret_key(&self.client, &secret_ref)
+    ) -> Result<SecretKey, ClusterError> {
+        let api: Api<Secret> = Api::namespaced(self.client.clone(), namespace);
+        let Some(secret) = api
+            .get_opt(name)
             .await
-            .map_err(ClusterError)
+            .map_err(|e| ClusterError(format!("reading secret {namespace}/{name}: {e}")))?
+        else {
+            return Ok(SecretKey::Missing);
+        };
+        let labelled = secret
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get(api::CREDENTIAL_LABEL))
+            .is_some_and(|v| v == "true");
+        if !labelled {
+            return Ok(SecretKey::NotLabelled);
+        }
+        Ok(secret
+            .data
+            .and_then(|mut data| data.remove(key))
+            .map_or(SecretKey::Missing, |v| SecretKey::Value(v.0)))
     }
 }
 

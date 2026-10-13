@@ -42,7 +42,9 @@ spec:
                 default: true
                 type: boolean
               authorizationHeaderSecretRef:
-                description: Value sent as the `Authorization` header (write-only as well).
+                description: |-
+                  Value sent as the `Authorization` header (write-only as well).
+                  The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`.
                 nullable: true
                 properties:
                   key:
@@ -161,6 +163,7 @@ spec:
                 description: |-
                   HMAC secret signing the payloads. Write-only in Forgejo: a change of
                   the Secret's value is detected through `status.appliedSecretHash`.
+                  The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`.
                 nullable: true
                 properties:
                   key:

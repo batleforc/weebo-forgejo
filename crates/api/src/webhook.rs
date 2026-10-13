@@ -59,9 +59,11 @@ pub struct ForgejoWebhookSpec {
     pub active: bool,
     /// HMAC secret signing the payloads. Write-only in Forgejo: a change of
     /// the Secret's value is detected through `status.appliedSecretHash`.
+    /// The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_ref: Option<LocalSecretKeyRef>,
     /// Value sent as the `Authorization` header (write-only as well).
+    /// The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_header_secret_ref: Option<LocalSecretKeyRef>,
     /// Type-specific settings (e.g. `username`/`channel` for Slack).

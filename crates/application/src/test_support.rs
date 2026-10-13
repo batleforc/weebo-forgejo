@@ -14,7 +14,7 @@ use crate::ports::{
     GatewayError, GenerateOptions, HookTarget, MigrateOptions, PolicySource, ProtectionRule,
     RefKind, ReferenceReader, ReferencedCr, RemoteHook, RemoteKey, RemoteOAuth2App,
     RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
-    RepositoryInitOptions,
+    RepositoryInitOptions, SecretKey,
 };
 use crate::use_cases::reconcile_webhook::{forgejo_echoes, forgejo_events};
 
@@ -1332,13 +1332,17 @@ impl ForgejoInventory for FakeForgejo {
 
 pub use weebo_kit_application::test_support::FakeSecretStore;
 
+/// A key of a fake `Secret`: `None` when the Secret doesn't carry the
+/// credential label.
+type FakeSecretKey = Option<Vec<u8>>;
+
 /// In-memory [`ReferenceReader`] and [`PolicySource`]: the referenced CRs,
 /// `Secret` keys and namespace policies a controller would read from the
 /// cluster.
 #[derive(Default)]
 pub struct FakeCluster {
     refs: Mutex<BTreeMap<(String, String, String), ReferencedCr>>,
-    secrets: Mutex<BTreeMap<(String, String, String), Vec<u8>>>,
+    secrets: Mutex<BTreeMap<(String, String, String), FakeSecretKey>>,
     policies: Mutex<Vec<Vec<NamespaceRule>>>,
     failure: Mutex<Option<String>>,
     dependents: Mutex<Vec<String>>,
@@ -1358,11 +1362,20 @@ impl FakeCluster {
             .insert(Self::ref_key(kind, namespace, name), cr);
     }
 
+    /// A key of a `Secret` labelled `forgejo.weebo.io/credential: "true"`.
     pub fn put_secret(&self, namespace: &str, name: &str, key: &str, value: Vec<u8>) {
         self.secrets
             .lock()
             .unwrap()
-            .insert((namespace.into(), name.into(), key.into()), value);
+            .insert((namespace.into(), name.into(), key.into()), Some(value));
+    }
+
+    /// A key of a `Secret` without the credential label.
+    pub fn put_unlabelled_secret(&self, namespace: &str, name: &str, key: &str, _value: Vec<u8>) {
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert((namespace.into(), name.into(), key.into()), None);
     }
 
     pub fn set_namespace_labels(&self, namespace: &str, labels: BTreeMap<String, String>) {
@@ -1464,14 +1477,20 @@ impl ReferenceReader for FakeCluster {
         namespace: &str,
         name: &str,
         key: &str,
-    ) -> Result<Option<Vec<u8>>, ClusterError> {
+    ) -> Result<SecretKey, ClusterError> {
         self.check()?;
-        Ok(self
-            .secrets
-            .lock()
-            .unwrap()
-            .get(&(namespace.into(), name.into(), key.into()))
-            .cloned())
+        Ok(
+            match self
+                .secrets
+                .lock()
+                .unwrap()
+                .get(&(namespace.into(), name.into(), key.into()))
+            {
+                None => SecretKey::Missing,
+                Some(None) => SecretKey::NotLabelled,
+                Some(Some(v)) => SecretKey::Value(v.clone()),
+            },
+        )
     }
 }
 

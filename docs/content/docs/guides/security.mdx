@@ -142,6 +142,12 @@ picks its URL and its token `Secret`, so the operator only reads a token
 to create a local instance doesn't let anyone send another `Secret` of the
 namespace to a server of their choosing (`TokenSecretNotAllowed`).
 
+The same goes for the Secrets a CR hands to Forgejo, which sends them to a
+URL the CR names (a migration's `cloneAddr`, a webhook's `url`):
+`migrate.authSecretRef`, `secretRef` and `authorizationHeaderSecretRef` are
+only read from a Secret labelled `forgejo.weebo.io/credential: "true"`
+(`SecretNotAllowed`).
+
 ## Admission webhook
 
 - The `failurePolicy` is `Fail`: while no replica answers, namespaced CRs

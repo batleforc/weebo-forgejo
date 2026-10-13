@@ -43,6 +43,11 @@ reason_codes! {
         /// reads Secrets with its own rights: a local instance may only use
         /// a Secret its namespace labelled for it. Label the Secret.
         TokenSecretNotAllowed,
+        /// A `Secret` a CR hands to Forgejo as a credential
+        /// (`migrate.authSecretRef`, a webhook's `secretRef` or
+        /// `authorizationHeaderSecretRef`) doesn't carry the
+        /// `forgejo.weebo.io/credential: "true"` label. Label the Secret.
+        SecretNotAllowed,
         /// This CR is now bound to a Forgejo object — created, adopted by the
         /// importer, or observed (Event only: `status.forgejoId` was just
         /// recorded).
