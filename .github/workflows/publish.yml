@@ -42,7 +42,9 @@ permissions: {}
 
 jobs:
   e2e:
-    if: ${{ inputs.run-e2e != false }}
+    # A tag push has no inputs: run-e2e is null there, and null == false
+    # in expressions, so it must be tested on the event.
+    if: ${{ github.event_name == 'push' || inputs.run-e2e }}
     permissions:
       contents: read
     uses: ./.github/workflows/e2e.yml
