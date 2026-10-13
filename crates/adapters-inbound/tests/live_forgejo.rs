@@ -283,7 +283,9 @@ async fn operator_manages_repositories_hooks_and_keys_end_to_end() {
         .create(
             &pp,
             &cr(json!({
-                "metadata": {"name": "hook"}, "stringData": {"hmac": "k1"},
+                "metadata": {"name": "hook",
+                             "labels": {"forgejo.weebo.io/credential": "true"}},
+                "stringData": {"hmac": "k1"},
             })),
         )
         .await
