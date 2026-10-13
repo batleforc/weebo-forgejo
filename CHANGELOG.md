@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.0](https://github.com/batleforc/weebo-forgejo/compare/6d2240643d366baae7022ca5eb9b468e5f226d60..v0.3.0) - 2026-10-13
+#### Bug Fixes
+- (**ci**) run the e2e gate on tag pushes; kit v0.13.0, amd64-only images (#7) - ([6d22406](https://github.com/batleforc/weebo-forgejo/commit/6d2240643d366baae7022ca5eb9b468e5f226d60)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) review fixes of 2026-10-13, weebo-operator-kit v0.14.0 (#8) - ([70365b7](https://github.com/batleforc/weebo-forgejo/commit/70365b704aa15c06dbc9cecb601d595376faef87)) - Maxime, Claude Opus 5.5
+
+- - -
+
 ## [v0.2.2](https://github.com/batleforc/weebo-forgejo/compare/fe0261f737c039a55a42091d1b8d2b39a2fa0022..v0.2.2) - 2026-10-13
 #### Miscellaneous Chores
 - (**kit**) weebo-operator-kit v0.12.1 (#6) - ([fe0261f](https://github.com/batleforc/weebo-forgejo/commit/fe0261f737c039a55a42091d1b8d2b39a2fa0022)) - Maxime, Claude Opus 5.5
