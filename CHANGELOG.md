@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.1](https://github.com/batleforc/weebo-forgejo/compare/365c3b6f8d88f5427339f9c6fe524b92e5278007..v0.2.1) - 2026-10-13
+#### Continuous Integration
+- publish through the kit's workflow; Debian 13 and Hummingbird images (kit v0.11.0) (#5) - ([365c3b6](https://github.com/batleforc/weebo-forgejo/commit/365c3b6f8d88f5427339f9c6fe524b92e5278007)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
+
+- - -
+
 ## [v0.2.0](https://github.com/batleforc/weebo-forgejo/compare/14a2913c29f528ebb3a04fd1fd140c0698ee6f09..v0.2.0) - 2026-10-12
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) namespaced identities, ForgejoLocalInstance and watch scope (kit v0.10.1) (#4) - ([d160600](https://github.com/batleforc/weebo-forgejo/commit/d160600ab4106d02a9a5bebb730272eda28931e9)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
