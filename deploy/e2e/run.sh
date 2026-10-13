@@ -115,8 +115,11 @@ fi
 if [ -n "$previous" ]; then
   step "upgrade test: install the published chart $previous"
   # Its own release image, pulled from ghcr.io.
+  # The golden path references identities across namespaces, like the
+  # upgraded release below.
   helm install "$RELEASE" "$CHART_OCI" --version "$previous" \
     --namespace "$OPERATOR_NS" --create-namespace \
+    --set references.crossNamespace=true \
     --set extraEnv[0].name=RUST_LOG --set extraEnv[0].value=info \
     --wait --timeout 5m
   ensure_ns identities
