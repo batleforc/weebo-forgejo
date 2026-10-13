@@ -158,7 +158,10 @@ async fn issue(
         // The token issued earlier may be a site admin's now (its user
         // made one since): refused, it is revoked, not just left to live.
         let revoke = match &owned {
-            Some(c) => !admin_allowed(ctx, bound, gateway.as_ref(), &ns, &c.name).await?,
+            Some(c) => {
+                let gw = gateway.as_ref();
+                !super::admin_allowed(ctx, bound, gw, &ns, KIND_POLICY, &c.name).await?
+            }
             None => false,
         };
         if revoke {
@@ -236,24 +239,6 @@ async fn revoked(
         None if had => Outcome::failed(None, failure).released(),
         None => Outcome::failed(None, failure),
     }
-}
-
-/// `false` only when Forgejo says `login` is a site admin the namespace
-/// isn't allowed to hold credentials of (an error or a local instance:
-/// `true`, nothing is revoked on a doubt).
-async fn admin_allowed(
-    ctx: &Ctx,
-    bound: &BoundInstance,
-    gateway: &dyn ForgejoGateway,
-    ns: &str,
-    login: &str,
-) -> Result<bool, Error> {
-    if login.is_empty() {
-        return Ok(true);
-    }
-    let logins = [login.to_string()];
-    let verdict = super::remote_admins(ctx, bound, gateway, ns, KIND_POLICY, &logins).await?;
-    Ok(!matches!(verdict, Err(f) if f.reason == ReasonCode::NamespaceNotAllowed))
 }
 
 async fn cleanup(token: &ForgejoAccessToken, ctx: &Ctx) -> Result<Action, Error> {

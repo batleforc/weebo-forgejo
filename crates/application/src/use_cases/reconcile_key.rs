@@ -305,6 +305,30 @@ async fn delete(
     }
 }
 
+/// Deletes a user's key when the user is a site admin the namespace may
+/// no longer hold credentials of, like a revoked token: the private key
+/// handed out no longer pushes. `None` once it's gone (or there was
+/// none); the key, still recorded, when deleting it failed.
+pub async fn revoke_denied_key(
+    gateway: &dyn ForgejoGateway,
+    owners: &[KeyOwner],
+    current: Option<ForgejoRef>,
+) -> Option<ForgejoRef> {
+    let c = current?;
+    for owner in owners {
+        match delete_if_held(owner, c.id, gateway).await {
+            Ok(true) => return None,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, key = c.id, "deleting a denied site-admin key failed");
+                return Some(c);
+            }
+        }
+    }
+    // Held by none of them: already gone.
+    None
+}
+
 /// Deletes key `id` from `owner` if `owner` holds it; `Ok(false)` when it
 /// doesn't.
 async fn delete_if_held(
@@ -731,5 +755,46 @@ mod tests {
             secrets.get("team-a/ssh").unwrap()["ssh-privatekey"],
             private
         );
+    }
+
+    /// A user's key is deleted once its account is a denied site admin —
+    /// found under the login it was created on or the current one — and
+    /// kept (still recorded) when deleting it fails.
+    #[tokio::test]
+    async fn a_denied_admin_key_is_deleted() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        fj.insert_user("ci-bot");
+        let source = generated();
+        let input = KeyInput {
+            owner: KeyOwner::User("ci-bot".into()),
+            title: "ci".into(),
+            read_only: false,
+            source: &source,
+            secret_owner: SecretOwner::namespaced("ForgejoUserKey", "team-a", "k"),
+            current: None,
+            created_on: None,
+            rotate_nonce: None,
+            last_rotation: None,
+            secret_pending: false,
+        };
+        let key = reconcile_key(input, &fj, &secrets).await.forgejo.unwrap();
+        let owners = [
+            KeyOwner::User("old-login".into()),
+            KeyOwner::User("ci-bot".into()),
+        ];
+
+        fj.fail_call("delete_user_key", GatewayError::Unreachable("down".into()));
+        let kept = revoke_denied_key(&fj, &owners, Some(key.clone())).await;
+        assert_eq!(kept, Some(key.clone()));
+        assert!(fj.get_user_key("ci-bot", key.id).await.unwrap().is_some());
+
+        assert_eq!(
+            revoke_denied_key(&fj, &owners, Some(key.clone())).await,
+            None
+        );
+        assert!(fj.get_user_key("ci-bot", key.id).await.unwrap().is_none());
+        // Gone already, or nothing recorded: nothing to keep.
+        assert_eq!(revoke_denied_key(&fj, &owners, Some(key)).await, None);
+        assert_eq!(revoke_denied_key(&fj, &owners, None).await, None);
     }
 }

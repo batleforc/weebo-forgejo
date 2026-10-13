@@ -393,8 +393,9 @@ l'instance.
   `@instance-admin`), et un `ForgejoUser` `admin: true` lui-même, refusés
   sauf règle `Allow` qui le nomme dans `allowedUsers` — **même sans aucune
   policy**. Les reconcilers revérifient sur ce que dit Forgejo
-  (`enforce_remote_admins`) ; un token déjà émis pour un compte devenu
-  admin est révoqué.
+  (`enforce_remote_admins`) ; ce qui a déjà été émis pour un compte devenu
+  admin est révoqué : token, app OAuth2 et clé SSH supprimés dans Forgejo
+  (pas les deploy keys, liées à un dépôt ; pas l'app de `@instance-admin`).
 - **Résolution par id** : utilisateurs et organisations renommés hors
   opérateur sont retrouvés par id (renommés en retour, supprimés par id),
   jamais recréés à côté ni confondus avec un homonyme.
