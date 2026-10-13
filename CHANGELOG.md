@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.1](https://github.com/batleforc/weebo-forgejo/compare/4d39018a99c19ff3c5d28f18a1d5b22474f7f171..v0.3.1) - 2026-10-13
+#### Bug Fixes
+- (**e2e**) the upgrade test's old release allows cross-namespace references (#9) - ([4d39018](https://github.com/batleforc/weebo-forgejo/commit/4d39018a99c19ff3c5d28f18a1d5b22474f7f171)) - Maxime, Claude Opus 5.5
+
+- - -
+
 ## [v0.3.0](https://github.com/batleforc/weebo-forgejo/compare/6d2240643d366baae7022ca5eb9b468e5f226d60..v0.3.0) - 2026-10-13
 #### Bug Fixes
 - (**ci**) run the e2e gate on tag pushes; kit v0.13.0, amd64-only images (#7) - ([6d22406](https://github.com/batleforc/weebo-forgejo/commit/6d2240643d366baae7022ca5eb9b468e5f226d60)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
