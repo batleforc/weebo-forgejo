@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.2](https://github.com/batleforc/weebo-forgejo/compare/fe0261f737c039a55a42091d1b8d2b39a2fa0022..v0.2.2) - 2026-10-13
+#### Miscellaneous Chores
+- (**kit**) weebo-operator-kit v0.12.1 (#6) - ([fe0261f](https://github.com/batleforc/weebo-forgejo/commit/fe0261f737c039a55a42091d1b8d2b39a2fa0022)) - Maxime, Claude Opus 5.5
+
+- - -
+
 ## [v0.2.1](https://github.com/batleforc/weebo-forgejo/compare/365c3b6f8d88f5427339f9c6fe524b92e5278007..v0.2.1) - 2026-10-13
 #### Continuous Integration
 - publish through the kit's workflow; Debian 13 and Hummingbird images (kit v0.11.0) (#5) - ([365c3b6](https://github.com/batleforc/weebo-forgejo/commit/365c3b6f8d88f5427339f9c6fe524b92e5278007)) - Maxime, Claude Opus 5.5, Claude Opus 5.5, Claude Opus 5.5
