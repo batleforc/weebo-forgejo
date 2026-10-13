@@ -2,7 +2,7 @@
 # Hardened variant (Red Hat hardened images): same build as Containerfile.
 # The workspace is rustls end to end (kube's rustls-tls, reqwest's `rustls`
 # feature, vaultrs's default) — no OpenSSL needed at build or run time.
-FROM registry.access.redhat.com/hi/rust:latest-builder@sha256:d0f1bc961cf97407172c3cf92f2dda92ee0863379a87a30b6c0a81beecf5f603 AS builder
+FROM registry.access.redhat.com/hi/rust:latest-builder@sha256:6ecd7053f3415021e6241c672570ba156073b77210e9fb30c581d07311e78b5a AS builder
 
 # The builder image defaults to a non-root user without write access to
 # /build; root is confined to this throwaway stage.
@@ -32,8 +32,10 @@ RUN find crates -name '*.rs' -exec touch {} + && \
     cargo build --locked --release -p operator -p importer
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
-# Red Hat hardened core runtime: minimal, continuously rebuilt for CVEs.
-FROM registry.access.redhat.com/hi/core-runtime:latest@sha256:dbe63cc0af0d272c897f5e136173c9670f991deede43867f59876066dd6c4e5b AS runtime
+# Red Hat Hummingbird core runtime: minimal, continuously rebuilt for CVEs.
+# Grype reads its RPM database (Trivy doesn't know the OS): the publish
+# workflow scans it like the distroless one.
+FROM registry.access.redhat.com/hi/core-runtime:latest@sha256:1abbb3f306dd1df28c46415def816056247cf850b861655097d46af971746f9b AS runtime
 
 COPY --from=builder /build/target/release/operator /usr/local/bin/operator
 # The adoption tool, runnable from the same image (docs: "Migration").
