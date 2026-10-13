@@ -5,6 +5,10 @@ kind: Secret
 metadata:
   name: app-ci-webhook
   namespace: team-a
+  labels:
+    # Handed to Forgejo (the hook's url): the operator only reads a
+    # credential Secret that opts in.
+    forgejo.weebo.io/credential: "true"
 stringData:
   hmac: e2e-hmac-secret
 ---
