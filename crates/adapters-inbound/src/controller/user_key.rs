@@ -3,11 +3,14 @@ use std::time::Instant;
 
 use api::namespace_policy::NamespacedKind;
 use api::{ForgejoNamespacePolicy, ForgejoUser, ForgejoUserKey};
-use application::ports::{BoundInstance, ForgejoGateway, RefKind, SecretOwner};
+use application::ports::{BoundInstance, ForgejoGateway, ForgejoRef, RefKind, SecretOwner};
 use application::use_cases::admission::enforce_on;
-use application::use_cases::reconcile_key::{KeyInput, KeyOwner, cleanup_key, reconcile_key};
+use application::use_cases::reconcile_key::{
+    KeyInput, KeyOwner, cleanup_key, reconcile_key, revoke_denied_key,
+};
 use application::use_cases::refs::{recorded_identity, resolve_identity_required};
 use application::use_cases::{Failure, Outcome};
+use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -139,7 +142,7 @@ async fn apply(
                     };
                     reconcile_key(input, gateway.as_ref(), secrets.as_ref()).await
                 }
-                Err(f) => Outcome::failed(owned.clone(), f),
+                Err(f) => denied(&current, &bound, gateway.as_ref(), ctx, owned.clone(), f).await?,
             },
         }
         .on(bound),
@@ -149,6 +152,46 @@ async fn apply(
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     super::record_key_owner(api, &current, resolved.as_deref(), owned.as_ref(), &outcome).await?;
     Ok(requeue_after(&outcome))
+}
+
+/// Refused with `failure`: a key issued earlier is deleted when Forgejo
+/// says the user it was created on is a site admin the namespace may no
+/// longer hold credentials of (it became one since, or a rule was
+/// removed) — the private key handed out no longer pushes. Otherwise it
+/// is kept, not ready.
+async fn denied(
+    key: &ForgejoUserKey,
+    bound: &BoundInstance,
+    gateway: &dyn ForgejoGateway,
+    ctx: &Ctx,
+    owned: Option<ForgejoRef>,
+    failure: Failure,
+) -> Result<Outcome, Error> {
+    if owned.is_none() || failure.reason != ReasonCode::NamespaceNotAllowed {
+        return Ok(Outcome::failed(owned, failure));
+    }
+    // Where the key was created, then the user's current login (a renamed
+    // account), as the cleanup looks for it.
+    let ns = key.namespace().unwrap_or_default();
+    let user = &key.spec.user_ref;
+    let parent = recorded_identity(ctx.refs.as_ref(), RefKind::User, &ns, user, bound).await?;
+    let logins = super::key_cleanup_owners(key, parent, true);
+    let kind = NamespacedKind::ForgejoUserKey;
+    let mut revoke = false;
+    for login in &logins {
+        if !super::admin_allowed(ctx, bound, gateway, &ns, kind, login).await? {
+            revoke = true;
+            break;
+        }
+    }
+    if !revoke {
+        return Ok(Outcome::failed(owned, failure));
+    }
+    let owners: Vec<KeyOwner> = logins.into_iter().map(KeyOwner::User).collect();
+    Ok(match revoke_denied_key(gateway, &owners, owned).await {
+        Some(kept) => Outcome::failed(Some(kept), failure),
+        None => Outcome::failed(None, failure).released(),
+    })
 }
 
 async fn cleanup(key: &ForgejoUserKey, ctx: &Ctx) -> Result<Action, Error> {

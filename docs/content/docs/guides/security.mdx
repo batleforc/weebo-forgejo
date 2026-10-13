@@ -107,8 +107,15 @@ What counts as a site admin isn't only what the CR says:
   its flags aren't the CR's to say;
 - before minting, each reconciler asks **Forgejo** whether the account is a
   site admin, whatever its CR declares. An account made a site admin
-  outside the operator, or after its token was issued, is refused the same
-  way, and an access token already issued for it is **revoked**.
+  outside the operator, or after its credentials were issued, is refused
+  the same way, and what was already issued for it is **revoked**: its
+  access token, its OAuth2 application (deleted, its client secret with
+  it) and its SSH key (deleted from the account). The `Secret` targets keep
+  the dead values until the CR is allowed again and issues new ones; the
+  CR reports `NamespaceNotAllowed` and no longer records a Forgejo id. An
+  application without `ownerRef` (`@instance-admin`) is never deleted this
+  way: the admin account is checked on the CR. A `ForgejoDeployKey` is not
+  concerned: it pushes to one repository, not as an account.
 
 ```yaml
 apiVersion: forgejo.weebo.io/v1alpha1

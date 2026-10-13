@@ -4,7 +4,7 @@
 mod support;
 
 use adapters_inbound::controller;
-use api::{ForgejoAccessToken, ForgejoOAuth2Application, ForgejoUser};
+use api::{ForgejoAccessToken, ForgejoOAuth2Application, ForgejoUser, ForgejoUserKey};
 use k8s_openapi::api::core::v1::Secret;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use serde_json::json;
@@ -280,6 +280,79 @@ async fn site_admin_tokens_are_refused_and_revoked() {
     .await;
     assert_eq!(revoked.1, "NamespaceNotAllowed");
     assert!(h.forgejo.token(token_id).is_none(), "revoked in Forgejo");
+}
+
+/// The account behind an OAuth2 application and an SSH key becomes a
+/// site admin in Forgejo: both are deleted, like a token, not left to live.
+#[tokio::test]
+async fn site_admin_applications_and_keys_are_revoked() {
+    let h = harness().await;
+    let (c, ctx) = (&h.client, &h.ctx);
+    tokio::spawn(controller::user::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::oauth2::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::user_key::run(c.clone(), ctx.clone()));
+
+    let pp = PostParams::default();
+    let users: Api<ForgejoUser> = Api::namespaced(c.clone(), "default");
+    let apps: Api<ForgejoOAuth2Application> = Api::namespaced(c.clone(), "default");
+    let keys: Api<ForgejoUserKey> = Api::namespaced(c.clone(), "default");
+    users
+        .create(
+            &pp,
+            &cr(json!({
+                "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoUser",
+                "metadata": {"name": "sso-bot"},
+                "spec": {"username": "sso-bot", "email": "sso-bot@example.com", "bot": true},
+            })),
+        )
+        .await
+        .unwrap();
+    apps.create(
+        &pp,
+        &cr(json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoOAuth2Application",
+            "metadata": {"name": "grafana"},
+            "spec": {"ownerRef": {"name": "sso-bot"}, "redirectUris": ["https://g/cb"]},
+        })),
+    )
+    .await
+    .unwrap();
+    keys.create(
+        &pp,
+        &cr(json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoUserKey",
+            "metadata": {"name": "push"},
+            "spec": {"userRef": {"name": "sso-bot"}, "secretTargets": [{"name": "push-key"}]},
+        })),
+    )
+    .await
+    .unwrap();
+    let ready_id = |s: Option<&api::status::ForgejoStatus>| -> Option<i64> {
+        let s = s?;
+        (condition(Some(s), "Ready")?.0 == "True").then_some(())?;
+        s.forgejo_id.as_ref()?.parse().ok()
+    };
+    let app_id = wait_for(&apps, "grafana", |a| ready_id(a.status.as_ref())).await;
+    let key_id = wait_for(&keys, "push", |k| ready_id(k.status.as_ref())).await;
+
+    // Made a site admin by hand in Forgejo: what was issued goes at the
+    // next reconcile.
+    h.forgejo.set_admin("sso-bot", true);
+    let touch = Patch::Merge(json!({"metadata": {"annotations": {"touch": "1"}}}));
+    let params = PatchParams::default();
+    apps.patch("grafana", &params, &touch).await.unwrap();
+    keys.patch("push", &params, &touch).await.unwrap();
+    let released = |s: Option<&api::status::ForgejoStatus>| {
+        let s = s?;
+        let ready = condition(Some(s), "Ready").filter(|c| c.0 == "False")?;
+        s.forgejo_id.is_none().then_some(ready)
+    };
+    let app = wait_for(&apps, "grafana", |a| released(a.status.as_ref())).await;
+    assert_eq!(app.1, "NamespaceNotAllowed");
+    assert!(h.forgejo.oauth2_app(app_id).is_none(), "deleted in Forgejo");
+    let key = wait_for(&keys, "push", |k| released(k.status.as_ref())).await;
+    assert_eq!(key.1, "NamespaceNotAllowed");
+    assert!(h.forgejo.key(key_id).is_none(), "deleted in Forgejo");
 }
 
 #[tokio::test]

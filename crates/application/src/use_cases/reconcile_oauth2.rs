@@ -217,6 +217,30 @@ pub async fn cleanup_oauth2(
     emit::delete_all(&targets, &owner, secrets).await
 }
 
+/// Deletes an application whose owner is a site admin the namespace may
+/// no longer hold credentials of: its client secret dies with it, like a
+/// revoked token. `None` once it's gone (or there was none); the
+/// application, still recorded, when deleting it failed.
+pub async fn revoke_denied_oauth2(
+    gateway: &dyn ForgejoGateway,
+    current: Option<ForgejoRef>,
+    owner_id: Option<i64>,
+) -> Option<ForgejoRef> {
+    let c = current?;
+    let deleted = match owner_login_now(gateway, &c.name, owner_id).await {
+        Ok(Some(owner)) => gone_ok(gateway.delete_oauth2_app(sudo(&owner), c.id).await),
+        Ok(None) => Ok(()),
+        Err(e) => Err(e),
+    };
+    match deleted {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, app = c.id, "deleting a denied site-admin application failed");
+            Some(c)
+        }
+    }
+}
+
 /// `status.forgejoName` holds the owner login, empty for the admin.
 fn sudo(owner: &str) -> Option<&str> {
     (!owner.is_empty()).then_some(owner)
@@ -244,6 +268,7 @@ fn app_differs(d: &DesiredOAuth2App, r: &RemoteOAuth2App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ports::GatewayError;
     use crate::test_support::{FakeForgejo, FakeSecretStore};
 
     fn spec() -> ForgejoOAuth2ApplicationSpec {
@@ -416,5 +441,31 @@ mod tests {
         let again = reconcile_oauth2(input(&s, None, None), &fj, &secrets).await;
         assert_eq!(again.reason(), ReasonCode::ForgejoObjectAlreadyExists);
         assert_eq!(fj.oauth2_apps_of("admin").len(), 1);
+    }
+
+    /// An application of a denied site admin is deleted (its secret dies
+    /// with it), and kept, still recorded, when deleting it fails.
+    #[tokio::test]
+    async fn a_denied_admin_application_is_deleted() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let owner = fj.insert_user("sso-bot");
+        let s = spec();
+        let outcome = reconcile_oauth2(input(&s, Some("sso-bot"), None), &fj, &secrets).await;
+        let app = outcome.forgejo.unwrap();
+
+        fj.fail_call(
+            "delete_oauth2_app",
+            GatewayError::Unreachable("down".into()),
+        );
+        let kept = revoke_denied_oauth2(&fj, Some(app.clone()), Some(owner)).await;
+        assert_eq!(kept, Some(app.clone()));
+        assert!(fj.oauth2_app(app.id).is_some());
+
+        assert_eq!(
+            revoke_denied_oauth2(&fj, Some(app.clone()), Some(owner)).await,
+            None
+        );
+        assert!(fj.oauth2_app(app.id).is_none());
+        assert_eq!(revoke_denied_oauth2(&fj, None, Some(owner)).await, None);
     }
 }

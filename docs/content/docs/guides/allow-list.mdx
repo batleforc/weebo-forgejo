@@ -122,8 +122,9 @@ site admin — a `ForgejoUser` with `admin: true`, a user observed
 (`managementPolicy: Observe`) or referenced by `remoteName`, an account
 Forgejo reports as admin, or `@instance-admin` — and a `ForgejoUser` with
 `admin: true` itself, always need an `Allow` rule naming that user in
-`allowedUsers` — even while no policy exists. A token already issued for an
-account that became a site admin is revoked. See
+`allowedUsers` — even while no policy exists. A token, OAuth2 application
+or SSH key already issued for an account that became a site admin is
+revoked (deleted in Forgejo). See
 [Security model](/docs/guides/security#tokens-and-oauth2-applications-for-administrators).
 
 ## Where it's enforced

@@ -297,6 +297,27 @@ pub async fn remote_admins(
     Ok(check.await?)
 }
 
+/// `false` only when Forgejo says `login` is a site admin the namespace
+/// isn't allowed to hold `kind` credentials of — what was issued for it
+/// is then revoked. An empty login (the operator's admin account, checked
+/// on the CR), an error or an instance the policies don't govern: `true`,
+/// nothing is revoked on a doubt.
+pub async fn admin_allowed(
+    ctx: &Ctx,
+    instance: &BoundInstance,
+    gateway: &dyn application::ports::ForgejoGateway,
+    namespace: &str,
+    kind: api::namespace_policy::NamespacedKind,
+    login: &str,
+) -> Result<bool, Error> {
+    if login.is_empty() {
+        return Ok(true);
+    }
+    let logins = [login.to_string()];
+    let verdict = remote_admins(ctx, instance, gateway, namespace, kind, &logins).await?;
+    Ok(!matches!(verdict, Err(f) if f.reason == domain::error::ReasonCode::NamespaceNotAllowed))
+}
+
 /// The gateway and secret store of a CR's instance, for kinds that emit
 /// secrets.
 pub async fn backends(
