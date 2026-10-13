@@ -57,7 +57,7 @@ jobs:
     needs: e2e
     if: >-
       ${{ !cancelled() && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') }}
-    uses: batleforc/weebo-operator-kit/.github/workflows/publish.yml@v0.12.1
+    uses: batleforc/weebo-operator-kit/.github/workflows/publish.yml@v0.13.0
     permissions:
       contents: write
       packages: write
@@ -71,3 +71,5 @@ jobs:
          {"file": "Containerfile.static", "suffix": "-static", "required": false}]
       smoke-entrypoint: /usr/local/bin/weebo-forgejo-importer
       smoke-args: --version
+      # A separate arm64 image per variant (vX.Y.Z-arm64), never a gate.
+      arm64: false
