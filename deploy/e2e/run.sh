@@ -115,16 +115,24 @@ fi
 if [ -n "$previous" ]; then
   step "upgrade test: install the published chart $previous"
   # Its own release image, pulled from ghcr.io.
+  # The golden path references identities across namespaces, like the
+  # upgraded release below.
   helm install "$RELEASE" "$CHART_OCI" --version "$previous" \
     --namespace "$OPERATOR_NS" --create-namespace \
+    --set references.crossNamespace=true \
     --set extraEnv[0].name=RUST_LOG --set extraEnv[0].value=info \
     --wait --timeout 5m
   ensure_ns identities
   ensure_ns team-a
   ensure_ns other
-  kubectl apply -f "$HERE/golden-path.yaml"
-  # The namespaced kinds go through the old release's webhook: retry while
-  # cert-manager injects its CA.
+  # Everything goes through the old release's webhook: retry while
+  # cert-manager injects its CA and its endpoints get ready.
+  applied=""
+  for _ in $(seq 1 30); do
+    if kubectl apply -f "$HERE/golden-path.yaml"; then applied=1; break; fi
+    sleep 2
+  done
+  [ -n "$applied" ] || fail "the golden path was never admitted by $previous"
   for _ in $(seq 1 30); do kubectl apply -f "$HERE/team-a.yaml" && break; sleep 2; done
   all_ready
   # Charts up to 0.1.0 shipped the CRDs in crds/, outside the release:
