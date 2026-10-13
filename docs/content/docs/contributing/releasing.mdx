@@ -18,14 +18,16 @@ For a tag `vX.Y.Z`, `publish.yml`:
 | --- | --- |
 | `version-check` | `Chart.yaml` `version` and `appVersion` and the Cargo workspace version equal the tag |
 | `e2e` | The kind e2e (`e2e.yml`, reusable) on the tagged code, both images; nothing is pushed unless it passes |
-| `image` (×2) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (+ `latest`) and `…:vX.Y.Z-hardened` (+ `hardened`), `linux/amd64` + `linux/arm64`, with SBOM and SLSA provenance (`mode=max`), cosign-signed by digest |
+| `publish` | weebo-operator-kit's reusable `publish.yml`: the jobs below |
+| `image` (×2) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (+ `latest`, Red Hat Hummingbird) and `…:vX.Y.Z-static` (+ `static`, optional: left out when it fails), `linux/amd64` + `linux/arm64`, with SBOM and SLSA provenance (`mode=max`), cosign-signed by digest |
 | `chart` | `oci://ghcr.io/batleforc/charts/weebo-forgejo`, version `X.Y.Z`, cosign-signed by digest |
 | `github-release` | The GitHub Release: `cog changelog` notes, the chart `.tgz`, `weebo-forgejo-crds.yaml` and its Sigstore bundle |
 
-Each image is first built for amd64 and loaded locally, scanned by trivy
-(HIGH/CRITICAL fail the job) and smoke-run; only then is the multi-arch image
-pushed, and its pushed digest is scanned and smoke-run again for every
-platform (arm64 under QEMU) before it's signed. `latest`/`hardened` only move
+Each image is first built for amd64 and loaded locally, scanned by Grype
+(HIGH/CRITICAL fail the job, accepted findings are `.grype.yaml`'s) and
+smoke-run; only then is the multi-arch image pushed, and its pushed digest is
+scanned and smoke-run again for every platform (arm64 under QEMU) before it's
+signed. `latest`/`static` only move
 when the tag is the highest version. arm64 is compiled under QEMU, so the
 image job is slow (expect an hour or more).
 

@@ -107,7 +107,7 @@ their comments.
 | Value | Default | Description |
 | --- | --- | --- |
 | `replicaCount` | `2` | Operator replicas. Keep at least 2 |
-| `image.tag` | `v` + chart `appVersion` | Add `-hardened` for the Red Hat hardened image, e.g. `vX.Y.Z-hardened` |
+| `image.tag` | `v` + chart `appVersion` | Add `-static` for the statically linked image, e.g. `vX.Y.Z-static` |
 | `image.digest` | | `sha256:…`: pull `repository@digest`, ignoring `tag` |
 | `crds.install` | `true` | Install and upgrade the CRDs with the chart |
 | `leaderElection.leaseName` | `weebo-forgejo-operator-leader` | The leader-election Lease (distinct per release sharing a namespace) |
@@ -135,8 +135,8 @@ their comments.
 | Artifact | Where |
 | --- | --- |
 | Helm chart | `oci://ghcr.io/batleforc/charts/weebo-forgejo`, version `X.Y.Z` (also attached to the GitHub Release) |
-| Operator image (distroless) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (and `latest`), `linux/amd64` + `linux/arm64` |
-| Operator image (Red Hat hardened) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z-hardened` (and `hardened`), same platforms |
+| Operator image (Red Hat Hummingbird) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z` (and `latest`), `linux/amd64` + `linux/arm64` |
+| Operator image (static, on Hummingbird's static base) | `ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z-static` (and `static`), same platforms, when its scan passed |
 | CRD bundle | `weebo-forgejo-crds.yaml` on the [GitHub Release](https://github.com/batleforc/weebo-forgejo/releases) |
 
 Both images also contain `weebo-forgejo-importer`, used to
