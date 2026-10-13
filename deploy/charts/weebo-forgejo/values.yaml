@@ -12,7 +12,7 @@ replicaCount: 2
 image:
   repository: ghcr.io/batleforc/weebo-forgejo-operator
   # -- Defaults to `v` + .Chart.AppVersion (the release image tag) when
-  # empty; e.g. `v0.1.0-hardened` for the Red Hat hardened image.
+  # empty; e.g. `v0.1.0-static` for the statically linked image.
   tag: ""
   # -- Image digest (`sha256:...`). When set the image is pulled as
   # `repository@digest` and `tag` is ignored: the strongest pin, matching
@@ -200,7 +200,7 @@ shutdown:
   # removal propagates (env WEEBO_SHUTDOWN_DRAIN_SECONDS).
   drainSeconds: 5
   # -- When > 0, a native `preStop: sleep` (Kubernetes 1.30+, no shell
-  # needed, distroless has none) delays SIGTERM by that many seconds.
+  # needed, the image has none) delays SIGTERM by that many seconds.
   # Usually unnecessary on top of drainSeconds.
   preStopSleepSeconds: 0
   # -- The leader finishes in-flight reconciles before exiting; a
@@ -242,7 +242,7 @@ defaultTopologySpread: true
 # can be omitted from labelSelector: they are added when missing.
 topologySpreadConstraints: []
 
-# The image runs as distroless's nonroot UID; both Containerfiles use it.
+# The image runs as UID 65532; both Containerfiles use it.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532

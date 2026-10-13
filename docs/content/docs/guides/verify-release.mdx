@@ -3,8 +3,9 @@ title: Verify a release
 description: Check the cosign signatures, SBOM and provenance of the images, the chart and the CRD bundle before you deploy them.
 ---
 
-Every release is built and published by the repository's `publish.yml`
-workflow on GitHub Actions, and signed **keylessly** with
+Every release is built and published on GitHub Actions by
+weebo-operator-kit's reusable `publish.yml` workflow (called by this
+repository's), and signed **keylessly** with
 [cosign](https://docs.sigstore.dev/): there is no long-lived key; each
 signature carries a certificate that names the workflow and the tag that
 produced it, recorded in the public Rekor transparency log.
@@ -16,23 +17,25 @@ You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 
 | Field | Value |
 | --- | --- |
 | OIDC issuer | `https://token.actions.githubusercontent.com` |
-| Identity | `https://github.com/batleforc/weebo-forgejo/.github/workflows/publish.yml@refs/tags/vX.Y.Z` |
+| Identity | `https://github.com/batleforc/weebo-operator-kit/.github/workflows/publish.yml@refs/tags/vA.B.C` (the kit's workflow, at the kit release this one uses) |
+| Repository | `batleforc/weebo-forgejo` (the certificate's *GitHub Workflow Repository*) |
 
-A release made through the *Release* workflow (or a manual re-publish) runs
-`publish.yml` as a reusable workflow from `main`: the identity is then
-`…/publish.yml@refs/heads/main`. The regular expression below accepts both.
+The signing workflow is the kit's, so the identity names the kit; the
+repository it ran for is checked separately (`--certificate-github-workflow-repository`).
 
 ```bash
-export COSIGN_ID='^https://github.com/batleforc/weebo-forgejo/\.github/workflows/publish\.yml@refs/(tags/v.*|heads/main)$'
+export COSIGN_ID='^https://github.com/batleforc/weebo-operator-kit/\.github/workflows/publish\.yml@refs/tags/v.*$'
 export COSIGN_ISSUER=https://token.actions.githubusercontent.com
+export COSIGN_REPO=batleforc/weebo-forgejo
 ```
 
 ## Images
 
 ```bash
-IMAGE=ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z   # or vX.Y.Z-hardened
+IMAGE=ghcr.io/batleforc/weebo-forgejo-operator:vX.Y.Z   # or vX.Y.Z-static
 cosign verify "$IMAGE" \
   --certificate-identity-regexp "$COSIGN_ID" \
+  --certificate-github-workflow-repository "$COSIGN_REPO" \
   --certificate-oidc-issuer "$COSIGN_ISSUER"
 ```
 
@@ -67,6 +70,7 @@ The chart is an OCI artifact signed the same way:
 ```bash
 cosign verify ghcr.io/batleforc/charts/weebo-forgejo:X.Y.Z \
   --certificate-identity-regexp "$COSIGN_ID" \
+  --certificate-github-workflow-repository "$COSIGN_REPO" \
   --certificate-oidc-issuer "$COSIGN_ISSUER"
 ```
 
@@ -81,6 +85,7 @@ bundle:
 cosign verify-blob weebo-forgejo-crds.yaml \
   --bundle weebo-forgejo-crds.yaml.sigstore.json \
   --certificate-identity-regexp "$COSIGN_ID" \
+  --certificate-github-workflow-repository "$COSIGN_REPO" \
   --certificate-oidc-issuer "$COSIGN_ISSUER"
 ```
 
