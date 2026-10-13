@@ -371,6 +371,8 @@ pub trait ForgejoGateway: Send + Sync {
     fn web_url(&self) -> &str;
 
     /// `Ok(None)` when no user has that login.
+    /// The account the instance token belongs to (`GET /user`).
+    async fn token_user(&self) -> Result<RemoteUser, GatewayError>;
     async fn get_user(&self, username: &str) -> Result<Option<RemoteUser>, GatewayError>;
     /// Current login of the user with that Forgejo id; `Ok(None)` when
     /// the account is gone.
@@ -601,6 +603,9 @@ pub enum GatewayFactoryError {
     /// The token `Secret` or its key is missing / not UTF-8.
     #[error("ForgejoInstance token secret: {0}")]
     TokenSecret(String),
+    /// A `ForgejoLocalInstance`'s token `Secret` isn't labelled for it.
+    #[error("ForgejoLocalInstance token secret: {0}")]
+    TokenSecretNotAllowed(String),
     /// A Kubernetes API call (listing instances, reading a `Secret`)
     /// failed — usually transient, never a spec problem.
     #[error("Kubernetes API error resolving ForgejoInstance: {0}")]
@@ -617,6 +622,7 @@ impl GatewayFactoryError {
             GatewayFactoryError::InstanceNotFound(_) => ReasonCode::InstanceNotFound,
             GatewayFactoryError::AmbiguousDefault(_) => ReasonCode::AmbiguousDefaultInstance,
             GatewayFactoryError::TokenSecret(_) => ReasonCode::TokenSecretNotFound,
+            GatewayFactoryError::TokenSecretNotAllowed(_) => ReasonCode::TokenSecretNotAllowed,
             GatewayFactoryError::Kubernetes(_) => ReasonCode::KubernetesApiError,
             GatewayFactoryError::ResolutionFailed(_) => ReasonCode::InvalidSpec,
         }
@@ -655,6 +661,17 @@ pub use weebo_kit_application::ports::{
 /// failed — usually transient, never a spec problem. Retried by the
 /// controller rather than surfaced as a `Ready` reason. The kit's.
 pub use weebo_kit_application::ports::ClusterError;
+
+/// What [`ReferenceReader::secret_key`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretKey {
+    /// No such `Secret`, or no such key in it.
+    Missing,
+    /// The `Secret` exists but isn't labelled
+    /// `forgejo.weebo.io/credential: "true"`: its content wasn't read.
+    NotLabelled,
+    Value(Vec<u8>),
+}
 
 /// The kinds a `*Ref` field can point at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -697,8 +714,9 @@ pub struct ReferencedCr {
     pub spec_name: Option<String>,
     /// A team's organization, by its Forgejo name (`None` while unknown).
     pub organization: Option<String>,
-    /// A user's `spec.admin`: credentials minted for it are site-admin
-    /// credentials.
+    /// A user's `spec.admin`, or its `managementPolicy: Observe` (the
+    /// account's flags aren't known): credentials minted for it are
+    /// site-admin credentials.
     pub admin: bool,
 }
 
@@ -737,14 +755,25 @@ pub trait ReferenceReader: Send + Sync {
         forgejo_name: &str,
         instance: &BoundInstance,
     ) -> Result<Vec<String>, ClusterError>;
-    /// One key of a `Secret` in `namespace`. `Ok(None)` when the Secret or
-    /// the key is missing.
+    /// The `ForgejoAccessToken` CRs (`Kind/namespace/name`) issuing a
+    /// token named `token_name` — or its rotated name — for the account
+    /// `user` on the server `instance` points at (token names are unique
+    /// per user only).
+    async fn token_claimants(
+        &self,
+        user: &str,
+        token_name: &str,
+        instance: &BoundInstance,
+    ) -> Result<Vec<String>, ClusterError>;
+    /// One key of a `Secret` in `namespace` that a CR hands to Forgejo as a
+    /// credential: only read from a `Secret` labelled
+    /// `forgejo.weebo.io/credential: "true"`.
     async fn secret_key(
         &self,
         namespace: &str,
         name: &str,
         key: &str,
-    ) -> Result<Option<Vec<u8>>, ClusterError>;
+    ) -> Result<SecretKey, ClusterError>;
 }
 
 /// The `spec.rules` of every `ForgejoNamespacePolicy`, one entry per

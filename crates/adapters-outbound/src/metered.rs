@@ -106,6 +106,10 @@ impl ForgejoGateway for MeteredGateway {
             .await
     }
 
+    async fn token_user(&self) -> Result<RemoteUser, GatewayError> {
+        self.metered("token_user", self.inner.token_user()).await
+    }
+
     async fn get_user(&self, username: &str) -> Result<Option<RemoteUser>, GatewayError> {
         self.metered("get_user", self.inner.get_user(username))
             .await

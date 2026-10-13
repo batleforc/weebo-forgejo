@@ -7,10 +7,15 @@
 //!   ([`Governed`]) — users and organizations by their **Forgejo** names,
 //!   whether referenced through a CR or a `remoteName` — against the
 //!   policies read through the [`PolicySource`] port (`NamespaceNotAllowed`);
-//! - credentials of a site admin — a token or an OAuth2 application of a
-//!   `ForgejoUser` with `admin: true`, or of the operator's own admin
-//!   account — need an `Allow` rule naming that user in `allowedUsers`,
-//!   even while no policy exists (`NamespaceNotAllowed`).
+//! - credentials of a site admin — a token, an SSH key or an OAuth2
+//!   application of a `ForgejoUser` with `admin: true` (or in
+//!   `managementPolicy: Observe`, or a `remoteName`: flags this view can't
+//!   trust), of the operator's own admin account, or a `ForgejoUser` that
+//!   makes its account a site admin — need an `Allow` rule naming that
+//!   user in `allowedUsers`, even while no policy exists
+//!   (`NamespaceNotAllowed`). The reconcilers check it again on what
+//!   Forgejo says ([`enforce_remote_admins`]): an account can be a site
+//!   admin whatever its CR declares.
 //!
 //! A CR bound to a `ForgejoLocalInstance` is not governed by the policies
 //! (its namespace's own token bounds what it can do): only its secret
@@ -28,7 +33,8 @@ use domain::error::ReasonCode;
 use api::common::SecretTarget;
 
 use crate::ports::{
-    BoundInstance, ClusterError, PolicySource, RefKind, ReferenceReader, SecretOwner,
+    BoundInstance, ClusterError, ForgejoGateway, PolicySource, RefKind, ReferenceReader,
+    SecretOwner,
 };
 use crate::use_cases::refs::forgejo_name;
 use crate::use_cases::{Failure, emit};
@@ -47,8 +53,11 @@ pub enum Named<'a> {
 pub enum Credential<'a> {
     /// The operator's own admin account ([`allow_list::INSTANCE_ADMIN`]).
     InstanceAdmin,
-    /// A referenced user: a site admin when its CR says `admin: true` — or
-    /// whenever it's a `remoteName`, whose flags the policy can't read.
+    /// The CR's own account, by its Forgejo login, as a site admin.
+    OwnAdmin(&'a str),
+    /// A referenced user: a site admin when its CR says `admin: true` or
+    /// only observes the account — or whenever it's a `remoteName`, whose
+    /// flags the policy can't read.
     User(&'a IdentityRef),
 }
 
@@ -89,6 +98,16 @@ impl Governed for ForgejoUser {
     }
     fn secret_targets(&self) -> &[SecretTarget] {
         &self.spec.secret_targets
+    }
+    /// Making an account a site admin — and emitting its password — is
+    /// minting site-admin credentials.
+    fn credential_users(&self) -> Vec<Credential<'_>> {
+        let manages = self.spec.management_policy == api::common::ManagementPolicy::Manage;
+        if manages && self.spec.admin {
+            vec![Credential::OwnAdmin(&self.spec.username)]
+        } else {
+            vec![]
+        }
     }
 }
 
@@ -256,6 +275,7 @@ pub async fn enforce_on<K: Governed>(
     for user in obj.credential_users() {
         match user {
             Credential::InstanceAdmin => admins.push(allow_list::INSTANCE_ADMIN.to_string()),
+            Credential::OwnAdmin(login) => admins.push(login.to_string()),
             Credential::User(r) => {
                 let admin = match r.target(namespace) {
                     Some((ns, name)) => refs
@@ -275,6 +295,39 @@ pub async fn enforce_on<K: Governed>(
     Ok(check_admin_credentials(
         namespace,
         kind_of(K::KIND),
+        &admins,
+        &policies,
+    ))
+}
+
+/// The reconciler side of the site-admin rule, on what Forgejo says:
+/// `logins` (the resolved users whose credentials a `kind` CR mints) that
+/// are site admins in Forgejo need the same explicit rule. Catches what
+/// the cluster view can't: an account made a site admin outside the
+/// operator, or after its credentials were minted. Only for a CR whose
+/// instance is governed by the policies; a Forgejo error is a `Failure`.
+pub async fn enforce_remote_admins(
+    policies: &dyn PolicySource<NamespaceRule>,
+    gateway: &dyn ForgejoGateway,
+    namespace: &str,
+    kind: NamespacedKind,
+    logins: &[String],
+) -> Result<Result<(), Failure>, ClusterError> {
+    let mut admins = Vec::new();
+    for login in logins {
+        match gateway.get_user(login).await {
+            Ok(Some(user)) if user.admin => admins.push(login.clone()),
+            Ok(_) => {}
+            Err(e) => return Ok(Err(e.into())),
+        }
+    }
+    if admins.is_empty() {
+        return Ok(Ok(()));
+    }
+    let policies = policies.policies().await?;
+    Ok(check_admin_credentials(
+        namespace,
+        kind_of(kind),
         &admins,
         &policies,
     ))
@@ -690,5 +743,90 @@ mod tests {
                 .unwrap()
                 .is_ok()
         );
+    }
+
+    fn user(admin: bool, policy: &str) -> ForgejoUser {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoUser",
+            "metadata": {"name": "root", "namespace": "team-a"},
+            "spec": {"username": "root", "email": "r@x", "admin": admin,
+                     "managementPolicy": policy},
+        }))
+        .unwrap()
+    }
+
+    fn allow_users(users: Option<Vec<String>>) -> Vec<Vec<NamespaceRule>> {
+        vec![vec![NamespaceRule {
+            namespaces: vec!["team-a".into()],
+            allowed_kinds: vec![NamespacedKind::ForgejoUser],
+            allowed_organizations: None,
+            allowed_users: users,
+            allowed_templates: None,
+            effect: ApiEffect::Allow,
+        }]]
+    }
+
+    #[tokio::test]
+    async fn making_a_site_admin_needs_an_explicit_allow() {
+        let cluster = crate::test_support::FakeCluster::default();
+        let verdict = |u: ForgejoUser| {
+            let cluster = &cluster;
+            async move { enforce(cluster, cluster, "team-a", &u).await.unwrap() }
+        };
+        assert!(verdict(user(false, "Manage")).await.is_ok());
+        let denied = verdict(user(true, "Manage")).await.unwrap_err();
+        assert_eq!(denied.reason, ReasonCode::NamespaceNotAllowed);
+        // An observed account isn't made anything.
+        assert!(verdict(user(true, "Observe")).await.is_ok());
+        cluster.set_policies(allow_users(None));
+        assert!(verdict(user(true, "Manage")).await.is_err(), "any user");
+        cluster.set_policies(allow_users(Some(vec!["root".into()])));
+        assert!(verdict(user(true, "Manage")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_observed_user_is_a_site_admin_for_its_credentials() {
+        // The cluster reader reports an observed user as `admin`.
+        let cluster = crate::test_support::FakeCluster::default();
+        cluster.put(
+            RefKind::User,
+            "team-a",
+            "root",
+            crate::ports::ReferencedCr {
+                admin: true,
+                spec_name: Some("root".into()),
+                ..Default::default()
+            },
+        );
+        let key: ForgejoUserKey = serde_json::from_value(serde_json::json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoUserKey",
+            "metadata": {"name": "k", "namespace": "team-a"},
+            "spec": {"userRef": {"name": "root"}, "publicKey": "ssh-ed25519 AAAA"},
+        }))
+        .unwrap();
+        let denied = enforce(&cluster, &cluster, "team-a", &key).await.unwrap();
+        assert_eq!(denied.unwrap_err().reason, ReasonCode::NamespaceNotAllowed);
+    }
+
+    #[tokio::test]
+    async fn the_remote_admin_flag_is_what_counts() {
+        let cluster = crate::test_support::FakeCluster::default();
+        let fj = crate::test_support::FakeForgejo::default();
+        fj.insert_user("ci-bot");
+        let logins = ["ci-bot".to_string()];
+        let kind = NamespacedKind::ForgejoAccessToken;
+        let check = || enforce_remote_admins(&cluster, &fj, "team-a", kind, &logins);
+        assert!(check().await.unwrap().is_ok(), "not an admin");
+        fj.set_admin("ci-bot", true);
+        let denied = check().await.unwrap().unwrap_err();
+        assert_eq!(denied.reason, ReasonCode::NamespaceNotAllowed);
+        cluster.set_policies(allow_tokens(None));
+        assert!(check().await.unwrap().is_err(), "any user");
+        cluster.set_policies(allow_tokens(Some(vec!["ci-bot".into()])));
+        assert!(check().await.unwrap().is_ok());
+        // A Forgejo error is not a denial.
+        fj.fail_next(crate::ports::GatewayError::Unreachable("down".into()));
+        let failed = check().await.unwrap().unwrap_err();
+        assert_ne!(failed.reason, ReasonCode::NamespaceNotAllowed);
     }
 }

@@ -7,7 +7,8 @@ name: E2E
 # policies.
 #
 # Runs on PRs touching what ships, weekly, on demand, and as the gate of
-# publish.yml (workflow_call): nothing is pushed unless it passes.
+# publish.yml (workflow_call): nothing is pushed unless the main image's
+# run passes (the static one, optional in a release, doesn't gate it).
 on:
   pull_request:
     paths:
@@ -42,10 +43,17 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    # The static image is optional in a release (publish.yml): its e2e
+    # failing is reported, not a gate.
+    continue-on-error: ${{ !matrix.required }}
     strategy:
       fail-fast: false
       matrix:
-        file: [Containerfile, Containerfile.static]
+        include:
+          - file: Containerfile
+            required: true
+          - file: Containerfile.static
+            required: false
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

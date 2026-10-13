@@ -96,6 +96,20 @@ The same goes for an OAuth2 application **without `ownerRef`**: it belongs
 to the operator's own admin account, so it needs a rule listing
 `@instance-admin`.
 
+What counts as a site admin isn't only what the CR says:
+
+- a `ForgejoUserKey` (an SSH key pushes as its user) follows the same rule;
+- a `ForgejoUser` with `admin: true` (`managementPolicy: Manage`) makes its
+  account a site admin: it needs the same explicit rule, for the
+  `ForgejoUser` kind;
+- a user referenced by `remoteName`, or through a `ForgejoUser` in
+  `managementPolicy: Observe`, is treated as a site admin by the webhook:
+  its flags aren't the CR's to say;
+- before minting, each reconciler asks **Forgejo** whether the account is a
+  site admin, whatever its CR declares. An account made a site admin
+  outside the operator, or after its token was issued, is refused the same
+  way, and an access token already issued for it is **revoked**.
+
 ```yaml
 apiVersion: forgejo.weebo.io/v1alpha1
 kind: ForgejoNamespacePolicy
@@ -119,6 +133,20 @@ re-point at an instance its namespace wasn't meant to reach. To move a CR,
 delete it (with `deletionPolicy: Orphan` if the object must stay) and create
 it again. A `ForgejoLocalInstance` of another namespace is only usable when
 it lists the CR's namespace in its `sharedWith`.
+
+### A local instance only uses a Secret labelled for it
+
+The operator reads Secrets with its own rights. A `ForgejoLocalInstance`
+picks its URL and its token `Secret`, so the operator only reads a token
+`Secret` labelled `forgejo.weebo.io/instance-token: "true"`: being allowed
+to create a local instance doesn't let anyone send another `Secret` of the
+namespace to a server of their choosing (`TokenSecretNotAllowed`).
+
+The same goes for the Secrets a CR hands to Forgejo, which sends them to a
+URL the CR names (a migration's `cloneAddr`, a webhook's `url`):
+`migrate.authSecretRef`, `secretRef` and `authorizationHeaderSecretRef` are
+only read from a Secret labelled `forgejo.weebo.io/credential: "true"`
+(`SecretNotAllowed`).
 
 ## Admission webhook
 

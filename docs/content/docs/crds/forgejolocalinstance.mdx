@@ -41,7 +41,7 @@ spec:
 | --- | --- | --- | --- | --- |
 | `sharedWith` | `object` | no |  | Other namespaces (or cluster-scoped objects) allowed to use this instance — and its token. Unset: this namespace only. |
 | `tls` | `object` | no | `{"insecureSkipVerify":false}` | TLS verification for the API connection above; the CA `Secret` lives in this namespace. |
-| `tokenSecretRef` | `object` | yes |  | Key of a `Secret` of this namespace holding the API token the operator acts with (a site admin's for user and organization management). Re-read on every gateway call, so rotating it needs no restart. |
+| `tokenSecretRef` | `object` | yes |  | Key of a `Secret` of this namespace holding the API token the operator acts with (a site admin's for user and organization management). Re-read on every gateway call, so rotating it needs no restart. The `Secret` must carry the label `forgejo.weebo.io/instance-token: "true"`: the operator reads it with its own rights, so only a Secret labelled for that use is ever sent to the instance's URL. |
 | `url` | `string` | yes |  | Base web URL of the Forgejo instance, e.g. `https://git.example.com` — not the `/api/v1` REST endpoint, which is derived from it. Written as `FORGEJO_URL` into emitted secrets. |
 
 ## Build a manifest

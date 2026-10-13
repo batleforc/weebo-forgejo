@@ -45,5 +45,11 @@ async fn instance_reports_the_forgejo_version() {
         Some((c.status.clone(), c.message.clone()))
     })
     .await;
-    assert_eq!(ready, ("True".into(), "Forgejo 16.0.5".into()));
+    assert_eq!(
+        ready,
+        (
+            "True".into(),
+            "Forgejo 16.0.5, as site admin \"admin\"".into()
+        )
+    );
 }

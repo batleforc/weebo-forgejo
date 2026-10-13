@@ -51,6 +51,15 @@ pub const IMPORT_PENDING_ANNOTATION: &str = "forgejo.weebo.io/import-pending";
 /// namespace deletion, an `Orphan` repository or user).
 pub const KEY_OWNER_ANNOTATION: &str = "forgejo.weebo.io/key-owner";
 
+/// A **label** of a `Secret`: `"true"` lets the CRs of its namespace use it
+/// as a credential the operator hands to Forgejo (`migrate.authSecretRef`,
+/// a webhook's `secretRef` and `authorizationHeaderSecretRef`). The
+/// operator reads Secrets with its own rights and those CRs name where the
+/// value goes (a clone URL, a webhook URL): without that consent, anyone
+/// allowed to create them could have any `Secret` of the namespace sent to
+/// a server of their choosing.
+pub const CREDENTIAL_LABEL: &str = "forgejo.weebo.io/credential";
+
 /// On every `Secret` the operator emits: the emitting CR, as
 /// `<Kind>/<namespace>/<name>` (`<Kind>/<name>` when cluster-scoped). A
 /// `Secret` without it (and without the `managed-by` label) or naming

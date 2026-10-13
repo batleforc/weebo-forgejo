@@ -20,7 +20,7 @@ use application::ports::{
     RepositoryInitOptions,
 };
 use forgejo_client::apis::configuration::{ApiKey, Configuration};
-use forgejo_client::apis::{Error, miscellaneous_api};
+use forgejo_client::apis::{Error, miscellaneous_api, user_api};
 use forgejo_client::models;
 use serde::de::DeserializeOwned;
 
@@ -79,6 +79,13 @@ impl ForgejoGateway for ForgejoHttpGateway {
 
     fn web_url(&self) -> &str {
         &self.web_url
+    }
+
+    async fn token_user(&self) -> Result<RemoteUser, GatewayError> {
+        let user = user_api::user_get_current(&self.config)
+            .await
+            .map_err(classify)?;
+        Ok(users::remote(user))
     }
 
     async fn get_user(&self, username: &str) -> Result<Option<RemoteUser>, GatewayError> {

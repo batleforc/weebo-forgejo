@@ -42,10 +42,10 @@ printcolumns `Ready` / `ID` / `Age` **(≠ authentik, qui n'en a pas)**.
 | Kind | Scope | Short | Rôle |
 |---|---|---|---|
 | `ForgejoInstance` | cluster | `fji` | Connexion : `url`, `tokenSecretRef{name,namespace,key}` (token admin), `tls{insecureSkipVerify, caSecretRef}`, `secretStore{backend: kubernetes\|vault, vault{…}}` |
-| `ForgejoUser` | cluster | `fjuser` | Utilisateur (3 modes, cf. ci-dessous) |
-| `ForgejoUserKey` | cluster | `fjukey` | Clé SSH publique d'un `ForgejoUser` (`/admin/users/{u}/keys`) |
-| `ForgejoOrganization` | cluster | `fjorg` | Organisation (`/orgs`, `/admin/users/{u}/orgs`) |
-| `ForgejoTeam` | cluster | `fjteam` | Équipe d'une org : `permission`, `unitsMap`, `includesAllRepositories`, `canCreateOrgRepo`, `memberRefs[]` (l'accès aux dépôts se déclare côté dépôt, cf. M2) |
+| `ForgejoUser` | namespaced | `fjuser` | Utilisateur (3 modes, cf. ci-dessous) |
+| `ForgejoUserKey` | namespaced | `fjukey` | Clé SSH publique d'un `ForgejoUser` (`/admin/users/{u}/keys`) |
+| `ForgejoOrganization` | namespaced | `fjorg` | Organisation (`/orgs`, `/admin/users/{u}/orgs`) |
+| `ForgejoTeam` | namespaced | `fjteam` | Équipe d'une org : `permission`, `unitsMap`, `includesAllRepositories`, `canCreateOrgRepo`, `memberRefs[]` (l'accès aux dépôts se déclare côté dépôt, cf. M2) |
 | `ForgejoNamespacePolicy` | cluster | `fjnp` | Allow-list : quels namespaces peuvent créer quelles kinds, dans quelles orgs |
 | `ForgejoRepository` | namespaced | `fjrepo` | Dépôt : création (vide / auto-init / template), pull-mirror/migrate, settings, archive, branch protections, `teamRefs[]` |
 | `ForgejoWebhook` | namespaced | `fjhook` | Webhook repo ou org |
@@ -53,10 +53,11 @@ printcolumns `Ready` / `ID` / `Age` **(≠ authentik, qui n'en a pas)**.
 | `ForgejoOAuth2Application` | namespaced | `fjoauth` | App OAuth2 ; client id/secret écrits dans `secretTargets` |
 | `ForgejoAccessToken` | namespaced | `fjtoken` | Token d'accès d'un utilisateur ; valeur écrite dans `secretTargets` |
 
-Découpage du scope (même logique qu'authentik) : les objets d'**identité /
-structure partagée** sont cluster-scoped ; les objets **possédés par une
-équipe applicative** ou **qui produisent un Secret** sont namespaced, et
-c'est ce que l'allow-list gouverne.
+Découpage du scope : seuls `ForgejoInstance` et `ForgejoNamespacePolicy`
+sont cluster-scoped (plus `ForgejoLocalInstance`, namespacé). Les objets
+d'identité (users, clés, organisations, équipes) sont devenus namespacés
+(D6, kit `docs/plan.md`), partageables par `sharedWith` ; l'allow-list
+gouverne tous les kinds namespacés liés à une `ForgejoInstance`.
 
 ### Instance par défaut
 
@@ -168,16 +169,25 @@ relisible via GET). Donc :
 - Créé via `POST /admin/users/{u}/tokens` (v16+), `scopes` +
   `repositories[]` optionnel. Valeur retournée une seule fois → écrite
   dans `secretTargets` (`FORGEJO_TOKEN`, `FORGEJO_URL`).
-- Token supprimé côté Forgejo (détection par nom) ou Secret cible
-  disparu ⇒ recréation.
-- Rotation : annotation `forgejo.weebo.io/rotate-secret` ou
-  `spec.rotationPeriod` (durée) comparé à `status.lastRotation`.
+- Token suivi par id (`status.forgejoId`, utilisateur par
+  `status.ownerId`) : supprimé côté Forgejo ou Secret cible disparu ⇒
+  recréation.
+- Rotation : annotation `forgejo.weebo.io/rotate-secret` (nonce comparé
+  à `status.lastRotation`) ou `spec.rotationPeriod` (durée comparée au
+  `created_at` du token).
+- Collision de nom : sous un `spec.name` explicite, un token existant du
+  même nom n'est jamais révoqué (`ForgejoObjectAlreadyExists`) ; nom
+  dérivé (`<ns>-<cr>`) ou `secretPending` : c'est un reste d'un essai
+  précédent, révoqué puis réémis. Revendication D8 sur (utilisateur, nom)
+  → `RemoteObjectClaimed`.
 - Changement de `scopes` = delete-recreate = **disruptif** (cf. politique
   de mutation).
 - Ordre d'une rotation : **émettre le nouveau, l'écrire partout, puis
   révoquer l'ancien** (le token alterne entre `name` et `name-next`, les
   noms étant uniques par utilisateur). Écriture ratée : le nouveau est
-  révoqué, l'ancien reste valide, `secretPending` relance.
+  révoqué, l'ancien reste valide (et suivi), `secretPending` relance.
+  Révocation de l'ancien ratée : `secretPending` relance aussi, et
+  l'émission suivante le révoque par son nom.
 
 ### ForgejoRepository (v1)
 
@@ -378,9 +388,13 @@ l'instance.
   `<pathPrefix>/<namespace>/`. Les stores ne modifient/suppriment que ce
   qu'ils possèdent : label `managed-by` + annotation
   `forgejo.weebo.io/owner: <Kind>/<ns>/<name>` (Vault : `custom_metadata`).
-- **Identifiants d'admin** : token / app OAuth2 d'un `ForgejoUser`
-  `admin: true` (ou `@instance-admin`) refusés sauf règle `Allow` qui le
-  nomme dans `allowedUsers` — **même sans aucune policy**.
+- **Identifiants d'admin** : token / clé SSH / app OAuth2 d'un
+  `ForgejoUser` `admin: true`, observé (`Observe`) ou en `remoteName` (ou
+  `@instance-admin`), et un `ForgejoUser` `admin: true` lui-même, refusés
+  sauf règle `Allow` qui le nomme dans `allowedUsers` — **même sans aucune
+  policy**. Les reconcilers revérifient sur ce que dit Forgejo
+  (`enforce_remote_admins`) ; un token déjà émis pour un compte devenu
+  admin est révoqué.
 - **Résolution par id** : utilisateurs et organisations renommés hors
   opérateur sont retrouvés par id (renommés en retour, supprimés par id),
   jamais recréés à côté ni confondus avec un homonyme.
@@ -400,6 +414,17 @@ l'instance.
   finalizers/deletion, backoff avec jitter, échecs « à changement requis »
   relancés à 300 s ; appels Forgejo bornés par instance + métriques
   `weebo_forgejo_forgejo_*` ; `/metrics` Prometheus, `/readyz` `/livez`.
+- Revue du 2026-10-13 :
+  - `--manage-users` : le mot de passe d'un compte adopté n'est jamais
+    réinitialisé ; seul un mot de passe que l'opérateur a lui-même émis
+    (`status.passwordEmitted`) est remplacé quand le user devient bot ou
+    externe.
+  - Clés SSH générées : la nouvelle clé est ajoutée (titre alterné
+    `title`/`title-next`) et écrite partout avant la suppression de
+    l'ancienne, comme pour les tokens.
+  - `ForgejoInstance` : le token doit être celui d'un site admin
+    (`GET /user`, `InstanceTokenNotAdmin`) ; une `ForgejoLocalInstance`
+    accepte un token non admin (message seulement).
 
 ## Convention d'erreurs : codes stables
 
@@ -416,7 +441,10 @@ Catalogue initial (à étendre uniquement dans l'enum) : `Reconciled`,
 `NamespaceNotAllowed`, `CrossNamespaceReference`, `SecretTargetFailed`,
 `InvalidSpec`, `UnsupportedForgejoVersion` (instance < v16, ajouté en M1),
 `KubernetesApiError` (apiserver en échec pendant la résolution de
-l'instance : transitoire, plus confondu avec `InvalidSpec`).
+l'instance : transitoire, plus confondu avec `InvalidSpec`),
+`InstanceTokenNotAdmin` (token d'une `ForgejoInstance` qui n'est pas
+celui d'un site admin, revue du 2026-10-13). Le catalogue complet est
+l'enum (`docs/content/docs/reference/`).
 
 ## Modèle de status commun
 
@@ -425,6 +453,7 @@ status:
   observedGeneration: int64
   forgejoId: string | null     # PK côté Forgejo ; présent = cette CR possède l'objet
   lastRotation: string | null  # nonce/horodatage de la dernière rotation (OAuth2, token)
+  passwordEmitted: bool | null # ForgejoUser : un mot de passe généré a été émis
   conditions:
     - type: Ready
       status: "True" | "False" | "Unknown"

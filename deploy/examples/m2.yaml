@@ -1,6 +1,10 @@
 # M2 walkthrough, on top of m1.yaml (the `weebo` organization, its
 # `weebo-devs` team and the `ci-bot` user). Namespaced CRs live in the
 # namespace of the team that owns the application.
+#
+# The webhook's HMAC Secret is handed to Forgejo, so it opts in:
+#   kubectl -n team-a create secret generic app-ci-webhook --from-literal=hmac=<secret>
+#   kubectl -n team-a label secret app-ci-webhook forgejo.weebo.io/credential=true
 apiVersion: forgejo.weebo.io/v1alpha1
 kind: ForgejoRepository
 metadata:

@@ -200,3 +200,143 @@ async fn namespace_policy_gates_tokens_per_user() {
     .await;
     assert_eq!(issued.1, "Reconciled");
 }
+
+#[tokio::test]
+async fn site_admin_tokens_are_refused_and_revoked() {
+    let h = harness().await;
+    let (c, ctx) = (&h.client, &h.ctx);
+    tokio::spawn(controller::user::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::token::run(c.clone(), ctx.clone()));
+
+    let pp = PostParams::default();
+    let users: Api<ForgejoUser> = Api::namespaced(c.clone(), "default");
+    let tokens: Api<ForgejoAccessToken> = Api::namespaced(c.clone(), "default");
+    // An observed account: its CR says nothing of its flags.
+    h.forgejo.insert_user("root");
+    users
+        .create(
+            &pp,
+            &cr(json!({
+                "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoUser",
+                "metadata": {"name": "root"},
+                "spec": {"username": "root", "managementPolicy": "Observe"},
+            })),
+        )
+        .await
+        .unwrap();
+    users
+        .create(
+            &pp,
+            &cr(json!({
+                "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoUser",
+                "metadata": {"name": "ci-bot"},
+                "spec": {"username": "ci-bot", "email": "ci-bot@example.com", "bot": true},
+            })),
+        )
+        .await
+        .unwrap();
+    for (name, user) in [("observed", "root"), ("ci", "ci-bot")] {
+        tokens
+            .create(
+                &pp,
+                &cr(json!({
+                    "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoAccessToken",
+                    "metadata": {"name": name},
+                    "spec": {"userRef": {"name": user}, "scopes": ["read:user"],
+                             "secretTargets": [{"name": format!("{name}-token")}]},
+                })),
+            )
+            .await
+            .unwrap();
+    }
+    let denied = wait_for(&tokens, "observed", |t| {
+        condition(t.status.as_ref(), "Ready")
+    })
+    .await;
+    assert_eq!(denied, ("False".into(), "NamespaceNotAllowed".into()));
+
+    let token_id: i64 = wait_for(&tokens, "ci", |t| {
+        let s = t.status.as_ref()?;
+        (condition(Some(s), "Ready")?.0 == "True").then_some(())?;
+        s.forgejo_id.as_ref()?.parse().ok()
+    })
+    .await;
+    // Made a site admin by hand in Forgejo: the issued token is revoked at
+    // the next reconcile.
+    h.forgejo.set_admin("ci-bot", true);
+    tokens
+        .patch(
+            "ci",
+            &PatchParams::default(),
+            &Patch::Merge(json!({"metadata": {"annotations": {"touch": "1"}}})),
+        )
+        .await
+        .unwrap();
+    let revoked = wait_for(&tokens, "ci", |t| {
+        let s = t.status.as_ref()?;
+        let ready = condition(Some(s), "Ready").filter(|c| c.0 == "False")?;
+        s.forgejo_id.is_none().then_some(ready)
+    })
+    .await;
+    assert_eq!(revoked.1, "NamespaceNotAllowed");
+    assert!(h.forgejo.token(token_id).is_none(), "revoked in Forgejo");
+}
+
+#[tokio::test]
+async fn a_token_name_is_claimed_once_per_user() {
+    let h = harness().await;
+    let (c, ctx) = (&h.client, &h.ctx);
+    tokio::spawn(controller::user::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::token::run(c.clone(), ctx.clone()));
+
+    let pp = PostParams::default();
+    // The instance the harness resolves to: its URL is the server the
+    // claim compares.
+    Api::<api::ForgejoInstance>::all(c.clone())
+        .create(
+            &pp,
+            &cr(json!({
+                "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoInstance",
+                "metadata": {"name": "default"},
+                "spec": {"url": "https://git.example.com",
+                         "tokenSecretRef": {"name": "t", "namespace": "default", "key": "token"}},
+            })),
+        )
+        .await
+        .unwrap();
+    let users: Api<ForgejoUser> = Api::namespaced(c.clone(), "default");
+    let tokens: Api<ForgejoAccessToken> = Api::namespaced(c.clone(), "default");
+    users
+        .create(
+            &pp,
+            &cr(json!({
+                "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoUser",
+                "metadata": {"name": "ci-bot"},
+                "spec": {"username": "ci-bot", "email": "ci-bot@example.com", "bot": true},
+            })),
+        )
+        .await
+        .unwrap();
+    let token = |name: &str| {
+        cr::<ForgejoAccessToken>(json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoAccessToken",
+            "metadata": {"name": name},
+            "spec": {"userRef": {"name": "ci-bot"}, "name": "deploy", "scopes": ["read:user"],
+                     "secretTargets": [{"name": format!("{name}-token")}]},
+        }))
+    };
+    tokens.create(&pp, &token("first")).await.unwrap();
+    let first: i64 = wait_for(&tokens, "first", |t| {
+        let s = t.status.as_ref()?;
+        (condition(Some(s), "Ready")?.0 == "True").then_some(())?;
+        s.forgejo_id.as_ref()?.parse().ok()
+    })
+    .await;
+    tokens.create(&pp, &token("second")).await.unwrap();
+    let claimed = wait_for(&tokens, "second", |t| {
+        condition(t.status.as_ref(), "Ready").filter(|c| c.1 == "RemoteObjectClaimed")
+    })
+    .await;
+    assert_eq!(claimed.0, "False");
+    assert!(h.forgejo.token(first).is_some(), "the first one untouched");
+}

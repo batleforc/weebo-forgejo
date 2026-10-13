@@ -21,7 +21,7 @@ the kit, not here, then release it (tag) and bump the `tag` of the
 `weebo-kit-*` entries in `Cargo.toml`. For a joint change, temporarily
 use `path = "../weebo-operator-kit/crates/<crate>"` — never push that.
 
-- `crates/domain` — pure logic (`ReasonCode` catalog, conditions). Zero
+- `crates/domain` — pure logic (`ReasonCode` catalog, allow-list). Zero
   `kube`/`http` dependency.
 - `crates/api` — the CRD types (`kube::CustomResource` derives).
 - `crates/application` — `reconcile_*` use-cases + port traits (`ports.rs`),

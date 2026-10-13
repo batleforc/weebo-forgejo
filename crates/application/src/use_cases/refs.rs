@@ -13,7 +13,8 @@ use weebo_kit_application::refs::{RefError, Referenced};
 use weebo_kit_application::sharing::shares_with;
 
 use crate::ports::{
-    BoundInstance, ClusterError, ForgejoGateway, ForgejoRef, RefKind, ReferenceReader, ReferencedCr,
+    BoundInstance, ClusterError, ForgejoGateway, ForgejoRef, RefKind, ReferenceReader,
+    ReferencedCr, SecretKey,
 };
 use crate::use_cases::Failure;
 use crate::use_cases::reconcile_team::Member;
@@ -72,7 +73,7 @@ pub fn require(kind: RefKind, name: &str, state: RefState) -> Result<ForgejoRef,
     state.require().map_err(|e| {
         let reason = match e {
             RefError::NotFound => ReasonCode::ReferenceNotFound,
-            RefError::NotReady(_) => ReasonCode::ReferenceNotReady,
+            RefError::NotReconciled | RefError::NotReady(_) => ReasonCode::ReferenceNotReady,
             RefError::OtherInstance(_) => ReasonCode::InvalidSpec,
         };
         Failure::new(reason, e.describe(kind.as_str(), name))
@@ -317,7 +318,11 @@ pub async fn resolve_member(
             },
             login: r.remote_name.clone(),
         },
-        RefState::NotReady(why) => {
+        state @ (RefState::NotReconciled | RefState::NotReady(_)) => {
+            let why = match state {
+                RefState::NotReady(why) => why,
+                _ => "not reconciled yet".into(),
+            };
             let login = match r.target(from.namespace) {
                 Some((namespace, name)) => from
                     .reader
@@ -338,18 +343,29 @@ pub async fn resolve_member(
     }))
 }
 
-/// One key of a `Secret` in `namespace`, as UTF-8. Missing Secret/key or
-/// non-UTF-8 content is a `ReferenceNotFound` failure, not a cluster error.
+/// One key of a credential `Secret` in `namespace`, as UTF-8. Missing
+/// Secret/key or non-UTF-8 content is a `ReferenceNotFound` failure, an
+/// unlabelled Secret `SecretNotAllowed`, not a cluster error.
 pub async fn read_secret_key(
     reader: &dyn ReferenceReader,
     namespace: &str,
     name: &str,
     key: &str,
 ) -> Result<Result<String, Failure>, ClusterError> {
-    let value = reader
-        .secret_key(namespace, name, key)
-        .await?
-        .and_then(|v| String::from_utf8(v).ok());
+    let value = match reader.secret_key(namespace, name, key).await? {
+        SecretKey::Value(v) => String::from_utf8(v).ok(),
+        SecretKey::Missing => None,
+        SecretKey::NotLabelled => {
+            return Ok(Err(Failure::new(
+                ReasonCode::SecretNotAllowed,
+                format!(
+                    "Secret {namespace}/{name} is not labelled {}=\"true\": only a Secret \
+                     labelled for it is handed to Forgejo",
+                    api::CREDENTIAL_LABEL
+                ),
+            )));
+        }
+    };
     Ok(value.ok_or_else(|| {
         Failure::new(
             ReasonCode::ReferenceNotFound,
@@ -429,10 +445,7 @@ mod tests {
             state("oidc").await,
             RefState::NotReady("UserNotFound".into())
         );
-        assert_eq!(
-            state("fresh").await,
-            RefState::NotReady("NotReconciledYet".into())
-        );
+        assert_eq!(state("fresh").await, RefState::NotReconciled);
         assert_eq!(
             state("elsewhere").await,
             RefState::OtherInstance(BoundInstance::cluster("other"))
@@ -674,6 +687,18 @@ mod tests {
             let err = read(key).await.unwrap().unwrap_err();
             assert_eq!(err.reason, ReasonCode::ReferenceNotFound);
         }
+    }
+
+    #[tokio::test]
+    async fn an_unlabelled_secret_is_never_read() {
+        let cluster = FakeCluster::default();
+        cluster.put_unlabelled_secret("ns", "s", "token", b"value".to_vec());
+        let err = read_secret_key(&cluster, "ns", "s", "token")
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.reason, ReasonCode::SecretNotAllowed);
+        assert!(!err.message.contains("value"), "{}", err.message);
     }
 
     #[tokio::test]

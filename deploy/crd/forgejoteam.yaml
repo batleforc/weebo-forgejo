@@ -181,7 +181,10 @@ spec:
                     description: Cluster-scoped objects may use this instance.
                     type: boolean
                   namespaceSelector:
-                    description: Namespaces whose labels match this selector may use this instance.
+                    description: |-
+                      Namespaces whose labels match this selector may use this instance.
+                      An empty selector (`{}`) matches every namespace: the instance —
+                      and the token it holds — is then shared with the whole cluster.
                     nullable: true
                     properties:
                       matchExpressions:
@@ -329,6 +332,14 @@ spec:
                   mistaken for a different one.
                 nullable: true
                 type: string
+              passwordEmitted:
+                description: |-
+                  A `ForgejoUser`'s generated password was handed out to its
+                  `secretTargets`: turning it into a bot (or an external account) then
+                  replaces the password, so the one handed out stops working. Never
+                  set on an adopted account: its password isn't the operator's.
+                nullable: true
+                type: boolean
               secretPending:
                 description: |-
                   A secret (token, client secret, password) was issued in Forgejo but

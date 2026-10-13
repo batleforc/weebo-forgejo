@@ -15,7 +15,7 @@ use api::team::{ForgejoTeamSpec, TeamPermission};
 use api::webhook::ForgejoWebhookSpec;
 use api::{ForgejoDeployKey, ForgejoOrganization, ForgejoRepository, ForgejoTeam, ForgejoWebhook};
 use k8s_openapi::api::core::v1::Secret;
-use kube::api::{Api, ObjectMeta, PostParams};
+use kube::api::{Api, ObjectMeta, Patch, PatchParams, PostParams};
 use support::{condition, harness, wait_for, wait_for_absence};
 
 const NS: &str = "default";
@@ -147,7 +147,8 @@ async fn repository_with_team_hook_and_generated_deploy_key() {
         vec!["devs"]
     );
 
-    // Webhook with an HMAC secret from a Secret in the same namespace.
+    // Webhook with an HMAC secret from a Secret in the same namespace —
+    // only read once the Secret is labelled for it.
     let secrets: Api<Secret> = Api::namespaced(h.client.clone(), NS);
     secrets
         .create(
@@ -187,6 +188,21 @@ async fn repository_with_team_hook_and_generated_deploy_key() {
                 },
                 status: None,
             },
+        )
+        .await
+        .unwrap();
+    let refused = wait_for(&hooks, "ci", |h| {
+        condition(h.status.as_ref(), "Ready").filter(|(status, _)| status == "False")
+    })
+    .await;
+    assert_eq!(refused.1, "SecretNotAllowed");
+    secrets
+        .patch(
+            "hook-secret",
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({
+                "metadata": {"labels": {"forgejo.weebo.io/credential": "true"}},
+            })),
         )
         .await
         .unwrap();

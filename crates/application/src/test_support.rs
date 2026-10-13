@@ -14,7 +14,7 @@ use crate::ports::{
     GatewayError, GenerateOptions, HookTarget, MigrateOptions, PolicySource, ProtectionRule,
     RefKind, ReferenceReader, ReferencedCr, RemoteHook, RemoteKey, RemoteOAuth2App,
     RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
-    RepositoryInitOptions,
+    RepositoryInitOptions, SecretKey,
 };
 use crate::use_cases::reconcile_webhook::{forgejo_echoes, forgejo_events};
 
@@ -78,6 +78,11 @@ struct State {
     /// Unix seconds stamped on new tokens.
     clock: i64,
     failures: VecDeque<GatewayError>,
+    /// `(prefix, error)`: the next mutating call starting with `prefix`
+    /// fails, whatever comes before it.
+    failing_call: Option<(String, GatewayError)>,
+    /// The instance token belongs to a non-admin account.
+    token_not_admin: bool,
     calls: Vec<String>,
 }
 
@@ -105,6 +110,17 @@ impl FakeForgejo {
     /// The next gateway call fails with `err` (queued, one per call).
     pub fn fail_next(&self, err: GatewayError) {
         self.state.lock().unwrap().failures.push_back(err);
+    }
+
+    /// Whether the instance token is a site admin's (it is by default).
+    pub fn set_token_admin(&self, admin: bool) {
+        self.state.lock().unwrap().token_not_admin = !admin;
+    }
+
+    /// The next mutating call starting with `prefix` (e.g.
+    /// `"delete_access_token"`) fails with `err`.
+    pub fn fail_call(&self, prefix: &str, err: GatewayError) {
+        self.state.lock().unwrap().failing_call = Some((prefix.to_string(), err));
     }
 
     /// Every mutating call so far, e.g. `"edit_user alice"`.
@@ -237,6 +253,12 @@ impl FakeForgejo {
         id
     }
 
+    /// Makes `login` a site admin (or not), as an admin would by hand.
+    pub fn set_admin(&self, login: &str, admin: bool) {
+        let mut s = self.state.lock().unwrap();
+        s.users.get_mut(login).unwrap().remote.admin = admin;
+    }
+
     pub fn insert_team_member(&self, team: i64, login: &str) {
         let mut s = self.state.lock().unwrap();
         s.teams
@@ -261,6 +283,13 @@ impl FakeForgejo {
         let mut s = self.state.lock().unwrap();
         if let Some(err) = s.failures.pop_front() {
             return Err(err);
+        }
+        if let Some(call) = &call
+            && s.failing_call
+                .as_ref()
+                .is_some_and(|(p, _)| call.starts_with(p.as_str()))
+        {
+            return Err(s.failing_call.take().unwrap().1);
         }
         if let Some(call) = call {
             s.calls.push(call);
@@ -434,6 +463,17 @@ impl ForgejoGateway for FakeForgejo {
 
     fn web_url(&self) -> &str {
         "https://git.example.com"
+    }
+
+    async fn token_user(&self) -> Result<RemoteUser, GatewayError> {
+        let s = self.begin(None)?;
+        Ok(RemoteUser {
+            id: 1,
+            login: "admin".into(),
+            admin: !s.token_not_admin,
+            active: true,
+            ..Default::default()
+        })
     }
 
     async fn get_user(&self, username: &str) -> Result<Option<RemoteUser>, GatewayError> {
@@ -1292,13 +1332,17 @@ impl ForgejoInventory for FakeForgejo {
 
 pub use weebo_kit_application::test_support::FakeSecretStore;
 
+/// A key of a fake `Secret`: `None` when the Secret doesn't carry the
+/// credential label.
+type FakeSecretKey = Option<Vec<u8>>;
+
 /// In-memory [`ReferenceReader`] and [`PolicySource`]: the referenced CRs,
 /// `Secret` keys and namespace policies a controller would read from the
 /// cluster.
 #[derive(Default)]
 pub struct FakeCluster {
     refs: Mutex<BTreeMap<(String, String, String), ReferencedCr>>,
-    secrets: Mutex<BTreeMap<(String, String, String), Vec<u8>>>,
+    secrets: Mutex<BTreeMap<(String, String, String), FakeSecretKey>>,
     policies: Mutex<Vec<Vec<NamespaceRule>>>,
     failure: Mutex<Option<String>>,
     dependents: Mutex<Vec<String>>,
@@ -1318,11 +1362,20 @@ impl FakeCluster {
             .insert(Self::ref_key(kind, namespace, name), cr);
     }
 
+    /// A key of a `Secret` labelled `forgejo.weebo.io/credential: "true"`.
     pub fn put_secret(&self, namespace: &str, name: &str, key: &str, value: Vec<u8>) {
         self.secrets
             .lock()
             .unwrap()
-            .insert((namespace.into(), name.into(), key.into()), value);
+            .insert((namespace.into(), name.into(), key.into()), Some(value));
+    }
+
+    /// A key of a `Secret` without the credential label.
+    pub fn put_unlabelled_secret(&self, namespace: &str, name: &str, key: &str, _value: Vec<u8>) {
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert((namespace.into(), name.into(), key.into()), None);
     }
 
     pub fn set_namespace_labels(&self, namespace: &str, labels: BTreeMap<String, String>) {
@@ -1394,6 +1447,16 @@ impl ReferenceReader for FakeCluster {
         Ok(self.claimants.lock().unwrap().clone())
     }
 
+    async fn token_claimants(
+        &self,
+        _user: &str,
+        _token_name: &str,
+        _instance: &crate::ports::BoundInstance,
+    ) -> Result<Vec<String>, ClusterError> {
+        self.check()?;
+        Ok(self.claimants.lock().unwrap().clone())
+    }
+
     async fn referenced(
         &self,
         kind: RefKind,
@@ -1414,14 +1477,20 @@ impl ReferenceReader for FakeCluster {
         namespace: &str,
         name: &str,
         key: &str,
-    ) -> Result<Option<Vec<u8>>, ClusterError> {
+    ) -> Result<SecretKey, ClusterError> {
         self.check()?;
-        Ok(self
-            .secrets
-            .lock()
-            .unwrap()
-            .get(&(namespace.into(), name.into(), key.into()))
-            .cloned())
+        Ok(
+            match self
+                .secrets
+                .lock()
+                .unwrap()
+                .get(&(namespace.into(), name.into(), key.into()))
+            {
+                None => SecretKey::Missing,
+                Some(None) => SecretKey::NotLabelled,
+                Some(Some(v)) => SecretKey::Value(v.clone()),
+            },
+        )
     }
 }
 

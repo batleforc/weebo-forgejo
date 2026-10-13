@@ -132,6 +132,17 @@ spec:
 The migration runs inside Forgejo while the operator waits, for up to 15
 minutes.
 
+The `authSecretRef` Secret must carry the label
+`forgejo.weebo.io/credential: "true"`, otherwise the repository is
+`Ready: False` (`SecretNotAllowed`). The operator reads it with its own
+rights and Forgejo sends it to `cloneAddr`: the label is the namespace's
+consent that this Secret may leave the cluster that way.
+
+```bash
+kubectl create secret generic github --from-literal=token=<token>
+kubectl label secret github forgejo.weebo.io/credential=true
+```
+
 </Tab>
 </Tabs>
 
@@ -205,6 +216,9 @@ know:
   a new id and **loses its delivery history**.
 - **The authorization header** (`authorizationHeaderSecretRef`) is edited in
   place.
+- **Both Secrets must be labelled** `forgejo.weebo.io/credential: "true"`
+  (`SecretNotAllowed` otherwise): Forgejo sends their content to the hook's
+  `url`, so only a Secret the namespace labelled for that use is read.
 
 ## Deploy keys
 

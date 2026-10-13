@@ -34,6 +34,20 @@ reason_codes! {
         InstanceUnreachable,
         /// The `ForgejoInstance` token `Secret` (or the key in it) is missing.
         TokenSecretNotFound,
+        /// The `ForgejoInstance` token doesn't belong to a Forgejo site
+        /// admin: the admin APIs the operator relies on would fail on every
+        /// CR. Use a site admin's token.
+        InstanceTokenNotAdmin,
+        /// The token `Secret` of a `ForgejoLocalInstance` doesn't carry the
+        /// `forgejo.weebo.io/instance-token: "true"` label. The operator
+        /// reads Secrets with its own rights: a local instance may only use
+        /// a Secret its namespace labelled for it. Label the Secret.
+        TokenSecretNotAllowed,
+        /// A `Secret` a CR hands to Forgejo as a credential
+        /// (`migrate.authSecretRef`, a webhook's `secretRef` or
+        /// `authorizationHeaderSecretRef`) doesn't carry the
+        /// `forgejo.weebo.io/credential: "true"` label. Label the Secret.
+        SecretNotAllowed,
         /// This CR is now bound to a Forgejo object — created, adopted by the
         /// importer, or observed (Event only: `status.forgejoId` was just
         /// recorded).
@@ -67,7 +81,8 @@ reason_codes! {
         /// kind and name) is already owned by another CR, possibly in
         /// another namespace or through another instance of the same
         /// server. Nothing is called; reference it with `remoteName`
-        /// instead, or rename it.
+        /// instead, or rename it. For an access token: another CR already
+        /// issues a token of that name for the same user.
         RemoteObjectClaimed,
         /// A `*Ref` field resolves to a CR that isn't `Ready` yet (no
         /// `status.forgejoId`). The controller watches the referenced kind, so

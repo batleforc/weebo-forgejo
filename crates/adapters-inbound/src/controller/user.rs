@@ -13,7 +13,7 @@ use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
 use kube::{Client, ResourceExt};
 
-use super::status::{current_ref, secret_pending, spec_changed};
+use super::status::{current_ref, password_emitted, secret_pending, spec_changed};
 use super::{Ctx, Error, FINALIZER, ScopedWatches, error_policy, requeue_after, status};
 use crate::metrics::record_reconcile;
 
@@ -78,6 +78,7 @@ async fn apply(api: &Api<ForgejoUser>, user: &ForgejoUser, ctx: &Ctx) -> Result<
                         current: current_ref(&current),
                         spec_changed: spec_changed(&current),
                         secret_pending: secret_pending(&current.status),
+                        password_emitted: password_emitted(&current.status),
                     };
                     reconcile_user(input, gateway.as_ref(), secrets.as_ref()).await
                 }

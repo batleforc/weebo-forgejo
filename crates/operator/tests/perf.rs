@@ -103,6 +103,14 @@ async fn fake_forgejo() -> MockServer {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"version": "16.0.5"})))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"id": 1, "login": "root", "is_admin": true})),
+        )
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/api/v1/orgs"))
         .respond_with(Create(orgs.clone()))

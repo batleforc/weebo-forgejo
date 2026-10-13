@@ -18,15 +18,13 @@ use api::{
     ForgejoRepository, ForgejoTeam, ForgejoUser,
 };
 use application::ports::{
-    ClusterError, ForgejoRef, PolicySource, RefKind, ReferenceReader, ReferencedCr,
+    ClusterError, ForgejoRef, PolicySource, RefKind, ReferenceReader, ReferencedCr, SecretKey,
 };
-use k8s_openapi::api::core::v1::Namespace;
+use k8s_openapi::api::core::v1::{Namespace, Secret};
 use kube::api::ListParams;
 use kube::core::{Selector, SelectorExt};
 use kube::{Api, Client, Resource};
 use serde::de::DeserializeOwned;
-
-use weebo_kit_adapters::read_secret_key;
 
 pub struct KubeClusterReader {
     client: Client,
@@ -361,7 +359,8 @@ impl ReferenceReader for KubeClusterReader {
                     status: o.status.as_ref(),
                     spec_name: &o.spec.username,
                     shared_with: o.spec.shared_with.as_ref(),
-                    admin: o.spec.admin,
+                    // An observed account's flags aren't the CR's to say.
+                    admin: o.spec.admin || o.spec.management_policy == ManagementPolicy::Observe,
                 })
                 .await
             }
@@ -506,20 +505,81 @@ impl ReferenceReader for KubeClusterReader {
         Ok(claimed)
     }
 
+    async fn token_claimants(
+        &self,
+        user: &str,
+        token_name: &str,
+        instance: &BoundInstance,
+    ) -> Result<Vec<String>, ClusterError> {
+        use application::use_cases::reconcile_token::{rotated_name, token_name as name_of};
+
+        let servers = self.servers().await?;
+        let server_of = |bound: Option<&BoundInstance>| {
+            let bound = bound?;
+            servers
+                .iter()
+                .find(|(b, _)| b == bound)
+                .map(|(_, url)| url.clone())
+        };
+        let Some(target) = server_of(Some(instance)) else {
+            return Ok(Vec::new());
+        };
+        let clash = |theirs: &str| {
+            theirs == token_name
+                || rotated_name(theirs) == token_name
+                || theirs == rotated_name(token_name)
+        };
+        let tokens = self
+            .namespaced_api::<api::ForgejoAccessToken>()
+            .list(&self.params())
+            .await
+            .map_err(|e| ClusterError(format!("listing ForgejoAccessToken: {e}")))?;
+        let mut claimed = Vec::new();
+        for t in tokens.items {
+            let status = t.status.as_ref();
+            let issued_for = status.and_then(|s| s.forgejo_name.as_deref());
+            let on = server_of(status.and_then(|s| s.instance.as_ref()));
+            let (ns, name) = (
+                t.metadata.namespace.clone().unwrap_or_default(),
+                t.metadata.name.clone().unwrap_or_default(),
+            );
+            if issued_for.is_some_and(|u| u.eq_ignore_ascii_case(user))
+                && on.as_ref() == Some(&target)
+                && clash(&name_of(&t.spec, &ns, &name))
+            {
+                claimed.push(format!("ForgejoAccessToken/{ns}/{name}"));
+            }
+        }
+        Ok(claimed)
+    }
+
     async fn secret_key(
         &self,
         namespace: &str,
         name: &str,
         key: &str,
-    ) -> Result<Option<Vec<u8>>, ClusterError> {
-        let secret_ref = api::common::SecretKeyRef {
-            namespace: namespace.to_string(),
-            name: name.to_string(),
-            key: key.to_string(),
-        };
-        read_secret_key(&self.client, &secret_ref)
+    ) -> Result<SecretKey, ClusterError> {
+        let api: Api<Secret> = Api::namespaced(self.client.clone(), namespace);
+        let Some(secret) = api
+            .get_opt(name)
             .await
-            .map_err(ClusterError)
+            .map_err(|e| ClusterError(format!("reading secret {namespace}/{name}: {e}")))?
+        else {
+            return Ok(SecretKey::Missing);
+        };
+        let labelled = secret
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get(api::CREDENTIAL_LABEL))
+            .is_some_and(|v| v == "true");
+        if !labelled {
+            return Ok(SecretKey::NotLabelled);
+        }
+        Ok(secret
+            .data
+            .and_then(|mut data| data.remove(key))
+            .map_or(SecretKey::Missing, |v| SecretKey::Value(v.0)))
     }
 }
 

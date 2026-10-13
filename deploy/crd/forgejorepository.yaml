@@ -267,7 +267,9 @@ spec:
                 nullable: true
                 properties:
                   authSecretRef:
-                    description: Credentials for the remote, from a `Secret` in this namespace.
+                    description: |-
+                      Credentials for the remote, from a `Secret` in this namespace.
+                      The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`.
                     nullable: true
                     properties:
                       name:
@@ -552,6 +554,14 @@ spec:
                   mistaken for a different one.
                 nullable: true
                 type: string
+              passwordEmitted:
+                description: |-
+                  A `ForgejoUser`'s generated password was handed out to its
+                  `secretTargets`: turning it into a bot (or an external account) then
+                  replaces the password, so the one handed out stops working. Never
+                  set on an adopted account: its password isn't the operator's.
+                nullable: true
+                type: boolean
               secretPending:
                 description: |-
                   A secret (token, client secret, password) was issued in Forgejo but

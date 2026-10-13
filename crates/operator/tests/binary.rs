@@ -67,6 +67,14 @@ async fn binary_serves_the_webhook_leads_reconciles_and_exits_on_lease_loss() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"version": "16.0.5"})))
         .mount(&forgejo)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/user"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"id": 1, "login": "root", "is_admin": true})),
+        )
+        .mount(&forgejo)
+        .await;
 
     let secrets: Api<k8s_openapi::api::core::v1::Secret> =
         Api::namespaced(client.clone(), "default");
