@@ -68,7 +68,10 @@ where it writes.
   reference Secrets (a webhook's `secretRef`) in its own namespace. A target
   naming another namespace is refused before anything is written — by the
   admission webhook and again by the reconciler — with `CrossNamespaceReference`.
-  On a namespaced CR, a Vault `path` must stay under `<pathPrefix>/<namespace>/`.
+  A Vault `path` must stay under `<pathPrefix>/<namespace>/` (on a
+  cluster-scoped CR, the target's namespace), unless the instance's
+  [`pathGrants`](/docs/guides/connect-instance#writing-outside-the-namespace-subtree)
+  open it to the CR's namespace.
   Vault values record their owner in the KV custom metadata (`owner`) and are
   never overwritten nor deleted by another CR.
 - The operator only overwrites or deletes a Secret it **owns**: one labelled

@@ -109,11 +109,20 @@ reason_codes! {
         NamespaceNotAllowed,
         /// A namespaced CR references a namespaced CR in another namespace.
         CrossNamespaceReference,
-        /// A `SecretStore` (Kubernetes or Vault) write/delete/auth call failed.
+        /// A `SecretStore` (Kubernetes or Vault) write/delete/auth call failed,
+        /// or a Vault target's explicit `path` is outside
+        /// `<pathPrefix>/<namespace>/` and no `pathGrants` entry of the
+        /// instance opens it (also refused at admission).
         SecretTargetFailed,
         /// The spec is schema-valid but not a shape a reconciler can act on
         /// (e.g. a one-of discriminator without its matching sub-struct).
         InvalidSpec,
+        /// The `ForgejoInstance`'s `secretStore.vault.pathGrants` holds an
+        /// invalid grant (no namespace and not `clusterScoped`, or both; a
+        /// path pattern with an empty, `.` or `..` segment, a `*` before
+        /// its last segment, or no literal segment). Vault targets fail
+        /// until it is fixed.
+        InvalidVaultPathGrants,
         /// An update would take a CR still carrying the finalizer out of
         /// the operator's label selector (`watch.labelSelector`): refused at
         /// admission.

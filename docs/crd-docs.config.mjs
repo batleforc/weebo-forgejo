@@ -135,7 +135,10 @@ ideas behind the fields, start with [Concepts](/docs/concepts).`,
       DisruptiveUpdateRefused: "See [Disruptive changes](/docs/guides/operations#disruptive-changes)",
       NamespaceNotAllowed: "Adjust the [allow-list](/docs/guides/allow-list); a site admin's credentials need an explicit rule",
       CrossNamespaceReference: "Typically a `secretTargets` entry in another namespace: write into the CR's own namespace",
-      SecretTargetFailed: "Check RBAC or Vault access and the target's namespace/path",
+      SecretTargetFailed:
+        "Check RBAC or Vault access and the target's namespace/path (a Vault path outside `<pathPrefix>/<namespace>/` needs a `pathGrants` entry on the instance)",
+      InvalidVaultPathGrants:
+        "Fix `secretStore.vault.pathGrants` on the instance; the message names the entry",
       InvalidSpec: "Fix the spec (e.g. not both `organizationRef` and `userRef`); the message says what's wrong",
       ReferenceNotAllowed:
         "Reference a CR of this namespace; or enable `references.crossNamespace` on the release and list this namespace in the target's `sharedWith`",

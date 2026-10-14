@@ -5,5 +5,25 @@
 //! `InstanceDirectory` resolving a CR's `instanceRef`.
 
 use api::{ForgejoInstance, ForgejoLocalInstance};
+use application::ports::{BoundInstance, InstanceVault, InstanceVaults};
+use weebo_kit_adapters::Resolved;
 
 pub type ForgejoInstances = weebo_kit_adapters::Instances<ForgejoInstance, ForgejoLocalInstance>;
+
+/// [`InstanceVaults`] over the instances: what the admission webhook checks
+/// Vault targets against.
+pub struct ForgejoInstanceVaults(pub std::sync::Arc<ForgejoInstances>);
+
+#[async_trait::async_trait]
+impl InstanceVaults for ForgejoInstanceVaults {
+    async fn vault_of(&self, instance: &BoundInstance) -> Result<InstanceVault, String> {
+        Ok(match self.0.get(instance).await? {
+            None => InstanceVault::NotFound,
+            Some(Resolved::Local(_)) => InstanceVault::None,
+            Some(Resolved::Cluster(cluster)) => match cluster.spec.secret_store.vault.clone() {
+                Some(vault) => InstanceVault::Vault(Box::new(vault)),
+                None => InstanceVault::None,
+            },
+        })
+    }
+}

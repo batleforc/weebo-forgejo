@@ -2,7 +2,7 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use weebo_kit_api::{SecretStoreBackend, TlsOptions};
+pub use weebo_kit_api::{SecretStoreBackend, TlsOptions, VaultPathGrant};
 
 use crate::common::SecretKeyRef;
 use crate::status::ForgejoStatus;
@@ -71,11 +71,22 @@ pub struct VaultSecretStoreSpec {
     /// KV v2 secrets engine mount (e.g. `secret`) credentials are written
     /// under.
     pub mount: String,
-    /// Path prefix under `mount` — the final KV path is
+    /// Path prefix under `mount` — the default KV path is
     /// `<pathPrefix>/<namespace>/<name>`, one secret per emitting CR
-    /// (same convention as the Kubernetes backend's Secret naming).
+    /// (same convention as the Kubernetes backend's Secret naming). Empty:
+    /// `<namespace>/<name>`. A CR's explicit `path` must stay under
+    /// `<pathPrefix>/<namespace>/` unless `pathGrants` opens it.
     #[serde(default = "default_vault_path_prefix")]
     pub path_prefix: String,
+    /// Vault paths this instance's CRs may write to outside their
+    /// namespace's subtree `<pathPrefix>/<namespace>/`, per namespace (or
+    /// for cluster-scoped CRs). A grant opens its paths to everyone allowed
+    /// to create an emitting CR in a covered namespace, and may let such a
+    /// CR take over a value no CR owns yet: prefer exact paths. The Vault
+    /// policy of the operator's role stays the hard bound.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 32))]
+    pub path_grants: Vec<VaultPathGrant>,
     /// Vault Kubernetes-auth role this operator authenticates as — its own
     /// ServiceAccount JWT is exchanged for a Vault token via
     /// `auth/<kubernetesAuthMount>/login`.

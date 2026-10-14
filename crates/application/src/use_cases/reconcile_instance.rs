@@ -1,6 +1,8 @@
 use crate::ports::ForgejoGateway;
 use crate::use_cases::{Failure, Outcome};
+use api::instance::VaultSecretStoreSpec;
 use domain::error::ReasonCode;
+use weebo_kit_domain::vault_paths::{self, PathGrant};
 
 /// Oldest Forgejo major this operator supports: v16 introduced the admin
 /// access-token API (`.prompt/plan.md`, "Périmètre").
@@ -57,6 +59,27 @@ pub async fn reconcile_instance(gateway: &dyn ForgejoGateway, require_admin: boo
     )
 }
 
+/// Why the instance's Vault `pathGrants` are refused, if they are. The CRD
+/// schema refuses them already; this catches a CR stored under an older
+/// schema (its Vault targets fail the same way at login).
+pub fn check_path_grants(vault: Option<&VaultSecretStoreSpec>) -> Option<Failure> {
+    let grants: Vec<PathGrant<'_>> = vault?
+        .path_grants
+        .iter()
+        .map(|g| PathGrant {
+            namespaces: &g.namespaces,
+            cluster_scoped: g.cluster_scoped,
+            paths: &g.paths,
+        })
+        .collect();
+    vault_paths::validate(&grants).err().map(|e| {
+        Failure::new(
+            ReasonCode::InvalidVaultPathGrants,
+            format!("secretStore.vault.{e}"),
+        )
+    })
+}
+
 /// Forgejo reports versions like `16.0.5+gitea-1.22.0` or
 /// `16.0.0-dev-505-abcdef`.
 fn major(version: &str) -> Option<u64> {
@@ -93,6 +116,27 @@ mod tests {
         let fj = FakeForgejo::with_version("11.0.16");
         let outcome = reconcile_instance(&fj, true).await;
         assert_eq!(outcome.reason(), ReasonCode::UnsupportedForgejoVersion);
+    }
+
+    #[test]
+    fn invalid_path_grants_are_reported() {
+        let vault = |paths: &[&str]| -> VaultSecretStoreSpec {
+            serde_json::from_value(serde_json::json!({
+                "address": "https://vault:8200", "mount": "secret",
+                "kubernetesAuthRole": "forgejo",
+                "pathGrants": [{"namespaces": ["ci"], "paths": paths}],
+            }))
+            .unwrap()
+        };
+        assert!(check_path_grants(None).is_none());
+        assert!(check_path_grants(Some(&vault(&["argocd/auth", "+/forgejo"]))).is_none());
+        let failure = check_path_grants(Some(&vault(&["+/*"]))).expect("whole mount");
+        assert_eq!(failure.reason, ReasonCode::InvalidVaultPathGrants);
+        assert!(
+            failure.message.contains("pathGrants[0]"),
+            "{}",
+            failure.message
+        );
     }
 
     #[tokio::test]

@@ -194,7 +194,7 @@ spec:
     vault:
       address: https://vault.example.com:8200
       mount: secret              # a KV version 2 engine
-      pathPrefix: weebo-forgejo  # default path: <pathPrefix>/<namespace>/<name>
+      pathPrefix: weebo-forgejo  # default path: <pathPrefix>/<namespace>/<name> ("": <namespace>/<name>)
       kubernetesAuthRole: weebo-forgejo
       caSecretRef: { name: vault-ca, namespace: weebo-forgejo, key: ca.crt }
 ```
@@ -215,6 +215,49 @@ vault write auth/kubernetes/role/weebo-forgejo \
   bound_service_account_namespaces=weebo-forgejo \
   token_policies=weebo-forgejo
 ```
+
+### Writing outside the namespace subtree
+
+A CR's Vault targets stay under `<pathPrefix>/<namespace>/`, explicit
+`path` included: the operator's Vault identity is shared by every
+namespace, and without that bound anyone allowed to create a CR would
+write wherever the operator can. When an admin namespace publishes
+credentials where their consumers already read them, open those paths to it
+with `pathGrants`:
+
+```yaml
+spec:
+  secretStore:
+    vault:
+      # …
+      pathGrants:
+        - namespaces: [platform]        # exact names, *, or a prefix like team-*
+          paths:
+            - argocd/forgejo            # exact path
+            - +/forgejo                 # + = exactly one segment
+        - clusterScoped: true           # cluster-scoped CRs, instead of namespaces
+          paths: [shared/*]             # a last * = one or more segments
+```
+
+- Paths are compared **segment by segment** (`argocd/*` never covers
+  `argocd-dev/…`), and every pattern holds at least one literal segment:
+  `*`, `+/*` or `+/+` are refused by the CRD schema.
+- A grant opens its paths to **everyone allowed to create** a
+  `ForgejoOAuth2Application`, `ForgejoAccessToken`, `ForgejoUser`,
+  `ForgejoUserKey` or `ForgejoDeployKey` in a covered namespace: `team-*`
+  opens them to every team. Combine it with RBAC and the
+  [allow-list](/docs/guides/allow-list).
+- Ownership still applies: a value another CR owns is never overwritten.
+  But a value **no CR owns yet** (written by hand, by Terraform) is taken
+  over by the first covered CR writing it: prefer exact paths where such
+  values live.
+- The Vault policy of the operator's role stays the hard bound: grant it
+  the same paths, not the whole mount.
+- A path out of reach is refused at `kubectl apply` by the admission webhook,
+  and by the reconciler (`SecretTargetFailed`). An invalid grant puts the
+  instance `Ready: False` (`InvalidVaultPathGrants`). Removing a grant
+  leaves the values in place: the CRs writing there fail their reconcile,
+  and their deletion, until it is restored.
 
 ## Next
 

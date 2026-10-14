@@ -649,6 +649,23 @@ pub use weebo_kit_application::instances::{
     BoundInstance, InstanceDirectory, InstanceError, ResolveError, SharedWith,
 };
 
+/// The Vault connection of a resolved instance, as the admission webhook
+/// reads it (from the binary's instance reflectors).
+#[derive(Debug, Clone, PartialEq)]
+pub enum InstanceVault {
+    /// The instance doesn't exist (any more): the reconcile reports it.
+    NotFound,
+    /// No Vault: a `ForgejoLocalInstance`, or a `ForgejoInstance` without
+    /// `secretStore.vault`.
+    None,
+    Vault(Box<api::instance::VaultSecretStoreSpec>),
+}
+
+#[async_trait::async_trait]
+pub trait InstanceVaults: Send + Sync {
+    async fn vault_of(&self, instance: &BoundInstance) -> Result<InstanceVault, String>;
+}
+
 /// Secret stores are the kit's: Kubernetes `Secret`s and Vault KV, routed
 /// per target (`weebo_kit_adapters`).
 pub use weebo_kit_application::ports::{

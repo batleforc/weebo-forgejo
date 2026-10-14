@@ -139,7 +139,7 @@
             "type": "string"
           },
           "path": {
-            "description": "Vault only: explicit KV v2 path under the instance's mount. On a\nnamespaced CR it must stay under `<pathPrefix>/<namespace>/`.",
+            "description": "Vault only: explicit KV v2 path under the instance's mount. It must\nstay under `<pathPrefix>/<namespace>/` (this object's namespace, or\nthe target's on a cluster-scoped object), unless the instance's\n`pathGrants` open it to this object.",
             "nullable": true,
             "type": "string"
           }
