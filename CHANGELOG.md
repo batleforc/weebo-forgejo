@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.4.0](https://github.com/batleforc/weebo-forgejo/compare/db9d2d99e6fab44fe2265a320fc5ce2adbd07460..v0.4.0) - 2026-10-14
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) vault path grants on the ForgejoInstance, kit v0.15.0 (#11) - ([db9d2d9](https://github.com/batleforc/weebo-forgejo/commit/db9d2d99e6fab44fe2265a320fc5ce2adbd07460)) - Maxime, Claude Opus 5.5
+#### Bug Fixes
+- (**deps**) rustls 0.23.46 (RUSTSEC-2026-0346..0349) (#12) - ([6dceaea](https://github.com/batleforc/weebo-forgejo/commit/6dceaead934849be6c958e988114f4cbf931e9e0)) - Maxime, Claude Opus 5.5
+
+- - -
+
 ## [v0.3.2](https://github.com/batleforc/weebo-forgejo/compare/62df9f72f5d82f50a6dc05dbb502d85c9f6c6ec1..v0.3.2) - 2026-10-13
 #### Bug Fixes
 - (**admission**) revoke OAuth2 applications and SSH keys of new site admins, kit v0.14.1 (#10) - ([62df9f7](https://github.com/batleforc/weebo-forgejo/commit/62df9f72f5d82f50a6dc05dbb502d85c9f6c6ec1)) - Maxime, Claude Opus 5.5
