@@ -59,9 +59,64 @@
               "description": "KV v2 secrets engine mount (e.g. `secret`) credentials are written\nunder.",
               "type": "string"
             },
+            "pathGrants": {
+              "description": "Vault paths this instance's CRs may write to outside their\nnamespace's subtree `<pathPrefix>/<namespace>/`, per namespace (or\nfor cluster-scoped CRs). A grant opens its paths to everyone allowed\nto create an emitting CR in a covered namespace, and may let such a\nCR take over a value no CR owns yet: prefer exact paths. The Vault\npolicy of the operator's role stays the hard bound.",
+              "items": {
+                "description": "Paths of the instance's secret backend that objects may write to\noutside their namespace's subtree `<pathPrefix>/<namespace>/`. Opens\nthem to every subject allowed to create an emitting object in a\ncovered namespace, and cannot hand over a value another object owns.",
+                "properties": {
+                  "clusterScoped": {
+                    "description": "The grant opens `paths` to cluster-scoped objects (instead of\n`namespaces`).",
+                    "type": "boolean"
+                  },
+                  "namespaces": {
+                    "description": "Namespaces whose objects may write `paths`: exact names, `*`, or a\nprefix glob such as `team-*`. `team-*` opens the paths to every\nmatching namespace.",
+                    "items": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "paths": {
+                    "description": "Path patterns under the mount, compared segment by segment: a\nliteral segment matches itself, `+` exactly one segment, and a last\n`*` one or more. Each holds at least one literal segment, e.g.\n`batlehub/auth`, `+/auth`, `platform/*`. Prefer exact paths where\nvalues not written by the operator live: a covered object may take\nover a value no object owns yet.",
+                    "items": {
+                      "maxLength": 512,
+                      "pattern": "^(?:(?:[^/*+]+|\\+)/)*(?:[^/*+]+|\\+|\\*)$",
+                      "type": "string",
+                      "x-kubernetes-validations": [
+                        {
+                          "message": "a path pattern has no \".\" or \"..\" segment",
+                          "rule": "!self.matches('(^|/)\\\\.\\\\.?(/|$)')"
+                        },
+                        {
+                          "message": "a path pattern has at least one literal segment",
+                          "rule": "self.matches('(^|/)[^/*+]+(/|$)')"
+                        }
+                      ]
+                    },
+                    "maxItems": 64,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "paths"
+                ],
+                "type": "object",
+                "x-kubernetes-validations": [
+                  {
+                    "message": "a grant names namespaces or is clusterScoped, not both",
+                    "rule": "(has(self.namespaces) && size(self.namespaces) > 0) != (has(self.clusterScoped) && self.clusterScoped)"
+                  }
+                ]
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
             "pathPrefix": {
               "default": "weebo-forgejo",
-              "description": "Path prefix under `mount` — the final KV path is\n`<pathPrefix>/<namespace>/<name>`, one secret per emitting CR\n(same convention as the Kubernetes backend's Secret naming).",
+              "description": "Path prefix under `mount` — the default KV path is\n`<pathPrefix>/<namespace>/<name>`, one secret per emitting CR\n(same convention as the Kubernetes backend's Secret naming). Empty:\n`<namespace>/<name>`. A CR's explicit `path` must stay under\n`<pathPrefix>/<namespace>/` unless `pathGrants` opens it.",
               "type": "string"
             }
           },

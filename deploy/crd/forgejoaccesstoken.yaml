@@ -153,8 +153,10 @@ spec:
                       type: string
                     path:
                       description: |-
-                        Vault only: explicit KV v2 path under the instance's mount. On a
-                        namespaced CR it must stay under `<pathPrefix>/<namespace>/`.
+                        Vault only: explicit KV v2 path under the instance's mount. It must
+                        stay under `<pathPrefix>/<namespace>/` (this object's namespace, or
+                        the target's on a cluster-scoped object), unless the instance's
+                        `pathGrants` open it to this object.
                       nullable: true
                       type: string
                   required:

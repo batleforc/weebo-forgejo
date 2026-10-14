@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use api::ForgejoInstance;
 use application::ports::BoundInstance;
-use application::use_cases::reconcile_instance::reconcile_instance;
+use application::use_cases::reconcile_instance::{check_path_grants, reconcile_instance};
 use application::use_cases::{Failure, Outcome};
 use domain::error::ReasonCode;
 use kube::api::Api;
@@ -76,16 +76,21 @@ async fn apply(
     let name = obj.name_any();
     let started = Instant::now();
 
-    let outcome = match ctx
-        .gateways
-        .gateway_for(&BoundInstance::cluster(name))
-        .await
-    {
-        Ok(gateway) => reconcile_instance(gateway.as_ref(), true).await,
-        Err(e) => Outcome::failed(
-            None,
-            application::use_cases::Failure::new(e.reason(), e.to_string()),
-        ),
+    // Invalid Vault grants fail every Vault target: reported before the
+    // connectivity check.
+    let outcome = match check_path_grants(obj.spec.secret_store.vault.as_ref()) {
+        Some(failure) => Outcome::failed(None, failure),
+        None => match ctx
+            .gateways
+            .gateway_for(&BoundInstance::cluster(name))
+            .await
+        {
+            Ok(gateway) => reconcile_instance(gateway.as_ref(), true).await,
+            Err(e) => Outcome::failed(
+                None,
+                application::use_cases::Failure::new(e.reason(), e.to_string()),
+            ),
+        },
     };
 
     record_reconcile("ForgejoInstance", outcome.reason(), started.elapsed());

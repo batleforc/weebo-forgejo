@@ -5,7 +5,8 @@ use std::time::Duration;
 use adapters_inbound::controller::{self, Ctx, Shutdown};
 use adapters_inbound::webhook::{self, WebhookState};
 use adapters_outbound::{
-    ForgejoGatewayFactory, ForgejoInstances, ForgejoSecretStoreFactory, KubeClusterReader,
+    ForgejoGatewayFactory, ForgejoInstanceVaults, ForgejoInstances, ForgejoSecretStoreFactory,
+    KubeClusterReader,
 };
 use api::{
     ForgejoAccessToken, ForgejoDeployKey, ForgejoInstance, ForgejoLocalInstance,
@@ -241,7 +242,10 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
             client.clone(),
             instances.clone(),
         )),
-        secrets: Arc::new(ForgejoSecretStoreFactory::new(client.clone(), instances)),
+        secrets: Arc::new(ForgejoSecretStoreFactory::new(
+            client.clone(),
+            instances.clone(),
+        )),
         instances: directory.clone(),
         refs: cluster.clone(),
         policies: cluster,
@@ -268,6 +272,7 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
                 policies: webhook_cluster.clone(),
                 refs: webhook_cluster,
                 instances: Some(directory),
+                vaults: Some(Arc::new(ForgejoInstanceVaults(instances))),
             },
             health.clone(),
             scope.clone(),

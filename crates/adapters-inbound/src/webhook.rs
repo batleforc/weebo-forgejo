@@ -4,7 +4,9 @@
 //! webhook that only ran on the leader would turn a failover into a
 //! cluster-wide outage for these kinds. A CR bound to a
 //! `ForgejoLocalInstance` isn't governed by the policies (its namespace's
-//! own token bounds it). Plus `/scope`, the kit's `ScopeGuard`.
+//! own token bounds it). The explicit Vault paths of a CR's `secretTargets`
+//! are checked against its instance's `pathPrefix` and `pathGrants`, like
+//! the secret stores do. Plus `/scope`, the kit's `ScopeGuard`.
 
 use std::sync::Arc;
 
@@ -13,13 +15,18 @@ use api::{
     ForgejoAccessToken, ForgejoDeployKey, ForgejoOAuth2Application, ForgejoOrganization,
     ForgejoRepository, ForgejoTeam, ForgejoUser, ForgejoUserKey, ForgejoWebhook,
 };
-use application::ports::{InstanceDirectory, PolicySource, ReferenceReader};
+use application::ports::{
+    InstanceDirectory, InstanceVault, InstanceVaults, PolicySource, ReferenceReader,
+};
 use application::use_cases::admission::{Governed, enforce_on};
 use axum::Router;
 use domain::error::ReasonCode;
 use kube::core::DynamicObject;
 use serde::de::DeserializeOwned;
-use weebo_kit_runtime::admission::{Admission, Denial, ScopeGuard, scope_router, typed};
+use weebo_kit_api::SecretTarget;
+use weebo_kit_runtime::admission::{
+    Admission, Denial, ScopeGuard, VaultPaths, check_vault_targets, scope_router, typed,
+};
 use weebo_kit_runtime::{Health, WatchScope};
 
 use crate::controller::HasInstanceRef;
@@ -32,6 +39,9 @@ pub struct WebhookState {
     /// Resolves the reviewed CR's instance; `None`: every CR is governed
     /// by the policies.
     pub instances: Option<Arc<dyn InstanceDirectory>>,
+    /// The resolved instance's Vault connection; `None`: Vault paths are
+    /// only checked by the reconcilers.
+    pub vaults: Option<Arc<dyn InstanceVaults>>,
 }
 
 /// `POST /validate` (the kit's: a `DELETE` or an `UPDATE` leaving `spec`
@@ -67,7 +77,7 @@ impl Admission for WebhookState {
         namespace: &str,
         object: &DynamicObject,
     ) -> Result<(), Denial<ReasonCode>> {
-        let decision = match kind {
+        match kind {
             "ForgejoUser" => self.check::<ForgejoUser>(namespace, object).await,
             "ForgejoUserKey" => self.check::<ForgejoUserKey>(namespace, object).await,
             "ForgejoOrganization" => self.check::<ForgejoOrganization>(namespace, object).await,
@@ -80,9 +90,11 @@ impl Admission for WebhookState {
                     .await
             }
             "ForgejoAccessToken" => self.check::<ForgejoAccessToken>(namespace, object).await,
-            other => Err(format!("kind {other} is not handled by this webhook")),
-        };
-        decision.map_err(|message| Denial::new(ReasonCode::NamespaceNotAllowed, message))
+            other => Err(Denial::new(
+                ReasonCode::NamespaceNotAllowed,
+                format!("kind {other} is not handled by this webhook"),
+            )),
+        }
     }
 
     fn undecidable(&self) -> ReasonCode {
@@ -98,8 +110,9 @@ impl WebhookState {
         &self,
         namespace: &str,
         object: &DynamicObject,
-    ) -> Result<(), String> {
-        let typed: K = typed(object)?;
+    ) -> Result<(), Denial<ReasonCode>> {
+        let not_allowed = |message| Denial::new(ReasonCode::NamespaceNotAllowed, message);
+        let typed: K = typed(object).map_err(not_allowed)?;
         let instance = match &self.instances {
             Some(directory) => {
                 let recorded = typed.forgejo_status().and_then(|s| s.instance.as_ref());
@@ -112,13 +125,63 @@ impl WebhookState {
         };
         let (policies, refs) = (self.policies.as_ref(), self.refs.as_ref());
         match enforce_on(policies, refs, namespace, &typed, instance.as_ref()).await {
-            Ok(decision) => decision.map_err(|f| f.message),
+            Ok(decision) => decision.map_err(|f| not_allowed(f.message))?,
             Err(e) => {
                 tracing::error!(error = %e, "admission lookup failed");
-                Err("ForgejoNamespacePolicy lookup failed".to_string())
+                return Err(not_allowed(
+                    "ForgejoNamespacePolicy lookup failed".to_string(),
+                ));
             }
         }
+        match (&self.vaults, instance) {
+            (Some(vaults), Some(instance)) => {
+                check_vault_paths(
+                    vaults.as_ref(),
+                    &instance,
+                    namespace,
+                    typed.secret_targets(),
+                )
+                .await
+            }
+            // Not resolved: the reconcile reports why (InstanceNotFound…).
+            _ => Ok(()),
+        }
     }
+}
+
+/// The stores' Vault path rule, on `targets` of a CR in `namespace` bound
+/// to `instance`: refused with the store's message. An instance gone since
+/// the resolution, or unreadable, is left to the reconcile.
+async fn check_vault_paths(
+    vaults: &dyn InstanceVaults,
+    instance: &application::ports::BoundInstance,
+    namespace: &str,
+    targets: &[SecretTarget],
+) -> Result<(), Denial<ReasonCode>> {
+    if !targets
+        .iter()
+        .any(|t| t.backend == api::instance::SecretStoreBackend::Vault)
+    {
+        return Ok(());
+    }
+    let vault = match vaults.vault_of(instance).await {
+        Ok(InstanceVault::Vault(vault)) => vault,
+        Ok(InstanceVault::None) => {
+            return check_vault_targets(targets, Some(namespace), None)
+                .map_err(|m| Denial::new(ReasonCode::SecretTargetFailed, m));
+        }
+        Ok(InstanceVault::NotFound) => return Ok(()),
+        Err(e) => {
+            tracing::warn!(error = %e, "reading the instance's Vault settings failed");
+            return Ok(());
+        }
+    };
+    let paths = VaultPaths {
+        path_prefix: &vault.path_prefix,
+        path_grants: &vault.path_grants,
+    };
+    check_vault_targets(targets, Some(namespace), Some(paths))
+        .map_err(|m| Denial::new(ReasonCode::SecretTargetFailed, m))
 }
 
 #[cfg(test)]
@@ -157,6 +220,7 @@ mod tests {
             policies: cluster.clone(),
             refs: cluster,
             instances: None,
+            vaults: None,
         };
         weebo_kit_runtime::admission::handle(&state, review)
             .await
@@ -253,5 +317,53 @@ mod tests {
         .await;
         assert!(!response.allowed);
         assert!(response.result.message.contains("lookup failed"));
+    }
+
+    struct Vaults(InstanceVault);
+
+    #[async_trait::async_trait]
+    impl InstanceVaults for Vaults {
+        async fn vault_of(
+            &self,
+            _: &application::ports::BoundInstance,
+        ) -> Result<InstanceVault, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn vault_targets_need_the_instances_vault() {
+        let bound = application::ports::BoundInstance::cluster("main");
+        let vault: SecretTarget = serde_json::from_value(
+            serde_json::json!({"backend": "vault", "name": "app", "path": "argocd/auth"}),
+        )
+        .unwrap();
+        let kubernetes: SecretTarget =
+            serde_json::from_value(serde_json::json!({"name": "app"})).unwrap();
+        let bound = &bound;
+        let check = |v: InstanceVault, t: SecretTarget| async move {
+            check_vault_paths(&Vaults(v), bound, "ci", &[t]).await
+        };
+        let denial = check(InstanceVault::None, vault.clone()).await.unwrap_err();
+        assert_eq!(denial.reason, ReasonCode::SecretTargetFailed);
+        assert!(
+            denial.message.contains("no Vault connection"),
+            "{}",
+            denial.message
+        );
+        assert!(check(InstanceVault::None, kubernetes).await.is_ok());
+        assert!(check(InstanceVault::NotFound, vault.clone()).await.is_ok());
+        let spec: api::instance::VaultSecretStoreSpec = serde_json::from_value(serde_json::json!({
+            "address": "https://vault:8200", "mount": "secret", "kubernetesAuthRole": "forgejo",
+        }))
+        .unwrap();
+        let denial = check(InstanceVault::Vault(Box::new(spec)), vault)
+            .await
+            .unwrap_err();
+        assert!(
+            denial.message.contains("no pathGrants entry"),
+            "{}",
+            denial.message
+        );
     }
 }
