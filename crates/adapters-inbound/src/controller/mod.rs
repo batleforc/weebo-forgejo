@@ -318,6 +318,27 @@ pub async fn admin_allowed(
     Ok(!matches!(verdict, Err(f) if f.reason == domain::error::ReasonCode::NamespaceNotAllowed))
 }
 
+/// [`admin_allowed`] for what was issued to `stored_login` (as of
+/// `stored_id`, `status.ownerId`): checked under the account's login now
+/// (`owner_login_now`), since `get_user` ignores Forgejo's rename
+/// redirects and the old login of a renamed account reads as no user — not
+/// an admin. A deleted account (its objects went with it) or an error:
+/// `true`, nothing is revoked on a doubt.
+pub async fn owner_admin_allowed(
+    ctx: &Ctx,
+    instance: &BoundInstance,
+    gateway: &dyn application::ports::ForgejoGateway,
+    namespace: &str,
+    kind: api::namespace_policy::NamespacedKind,
+    stored_login: &str,
+    stored_id: Option<i64>,
+) -> Result<bool, Error> {
+    match application::use_cases::owner_login_now(gateway, stored_login, stored_id).await {
+        Ok(Some(login)) => admin_allowed(ctx, instance, gateway, namespace, kind, &login).await,
+        Ok(None) | Err(_) => Ok(true),
+    }
+}
+
 /// The gateway and secret store of a CR's instance, for kinds that emit
 /// secrets.
 pub async fn backends(
@@ -457,6 +478,7 @@ fn needs_a_change(reason: ReasonCode) -> bool {
             | ReasonCode::CrossNamespaceReference
             | ReasonCode::ForgejoObjectAlreadyExists
             | ReasonCode::UnsupportedForgejoVersion
+            | ReasonCode::InvalidVaultPathGrants
     )
 }
 

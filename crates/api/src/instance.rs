@@ -65,6 +65,10 @@ pub struct SecretStoreSpec {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[schemars(extend("x-kubernetes-validations" = [
+    {"rule": "!has(self.pathGrants) || self.pathGrants.all(g, !has(g.clusterScoped) || !g.clusterScoped)",
+     "message": "pathGrants name namespaces: every object writing credentials is namespaced, clusterScoped grants never apply"}
+]))]
 pub struct VaultSecretStoreSpec {
     /// Vault server address, e.g. `https://vault.example.com:8200`.
     pub address: String,
@@ -79,8 +83,9 @@ pub struct VaultSecretStoreSpec {
     #[serde(default = "default_vault_path_prefix")]
     pub path_prefix: String,
     /// Vault paths this instance's CRs may write to outside their
-    /// namespace's subtree `<pathPrefix>/<namespace>/`, per namespace (or
-    /// for cluster-scoped CRs). A grant opens its paths to everyone allowed
+    /// namespace's subtree `<pathPrefix>/<namespace>/`, per namespace
+    /// (`clusterScoped` is refused: every object writing credentials is
+    /// namespaced). A grant opens its paths to everyone allowed
     /// to create an emitting CR in a covered namespace, and may let such a
     /// CR take over a value no CR owns yet: prefer exact paths. The Vault
     /// policy of the operator's role stays the hard bound.

@@ -355,6 +355,95 @@ async fn site_admin_applications_and_keys_are_revoked() {
     assert!(h.forgejo.key(key_id).is_none(), "deleted in Forgejo");
 }
 
+/// The account behind a token and an OAuth2 application is renamed, then
+/// made a site admin, before either reconciles again: `status.forgejoName`
+/// still holds the old login, which Forgejo no longer knows (no rename
+/// redirect is followed). Both are still revoked, checked under the
+/// account's login now (`status.ownerId`), not left to live.
+#[tokio::test]
+async fn renamed_site_admin_credentials_are_revoked() {
+    use application::ports::ForgejoGateway;
+
+    let h = harness().await;
+    let (c, ctx) = (&h.client, &h.ctx);
+    tokio::spawn(controller::user::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::oauth2::run(c.clone(), ctx.clone()));
+    tokio::spawn(controller::token::run(c.clone(), ctx.clone()));
+
+    let pp = PostParams::default();
+    let users: Api<ForgejoUser> = Api::namespaced(c.clone(), "default");
+    let apps: Api<ForgejoOAuth2Application> = Api::namespaced(c.clone(), "default");
+    let tokens: Api<ForgejoAccessToken> = Api::namespaced(c.clone(), "default");
+    users
+        .create(
+            &pp,
+            &cr(json!({
+                "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoUser",
+                "metadata": {"name": "sso-bot"},
+                "spec": {"username": "sso-bot", "email": "sso-bot@example.com", "bot": true},
+            })),
+        )
+        .await
+        .unwrap();
+    apps.create(
+        &pp,
+        &cr(json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoOAuth2Application",
+            "metadata": {"name": "grafana"},
+            "spec": {"ownerRef": {"name": "sso-bot"}, "redirectUris": ["https://g/cb"]},
+        })),
+    )
+    .await
+    .unwrap();
+    tokens
+        .create(
+            &pp,
+            &cr(json!({
+                "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": "ForgejoAccessToken",
+                "metadata": {"name": "ci"},
+                "spec": {"userRef": {"name": "sso-bot"}, "scopes": ["read:user"],
+                         "secretTargets": [{"name": "ci-token"}]},
+            })),
+        )
+        .await
+        .unwrap();
+    let ready_id = |s: Option<&api::status::ForgejoStatus>| -> Option<i64> {
+        let s = s?;
+        (condition(Some(s), "Ready")?.0 == "True").then_some(())?;
+        s.forgejo_id.as_ref()?.parse().ok()
+    };
+    let app_id = wait_for(&apps, "grafana", |a| ready_id(a.status.as_ref())).await;
+    let token_id = wait_for(&tokens, "ci", |t| ready_id(t.status.as_ref())).await;
+
+    // Renamed and made a site admin by hand in Forgejo; its CR now only
+    // observes the account under its new login (a site admin to the
+    // cluster view): both CRs are refused at admission, before anything
+    // records the new login.
+    h.forgejo.rename_user("sso-bot", "sso-admin").await.unwrap();
+    h.forgejo.set_admin("sso-admin", true);
+    users
+        .patch(
+            "sso-bot",
+            &PatchParams::default(),
+            &Patch::Merge(
+                json!({"spec": {"username": "sso-admin", "managementPolicy": "Observe"}}),
+            ),
+        )
+        .await
+        .unwrap();
+    let released = |s: Option<&api::status::ForgejoStatus>| {
+        let s = s?;
+        let ready = condition(Some(s), "Ready").filter(|c| c.0 == "False")?;
+        s.forgejo_id.is_none().then_some(ready)
+    };
+    let app = wait_for(&apps, "grafana", |a| released(a.status.as_ref())).await;
+    assert_eq!(app.1, "NamespaceNotAllowed");
+    assert!(h.forgejo.oauth2_app(app_id).is_none(), "deleted in Forgejo");
+    let token = wait_for(&tokens, "ci", |t| released(t.status.as_ref())).await;
+    assert_eq!(token.1, "NamespaceNotAllowed");
+    assert!(h.forgejo.token(token_id).is_none(), "revoked in Forgejo");
+}
+
 #[tokio::test]
 async fn a_token_name_is_claimed_once_per_user() {
     let h = harness().await;

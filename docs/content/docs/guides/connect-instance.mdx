@@ -235,9 +235,12 @@ spec:
           paths:
             - argocd/forgejo            # exact path
             - +/forgejo                 # + = exactly one segment
-        - clusterScoped: true           # cluster-scoped CRs, instead of namespaces
+        - namespaces: [team-*]
           paths: [shared/*]             # a last * = one or more segments
 ```
+
+Every CR that writes credentials is namespaced: a grant names
+`namespaces`, and `clusterScoped: true` is refused by the CRD schema.
 
 - Paths are compared **segment by segment** (`argocd/*` never covers
   `argocd-dev/…`), and every pattern holds at least one literal segment:

@@ -157,10 +157,13 @@ async fn issue(
     if let Err(f) = admitted {
         // The token issued earlier may be a site admin's now (its user
         // made one since): refused, it is revoked, not just left to live.
+        // Under its user's login now: a renamed account's old one reads
+        // as no user, not an admin.
         let revoke = match &owned {
             Some(c) => {
                 let gw = gateway.as_ref();
-                !super::admin_allowed(ctx, bound, gw, &ns, KIND_POLICY, &c.name).await?
+                let (kind, login) = (KIND_POLICY, c.name.as_str());
+                !super::owner_admin_allowed(ctx, bound, gw, &ns, kind, login, stored_owner).await?
             }
             None => false,
         };

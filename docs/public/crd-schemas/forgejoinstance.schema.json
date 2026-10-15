@@ -60,7 +60,7 @@
               "type": "string"
             },
             "pathGrants": {
-              "description": "Vault paths this instance's CRs may write to outside their\nnamespace's subtree `<pathPrefix>/<namespace>/`, per namespace (or\nfor cluster-scoped CRs). A grant opens its paths to everyone allowed\nto create an emitting CR in a covered namespace, and may let such a\nCR take over a value no CR owns yet: prefer exact paths. The Vault\npolicy of the operator's role stays the hard bound.",
+              "description": "Vault paths this instance's CRs may write to outside their\nnamespace's subtree `<pathPrefix>/<namespace>/`, per namespace\n(`clusterScoped` is refused: every object writing credentials is\nnamespaced). A grant opens its paths to everyone allowed\nto create an emitting CR in a covered namespace, and may let such a\nCR take over a value no CR owns yet: prefer exact paths. The Vault\npolicy of the operator's role stays the hard bound.",
               "items": {
                 "description": "Paths of the instance's secret backend that objects may write to\noutside their namespace's subtree `<pathPrefix>/<namespace>/`. Opens\nthem to every subject allowed to create an emitting object in a\ncovered namespace, and cannot hand over a value another object owns.",
                 "properties": {
@@ -125,7 +125,13 @@
             "kubernetesAuthRole",
             "mount"
           ],
-          "type": "object"
+          "type": "object",
+          "x-kubernetes-validations": [
+            {
+              "message": "pathGrants name namespaces: every object writing credentials is namespaced, clusterScoped grants never apply",
+              "rule": "!has(self.pathGrants) || self.pathGrants.all(g, !has(g.clusterScoped) || !g.clusterScoped)"
+            }
+          ]
         }
       },
       "type": "object"
