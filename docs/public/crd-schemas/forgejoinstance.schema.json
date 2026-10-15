@@ -79,7 +79,7 @@
                     "type": "array"
                   },
                   "paths": {
-                    "description": "Path patterns under the mount, compared segment by segment: a\nliteral segment matches itself, `+` exactly one segment, and a last\n`*` one or more. Each holds at least one literal segment, e.g.\n`batlehub/auth`, `+/auth`, `platform/*`. Prefer exact paths where\nvalues not written by the operator live: a covered object may take\nover a value no object owns yet.",
+                    "description": "Path patterns under the mount, compared segment by segment: a\nliteral segment matches itself, `+` exactly one segment, and a last\n`*` one or more. Each holds at least one literal segment, e.g.\n`shared/auth`, `+/auth`, `platform/*`. Prefer exact paths where\nvalues not written by the operator live: a covered object may take\nover a value no object owns yet.",
                     "items": {
                       "maxLength": 512,
                       "pattern": "^(?:(?:[^/*+]+|\\+)/)*(?:[^/*+]+|\\+|\\*)$",
@@ -116,7 +116,7 @@
             },
             "pathPrefix": {
               "default": "weebo-forgejo",
-              "description": "Path prefix under `mount` — the default KV path is\n`<pathPrefix>/<namespace>/<name>`, one secret per emitting CR\n(same convention as the Kubernetes backend's Secret naming). Empty:\n`<namespace>/<name>`. A CR's explicit `path` must stay under\n`<pathPrefix>/<namespace>/` unless `pathGrants` opens it.",
+              "description": "Path prefix under `mount` — the default KV path is\n`<pathPrefix>/<namespace>/<name>`, one secret per emitting CR\n(same convention as the Kubernetes backend's Secret naming). Empty:\n`<namespace>/<name>`. A CR's explicit `path` must stay under\n`<pathPrefix>/<namespace>/` unless `pathGrants` opens it.\n\nAn empty prefix makes every namespace's subtree a top-level folder\nof the mount: a namespace named like a folder that holds other\nvalues (one a grant opens, `shared/` say) owns that folder — its\nCRs write there without any grant. Keep a prefix unless the mount\nis reserved to per-namespace folders and no namespace can be\ncreated with the name of another top-level folder.",
               "type": "string"
             }
           },
