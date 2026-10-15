@@ -80,6 +80,13 @@ pub struct VaultSecretStoreSpec {
     /// (same convention as the Kubernetes backend's Secret naming). Empty:
     /// `<namespace>/<name>`. A CR's explicit `path` must stay under
     /// `<pathPrefix>/<namespace>/` unless `pathGrants` opens it.
+    ///
+    /// An empty prefix makes every namespace's subtree a top-level folder
+    /// of the mount: a namespace named like a folder that holds other
+    /// values (one a grant opens, `shared/` say) owns that folder — its
+    /// CRs write there without any grant. Keep a prefix unless the mount
+    /// is reserved to per-namespace folders and no namespace can be
+    /// created with the name of another top-level folder.
     #[serde(default = "default_vault_path_prefix")]
     pub path_prefix: String,
     /// Vault paths this instance's CRs may write to outside their
