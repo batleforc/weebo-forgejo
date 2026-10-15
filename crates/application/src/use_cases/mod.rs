@@ -209,7 +209,7 @@ pub(crate) async fn previous_owner(
 /// have taken the old login since. `Ok(None)` = the account was deleted,
 /// and its objects with it. An empty login (the admin account) or a
 /// status written before ids were recorded is taken as is.
-pub(crate) async fn owner_login_now(
+pub async fn owner_login_now(
     gateway: &dyn ForgejoGateway,
     stored_login: &str,
     stored_id: Option<i64>,

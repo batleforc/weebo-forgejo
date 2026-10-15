@@ -199,6 +199,18 @@ async fn vault_paths_outside_the_subtree_need_a_grant() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("literal segment"), "{err}");
+    // And a cluster-scoped grant: every emitting kind is namespaced.
+    let err = instances
+        .create(
+            &PostParams::default(),
+            &instance(json!([{"clusterScoped": true, "paths": ["shared/*"]}])),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("clusterScoped grants never apply"),
+        "{err}"
+    );
     instances
         .create(
             &PostParams::default(),

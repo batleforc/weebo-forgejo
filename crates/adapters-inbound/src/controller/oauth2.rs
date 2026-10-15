@@ -10,6 +10,7 @@ use application::use_cases::reconcile_oauth2::{
 };
 use application::use_cases::refs::resolve_identity_required;
 use application::use_cases::{Failure, Outcome};
+use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -116,9 +117,11 @@ async fn apply(
 }
 
 /// The outcome of an application bound to `bound`. Refused because its
-/// owner is a site admin the namespace may not hold credentials of (it
-/// became one since, or a rule was removed), the application issued
-/// earlier is deleted, not left to live.
+/// owner (`ownerRef`) is a site admin the namespace may not hold
+/// credentials of (it became one since, or a rule was removed), the
+/// application issued earlier is deleted, not left to live. One without
+/// `ownerRef` (the operator's admin account) is only refused, never
+/// deleted: what was issued to the admin account stays where it is.
 async fn bound_outcome(
     current: &ForgejoOAuth2Application,
     bound: &BoundInstance,
@@ -152,6 +155,12 @@ async fn bound_outcome(
     // (no owner: the admin account, already checked).
     let logins: Vec<String> = owner.iter().map(|o| o.name.clone()).collect();
     if let Err(f) = super::remote_admins(ctx, bound, gw, &ns, KIND_POLICY, &logins).await? {
+        // The application issued earlier is this admin's own (same
+        // account, whatever its login now): deleted without asking again.
+        let same_owner = owner.as_ref().is_some_and(|o| stored_owner == Some(o.id));
+        if same_owner && f.reason == ReasonCode::NamespaceNotAllowed {
+            return Ok(revoked(gw, owned, stored_owner, f).await);
+        }
         return denied(ctx, bound, gw, &ns, owned, stored_owner, f).await;
     }
     let input = OAuth2Input {
@@ -174,8 +183,9 @@ async fn bound_outcome(
 }
 
 /// Refused with `failure`: the application issued earlier is deleted when
-/// Forgejo says its owner (`status.forgejoName`) is a site admin the
-/// namespace isn't allowed; otherwise it is kept, not ready.
+/// Forgejo says its owner — the account of `status.ownerId`, under its
+/// login now (`status.forgejoName` is stale after a rename) — is a site
+/// admin the namespace isn't allowed; otherwise it is kept, not ready.
 async fn denied(
     ctx: &Ctx,
     bound: &BoundInstance,
@@ -186,16 +196,31 @@ async fn denied(
     failure: Failure,
 ) -> Result<Outcome, Error> {
     let revoke = match &owned {
-        Some(c) => !super::admin_allowed(ctx, bound, gateway, ns, KIND_POLICY, &c.name).await?,
+        Some(c) => {
+            let (kind, login) = (KIND_POLICY, c.name.as_str());
+            !super::owner_admin_allowed(ctx, bound, gateway, ns, kind, login, owner_id).await?
+        }
         None => false,
     };
     if !revoke {
         return Ok(Outcome::failed(owned, failure));
     }
-    Ok(match revoke_denied_oauth2(gateway, owned, owner_id).await {
+    Ok(revoked(gateway, owned, owner_id, failure).await)
+}
+
+/// The application is deleted; its status forgets it once it's gone.
+async fn revoked(
+    gateway: &dyn ForgejoGateway,
+    owned: Option<ForgejoRef>,
+    owner_id: Option<i64>,
+    failure: Failure,
+) -> Outcome {
+    let had = owned.is_some();
+    match revoke_denied_oauth2(gateway, owned, owner_id).await {
         Some(kept) => Outcome::failed(Some(kept), failure),
-        None => Outcome::failed(None, failure).released(),
-    })
+        None if had => Outcome::failed(None, failure).released(),
+        None => Outcome::failed(None, failure),
+    }
 }
 
 async fn cleanup(app: &ForgejoOAuth2Application, ctx: &Ctx) -> Result<Action, Error> {

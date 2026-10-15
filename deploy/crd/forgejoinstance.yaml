@@ -95,8 +95,9 @@ spec:
                       pathGrants:
                         description: |-
                           Vault paths this instance's CRs may write to outside their
-                          namespace's subtree `<pathPrefix>/<namespace>/`, per namespace (or
-                          for cluster-scoped CRs). A grant opens its paths to everyone allowed
+                          namespace's subtree `<pathPrefix>/<namespace>/`, per namespace
+                          (`clusterScoped` is refused: every object writing credentials is
+                          namespaced). A grant opens its paths to everyone allowed
                           to create an emitting CR in a covered namespace, and may let such a
                           CR take over a value no CR owns yet: prefer exact paths. The Vault
                           policy of the operator's role stays the hard bound.
@@ -165,6 +166,9 @@ spec:
                     - kubernetesAuthRole
                     - mount
                     type: object
+                    x-kubernetes-validations:
+                    - message: 'pathGrants name namespaces: every object writing credentials is namespaced, clusterScoped grants never apply'
+                      rule: '!has(self.pathGrants) || self.pathGrants.all(g, !has(g.clusterScoped) || !g.clusterScoped)'
                 type: object
               tls:
                 default:
