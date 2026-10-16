@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.4.1](https://github.com/batleforc/weebo-forgejo/compare/0ef9ac3af7f15eb4cbab1667b113ebbd9f1ad4bb..v0.4.1) - 2026-10-15
+#### Bug Fixes
+- (**admission**) check a renamed owner's current login before keeping its credentials (#13) - ([0ef9ac3](https://github.com/batleforc/weebo-forgejo/commit/0ef9ac3af7f15eb4cbab1667b113ebbd9f1ad4bb)) - Maxime, Claude Opus 5.5
+- (**deps**) kit v0.16.0 (#14) - ([7c3ad79](https://github.com/batleforc/weebo-forgejo/commit/7c3ad79334c6789c495c516644271da334a5d0f6)) - Maxime, Claude Opus 5.5
+
+- - -
+
 ## [v0.4.0](https://github.com/batleforc/weebo-forgejo/compare/db9d2d99e6fab44fe2265a320fc5ce2adbd07460..v0.4.0) - 2026-10-14
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) vault path grants on the ForgejoInstance, kit v0.15.0 (#11) - ([db9d2d9](https://github.com/batleforc/weebo-forgejo/commit/db9d2d99e6fab44fe2265a320fc5ce2adbd07460)) - Maxime, Claude Opus 5.5
