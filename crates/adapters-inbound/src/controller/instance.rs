@@ -93,7 +93,7 @@ async fn apply(
         },
     };
 
-    record_reconcile("ForgejoInstance", outcome.reason(), started.elapsed());
+    record_reconcile("ForgejoInstance", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, obj.as_ref(), &outcome).await?;
     Ok(requeue_after(&outcome))
 }

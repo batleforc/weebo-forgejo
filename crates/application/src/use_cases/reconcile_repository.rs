@@ -11,9 +11,9 @@ use domain::error::ReasonCode;
 
 use crate::ports::{
     DesiredRepository, ForgejoGateway, ForgejoRef, GatewayError, GenerateOptions, MigrateOptions,
-    ProtectionRule, RemoteRepository, RepositoryInitOptions,
+    ProtectionRule, RemoteRepository, RepositoryInitOptions, RepositoryPatch,
 };
-use crate::use_cases::{CleanupGateway, Failure, Outcome, differs, differs_flag, gone_ok};
+use crate::use_cases::{CleanupGateway, Drift, Failure, Outcome, RemoteWrite, deleted, gone_ok};
 
 /// The resolved owner (`spec.organizationRef` / `spec.userRef`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,12 +116,32 @@ pub async fn reconcile_repository(
         },
         None => None,
     };
+    // What a creation writes next (settings a template or a migration
+    // didn't apply, teams, protections) is part of it, not a drift.
+    let created = remote.is_none();
     let mut remote = match remote {
         Some(r) => r,
         None => match create(&input, &desired, gateway).await {
             Ok(r) => r,
-            Err((created, f)) => return Outcome::failed(created, f),
+            Err((created, f)) => {
+                let failed = Outcome::failed(created.clone(), f);
+                return if created.is_some() {
+                    failed.wrote(RemoteWrite::Created)
+                } else {
+                    failed
+                };
+            }
         },
+    };
+    let mut drift = Drift::default();
+    let wrote = |outcome: Outcome, drift: Drift| {
+        if created {
+            outcome.wrote(RemoteWrite::Created)
+        } else if drift.is_empty() {
+            outcome
+        } else {
+            outcome.corrected(drift)
+        }
     };
     let mut current = Some(ForgejoRef {
         id: remote.id,
@@ -149,6 +169,7 @@ pub async fn reconcile_repository(
         {
             return Outcome::failed(current, e);
         }
+        drift.note("owner", true);
         remote = match refetch(gateway, remote.id).await {
             Ok(r) => r,
             Err(f) => return Outcome::failed(current, f),
@@ -162,19 +183,26 @@ pub async fn reconcile_repository(
     // Archived repositories refuse most writes (Forgejo answers 423): while
     // the spec keeps it archived, leave it frozen.
     if remote.archived && spec.archived {
-        return Outcome::synced(current, "repository archived, settings frozen");
+        let frozen = Outcome::synced(current, "repository archived, settings frozen");
+        return wrote(frozen, drift);
     }
-    if remote.archived
-        && let Err(e) = gateway
+    if remote.archived {
+        if let Err(e) = gateway
             .set_repository_archived(&remote.full_name(), false)
             .await
-    {
-        return Outcome::failed(current, e);
+        {
+            return Outcome::failed(current, e);
+        }
+        drift.note("archived", true);
     }
 
-    if repository_differs(&desired, &remote) {
-        if let Err(e) = gateway.edit_repository(&remote.full_name(), &desired).await {
+    let (fields, patch) = repository_differs(&desired, &remote);
+    if !patch.is_empty() {
+        if let Err(e) = gateway.edit_repository(&remote.full_name(), &patch).await {
             return Outcome::failed(current, e);
+        }
+        for field in fields.fields() {
+            drift.note(field, true);
         }
         remote.owner = input.owner.name().to_string();
         remote.name = desired.name.clone();
@@ -188,42 +216,48 @@ pub async fn reconcile_repository(
     // Teams first: Forgejo silently drops a branch-protection allow-list
     // team that has no write access to the repository yet, which would
     // read back as a perpetual diff.
-    if matches!(input.owner, Owner::Organization(_))
-        && let Err(e) = sync_teams(&full_name, &input.teams, gateway).await
-    {
-        return Outcome::failed(current, e);
+    if matches!(input.owner, Owner::Organization(_)) {
+        match sync_teams(&full_name, &input.teams, gateway).await {
+            Ok(changed) => drift.note("teams", changed),
+            Err(e) => return Outcome::failed(current, e),
+        }
     }
     // Unset: someone else's (a template's copy, Forgejo's UI).
-    if let Some(wanted) = &spec.branch_protections
-        && let Err(e) = sync_protections(&full_name, wanted, gateway).await
-    {
-        return Outcome::failed(current, e);
+    if let Some(wanted) = &spec.branch_protections {
+        match sync_protections(&full_name, wanted, gateway).await {
+            Ok(changed) => drift.note("branch_protections", changed),
+            Err(e) => return Outcome::failed(current, e),
+        }
     }
-    if spec.archived
-        && let Err(e) = gateway.set_repository_archived(&full_name, true).await
-    {
-        return Outcome::failed(current, e);
+    if spec.archived {
+        if let Err(e) = gateway.set_repository_archived(&full_name, true).await {
+            return Outcome::failed(current, e);
+        }
+        drift.note("archived", true);
     }
-    Outcome::synced(current, "repository synced")
+    wrote(Outcome::synced(current, "repository synced"), drift)
 }
 
+/// `Ok(true)`: the Forgejo object was deleted by this call.
 pub async fn cleanup_repository(
     spec: &ForgejoRepositorySpec,
     current: Option<&ForgejoRef>,
     gateway: CleanupGateway<'_>,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
     if spec.deletion_policy != DeletionPolicy::Delete {
-        return Ok(());
+        return Ok(false);
     }
     let Some(current) = current else {
-        return Ok(());
+        return Ok(false);
     };
     let gateway = gateway.map_err(Clone::clone)?;
     // Resolve by id: the stored name may predate a rename or transfer.
     let Some(remote) = gateway.get_repository(current.id).await? else {
-        return Ok(());
+        return Ok(false);
     };
-    gone_ok(gateway.delete_repository(&remote.full_name()).await).map_err(Into::into)
+    Ok(deleted(
+        gateway.delete_repository(&remote.full_name()).await,
+    )?)
 }
 
 /// Returns the created repository, or the failure (with the ref to persist
@@ -301,12 +335,12 @@ async fn refetch(gateway: &dyn ForgejoGateway, id: i64) -> Result<RemoteReposito
 }
 
 /// Deletes rules not in the spec, creates missing ones, PATCHes changed
-/// ones.
+/// ones. `true` when any was written.
 async fn sync_protections(
     full_name: &str,
     wanted: &[BranchProtection],
     gateway: &dyn ForgejoGateway,
-) -> Result<(), GatewayError> {
+) -> Result<bool, GatewayError> {
     let wanted: BTreeMap<String, ProtectionRule> = wanted
         .iter()
         .map(|p| (p.rule_name.clone(), protection_rule(p)))
@@ -318,8 +352,10 @@ async fn sync_protections(
         .map(|r| (r.rule_name.clone(), normalized(r)))
         .collect();
 
+    let mut changed = false;
     for name in actual.keys().filter(|n| !wanted.contains_key(*n)) {
         gone_ok(gateway.delete_branch_protection(full_name, name).await)?;
+        changed = true;
     }
     for (name, rule) in &wanted {
         match actual.get(name) {
@@ -327,19 +363,21 @@ async fn sync_protections(
             Some(existing) if existing != rule => {
                 gateway.edit_branch_protection(full_name, rule).await?
             }
-            Some(_) => {}
+            Some(_) => continue,
         }
+        changed = true;
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Teams Forgejo grants on its own (`Owners`, `includesAllRepositories`)
 /// can't be removed per repository, so they're left out of the diff.
+/// `true` when a team was added or removed.
 async fn sync_teams(
     full_name: &str,
     wanted: &[String],
     gateway: &dyn ForgejoGateway,
-) -> Result<(), GatewayError> {
+) -> Result<bool, GatewayError> {
     let wanted: BTreeSet<&str> = wanted.iter().map(String::as_str).collect();
     let actual = gateway.list_repository_teams(full_name).await?;
     let removable: BTreeSet<&str> = actual
@@ -349,13 +387,16 @@ async fn sync_teams(
         .collect();
     let present: BTreeSet<&str> = actual.iter().map(|t| t.name.as_str()).collect();
 
+    let mut changed = false;
     for team in wanted.difference(&present) {
         gateway.add_repository_team(full_name, team).await?;
+        changed = true;
     }
     for team in removable.difference(&wanted) {
         gone_ok(gateway.remove_repository_team(full_name, team).await)?;
+        changed = true;
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// `spec.init` as creation options (an absent `init` creates a bare
@@ -394,24 +435,40 @@ fn desired_repository(spec: &ForgejoRepositorySpec) -> DesiredRepository {
     }
 }
 
-fn repository_differs(d: &DesiredRepository, r: &RemoteRepository) -> bool {
-    d.name != r.name
-        || differs(&d.description, &r.description)
-        || differs(&d.website, &r.website)
-        || d.private != r.private
-        || d.template != r.template
-        || differs(&d.default_branch, &r.default_branch)
-        || differs_flag(d.has_issues, r.has_issues)
-        || differs_flag(d.has_wiki, r.has_wiki)
-        || differs_flag(d.has_pull_requests, r.has_pull_requests)
-        || differs_flag(d.has_projects, r.has_projects)
-        || differs_flag(d.has_releases, r.has_releases)
-        || differs_flag(d.has_packages, r.has_packages)
-        || differs_flag(d.has_actions, r.has_actions)
-        || (r.mirror
-            && d.mirror_interval
-                .as_deref()
-                .is_some_and(|i| go_duration_secs(i) != go_duration_secs(&r.mirror_interval)))
+/// The settings of `r` that differ from `d`, and the PATCH carrying only
+/// them (`None` in the spec: no opinion). A mirror interval is compared
+/// as a duration (Forgejo echoes Go's canonical form), and only sent for
+/// a mirror.
+fn repository_differs(d: &DesiredRepository, r: &RemoteRepository) -> (Drift, RepositoryPatch) {
+    let mut p = RepositoryPatch::full(d);
+    let mut drift = Drift::default();
+    drift.keep("name", &mut p.name, &r.name);
+    drift.keep("description", &mut p.description, &r.description);
+    drift.keep("website", &mut p.website, &r.website);
+    drift.keep("private", &mut p.private, &r.private);
+    drift.keep("template", &mut p.template, &r.template);
+    drift.keep("default_branch", &mut p.default_branch, &r.default_branch);
+    drift.keep("has_issues", &mut p.has_issues, &r.has_issues);
+    drift.keep("has_wiki", &mut p.has_wiki, &r.has_wiki);
+    drift.keep(
+        "has_pull_requests",
+        &mut p.has_pull_requests,
+        &r.has_pull_requests,
+    );
+    drift.keep("has_projects", &mut p.has_projects, &r.has_projects);
+    drift.keep("has_releases", &mut p.has_releases, &r.has_releases);
+    drift.keep("has_packages", &mut p.has_packages, &r.has_packages);
+    drift.keep("has_actions", &mut p.has_actions, &r.has_actions);
+    if !r.mirror {
+        p.mirror_interval = None;
+    }
+    drift.keep_with(
+        "mirror_interval",
+        &mut p.mirror_interval,
+        &r.mirror_interval,
+        |d, r| go_duration_secs(d) == go_duration_secs(r),
+    );
+    (drift, p)
 }
 
 /// Seconds in a Go duration (`8h`, `1h30m`, `8h0m0s`) — Forgejo echoes
@@ -516,7 +573,7 @@ mod tests {
 
     use super::*;
     use crate::ports::{DesiredOrganization, DesiredTeam};
-    use crate::test_support::FakeForgejo;
+    use crate::test_support::{Edit, FakeForgejo};
 
     fn spec(name: &str) -> ForgejoRepositorySpec {
         ForgejoRepositorySpec {
@@ -586,8 +643,18 @@ mod tests {
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
 
         s.private = true;
-        reconcile_repository(input(&s, Some(current.clone()), "weebo"), &fj).await;
+        let outcome = reconcile_repository(input(&s, Some(current.clone()), "weebo"), &fj).await;
         assert!(fj.repo(current.id).unwrap().private);
+        assert_eq!(
+            fj.edits(),
+            [Edit::Repository(RepositoryPatch {
+                private: Some(true),
+                ..Default::default()
+            })],
+            "only the drifted field"
+        );
+        assert_eq!(outcome.drift.fields(), ["private"]);
+        assert_eq!(created.write, Some(RemoteWrite::Created));
     }
 
     #[tokio::test]

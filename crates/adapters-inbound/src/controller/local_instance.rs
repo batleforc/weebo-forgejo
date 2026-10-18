@@ -88,7 +88,7 @@ async fn apply(
         Err(e) => Outcome::failed(None, Failure::new(e.reason(), e.to_string())),
     };
 
-    record_reconcile(KIND, outcome.reason(), started.elapsed());
+    record_reconcile(KIND, &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, obj.as_ref(), &outcome).await?;
     Ok(requeue_after(&outcome))
 }

@@ -12,7 +12,7 @@ use application::use_cases::reconcile_repository::{
 use application::use_cases::refs::{
     read_secret_key, resolve_identity_required, resolve_required, resolve_team,
 };
-use application::use_cases::{Failure, Outcome};
+use application::use_cases::{Failure, Outcome, RemoteWrite};
 use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
@@ -25,7 +25,7 @@ use super::{
     Ctx, Error, FINALIZER, ScopedWatches, allows_disruptive_update, error_policy, requeue_after,
     status,
 };
-use crate::metrics::record_reconcile;
+use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoRepository";
 
@@ -186,7 +186,7 @@ async fn apply(
         .on(bound),
     };
 
-    record_reconcile("ForgejoRepository", outcome.reason(), started.elapsed());
+    record_reconcile("ForgejoRepository", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
 }
@@ -322,8 +322,11 @@ async fn source(
 async fn cleanup(repo: &ForgejoRepository, ctx: &Ctx) -> Result<Action, Error> {
     let instance = super::cleanup_instance(ctx, repo).await;
     let gateway = super::cleanup_gateway(ctx, &instance).await;
-    cleanup_repository(&repo.spec, current_ref(repo).as_ref(), gateway.as_deref())
+    let deleted = cleanup_repository(&repo.spec, current_ref(repo).as_ref(), gateway.as_deref())
         .await
         .map_err(Error::Cleanup)?;
+    if deleted {
+        record_write("ForgejoRepository", RemoteWrite::Deleted);
+    }
     Ok(Action::await_change())
 }

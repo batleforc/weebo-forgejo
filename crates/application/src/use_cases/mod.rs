@@ -19,6 +19,7 @@ pub mod reconcile_webhook;
 pub mod refs;
 
 use domain::error::ReasonCode;
+pub use domain::{Drift, RemoteWrite};
 
 use crate::ports::{
     BoundInstance, ForgejoGateway, ForgejoRef, GatewayError, InstanceError, ResolveError,
@@ -95,6 +96,16 @@ pub struct Outcome {
     /// New `status.passwordEmitted`: `Some(true)` once a user's generated
     /// password was handed out, `Some(false)` once it was replaced.
     pub password_emitted: Option<bool>,
+    /// The write this reconcile made to the Forgejo object, if any —
+    /// counted in `weebo_forgejo_remote_writes_total{kind, cause}`. `None`
+    /// when everything was in sync (weebo-si RFC 0003: flat at rest).
+    pub write: Option<RemoteWrite>,
+    /// The fields of the Forgejo object put back in their desired state: a
+    /// `DriftCorrected` Event names them, unless the spec just changed.
+    pub drift: Drift,
+    /// What else correcting `drift` did, said in that Event (an OAuth2
+    /// application's update rotates its client secret).
+    pub drift_effect: Option<&'static str>,
 }
 
 impl Outcome {
@@ -111,6 +122,9 @@ impl Outcome {
             instance: None,
             released: false,
             password_emitted: None,
+            write: None,
+            drift: Drift::default(),
+            drift_effect: None,
         }
     }
 
@@ -127,6 +141,9 @@ impl Outcome {
             instance: None,
             released: false,
             password_emitted: None,
+            write: None,
+            drift: Drift::default(),
+            drift_effect: None,
         }
     }
 
@@ -134,6 +151,21 @@ impl Outcome {
     pub fn released(mut self) -> Self {
         self.forgejo = None;
         self.released = true;
+        self
+    }
+
+    /// Records a write to Forgejo.
+    pub fn wrote(mut self, write: RemoteWrite) -> Self {
+        self.write = Some(write);
+        self
+    }
+
+    /// Records a drift correction: the fields put back (`drift`, possibly
+    /// empty when the write was for an input Forgejo doesn't show — a new
+    /// password, a header from its `Secret`).
+    pub fn corrected(mut self, drift: Drift) -> Self {
+        self.write = Some(RemoteWrite::Drift);
+        self.drift = drift;
         self
     }
 
@@ -220,23 +252,23 @@ pub async fn owner_login_now(
     }
 }
 
+/// A delete's result as "was it deleted now": `false` for a `NotFound`
+/// (already gone, which succeeds too). What a finalizer counts as a
+/// `RemoteWrite::Deleted`.
+pub(crate) fn deleted(result: Result<(), GatewayError>) -> Result<bool, GatewayError> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(GatewayError::NotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Ignores a `NotFound`: deleting what is already gone succeeds.
 pub(crate) fn gone_ok(result: Result<(), GatewayError>) -> Result<(), GatewayError> {
     match result {
         Err(GatewayError::NotFound(_)) => Ok(()),
         other => other,
     }
-}
-
-/// `None` = no opinion; otherwise the remote flag must match.
-pub(crate) fn differs_flag(desired: Option<bool>, remote: bool) -> bool {
-    desired.is_some_and(|d| d != remote)
-}
-
-/// Distinguishes "the spec carries no opinion" (`None`) from a value that
-/// must match: an unset optional field never forces a PATCH.
-pub(crate) fn differs(desired: &Option<String>, remote: &str) -> bool {
-    desired.as_deref().is_some_and(|d| d != remote)
 }
 
 #[cfg(test)]

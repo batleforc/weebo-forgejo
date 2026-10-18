@@ -14,7 +14,7 @@ use domain::error::ReasonCode;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
 use crate::ports::{ForgejoGateway, ForgejoRef, GatewayError, RemoteKey, SecretOwner, SecretStore};
-use crate::use_cases::{CleanupGateway, Failure, Outcome, emit, gone_ok};
+use crate::use_cases::{CleanupGateway, Failure, Outcome, RemoteWrite, emit, gone_ok};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyOwner {
@@ -143,6 +143,11 @@ pub async fn reconcile_key(
     };
 
     let mut outcome = Outcome::synced(current.clone(), "key synced");
+    // Keys can't be edited: any change is a new key.
+    let created = !up_to_date;
+    if created {
+        outcome = outcome.wrote(RemoteWrite::Created);
+    }
     if let Some((private, public)) = new_pair {
         let data = BTreeMap::from([
             ("ssh-privatekey".to_string(), private),
@@ -160,6 +165,7 @@ pub async fn reconcile_key(
             // previous private key: renew the pair next time, whether the
             // targets exist or not.
             let mut failed = Outcome::failed(current, f);
+            failed.write = outcome.write;
             failed.secret_pending = Some(true);
             return failed;
         }
@@ -215,7 +221,7 @@ async fn rotate(
         failed.secret_pending = Some(true);
         return failed;
     }
-    let mut outcome = Outcome::synced(Some(added), "key renewed");
+    let mut outcome = Outcome::synced(Some(added), "key renewed").wrote(RemoteWrite::Created);
     // Every target holds the new key: the old one goes.
     if let Err(e) = gone_ok(delete(&input.owner, old.id, gateway).await) {
         let failure = Failure::from(e);
@@ -225,7 +231,8 @@ async fn rotate(
             old.id, failure.message
         );
         tracing::error!(key = old.id, "{message}");
-        outcome = Outcome::failed(outcome.forgejo, Failure::new(failure.reason, message));
+        outcome = Outcome::failed(outcome.forgejo, Failure::new(failure.reason, message))
+            .wrote(RemoteWrite::Created);
     }
     outcome.secret_pending = Some(false);
     outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
@@ -241,7 +248,7 @@ async fn rotate(
 /// one's name), and that refusal would hold the finalizer forever. Empty
 /// only when the controller has no record at all (never resolved, nothing
 /// recorded): the key can't be addressed, only the emitted secrets are
-/// left to delete.
+/// left to delete. `Ok(true)`: the key was deleted by this call.
 pub async fn cleanup_key(
     owners: &[KeyOwner],
     source: &KeySource,
@@ -250,7 +257,8 @@ pub async fn cleanup_key(
     current: Option<&ForgejoRef>,
     gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
+    let mut removed = false;
     if deletion_policy == DeletionPolicy::Delete
         && let Some(current) = current
         && !owners.is_empty()
@@ -258,6 +266,7 @@ pub async fn cleanup_key(
         let gateway = gateway.map_err(Clone::clone)?;
         for owner in owners {
             if delete_if_held(owner, current.id, gateway).await? {
+                removed = true;
                 break;
             }
         }
@@ -265,7 +274,7 @@ pub async fn cleanup_key(
     if source.public_key.is_none() {
         emit::delete_all(&source.secret_targets, secret_owner, secrets).await?;
     }
-    Ok(())
+    Ok(removed)
 }
 
 async fn get(

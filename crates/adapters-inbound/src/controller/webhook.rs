@@ -11,7 +11,7 @@ use application::use_cases::reconcile_webhook::{
 use application::use_cases::refs::{
     read_secret_key, recorded_identity, resolve_identity_required, resolve_required,
 };
-use application::use_cases::{Failure, Outcome};
+use application::use_cases::{Failure, Outcome, RemoteWrite};
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -20,7 +20,7 @@ use kube::{Client, ResourceExt};
 
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, ScopedWatches, error_policy, requeue_after, status};
-use crate::metrics::record_reconcile;
+use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoWebhook";
 
@@ -139,7 +139,7 @@ async fn apply(
         .on(bound),
     };
 
-    record_reconcile("ForgejoWebhook", outcome.reason(), started.elapsed());
+    record_reconcile("ForgejoWebhook", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
 }
@@ -224,7 +224,7 @@ async fn cleanup(hook: &ForgejoWebhook, ctx: &Ctx) -> Result<Action, Error> {
         (None, None) => None,
     };
     let gateway = super::cleanup_gateway(ctx, &instance).await;
-    cleanup_webhook(
+    let deleted = cleanup_webhook(
         &hook.spec,
         current_ref(hook).as_ref(),
         now,
@@ -232,6 +232,9 @@ async fn cleanup(hook: &ForgejoWebhook, ctx: &Ctx) -> Result<Action, Error> {
     )
     .await
     .map_err(Error::Cleanup)?;
+    if deleted {
+        record_write("ForgejoWebhook", RemoteWrite::Deleted);
+    }
     Ok(Action::await_change())
 }
 

@@ -1,4 +1,4 @@
-use application::ports::{DesiredUser, ForgejoRef, GatewayError, RemoteUser};
+use application::ports::{DesiredUser, ForgejoRef, GatewayError, RemoteUser, UserPatch};
 use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{admin_api, user_api};
 use forgejo_client::models;
@@ -99,28 +99,27 @@ pub(super) async fn create(
 pub(super) async fn edit(
     config: &Configuration,
     username: &str,
-    user: &DesiredUser,
+    user: &UserPatch,
 ) -> Result<(), GatewayError> {
+    let (source_id, login_name) = user.login_source.clone().unzip();
     let body = models::EditUserOption {
-        active: Some(user.active),
-        admin: Some(user.admin),
+        active: user.active,
+        admin: user.admin,
         allow_create_organization: user.allow_create_organization,
-        email: Some(user.email.clone()),
+        email: user.email.clone(),
         full_name: user.full_name.clone(),
         max_repo_creation: user.max_repo_creation,
-        // Only meaningful alongside a password reset; Forgejo otherwise
-        // keeps the account's current flag.
-        must_change_password: user.password.as_ref().map(|_| user.must_change_password),
+        must_change_password: user.must_change_password,
         password: user.password.clone(),
-        prohibit_login: Some(user.prohibit_login),
-        restricted: Some(user.restricted),
-        visibility: Some(user.visibility.to_string()),
+        prohibit_login: user.prohibit_login,
+        restricted: user.restricted,
+        visibility: user.visibility.map(str::to_string),
         // Forgejo requires both or neither; `0` switches back to a local
         // (password) login. Forgejo stores `login_name` verbatim, so a
         // local account gets "" — what a freshly created one has, and what
         // the diff expects (anything else would re-PATCH forever).
-        source_id: Some(user.source_id.unwrap_or(0)),
-        login_name: Some(user.login_name.clone().unwrap_or_default()),
+        source_id,
+        login_name,
         ..Default::default()
     };
     let params = admin_api::AdminEditUserParams {

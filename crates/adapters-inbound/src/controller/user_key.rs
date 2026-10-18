@@ -9,7 +9,7 @@ use application::use_cases::reconcile_key::{
     KeyInput, KeyOwner, cleanup_key, reconcile_key, revoke_denied_key,
 };
 use application::use_cases::refs::{recorded_identity, resolve_identity_required};
-use application::use_cases::{Failure, Outcome};
+use application::use_cases::{Failure, Outcome, RemoteWrite};
 use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
@@ -21,7 +21,7 @@ use super::status::current_ref;
 use super::{
     Ctx, Error, FINALIZER, ScopedWatches, error_policy, requeue_after, rotate_nonce, status,
 };
-use crate::metrics::record_reconcile;
+use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoUserKey";
 
@@ -148,7 +148,7 @@ async fn apply(
         .on(bound),
     };
 
-    record_reconcile("ForgejoUserKey", outcome.reason(), started.elapsed());
+    record_reconcile("ForgejoUserKey", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     super::record_key_owner(api, &current, resolved.as_deref(), owned.as_ref(), &outcome).await?;
     Ok(requeue_after(&outcome))
@@ -212,7 +212,7 @@ async fn cleanup(key: &ForgejoUserKey, ctx: &Ctx) -> Result<Action, Error> {
         .collect();
     let gateway = super::cleanup_gateway(ctx, &instance).await;
     let secrets = super::cleanup_secrets(ctx, &instance).await;
-    cleanup_key(
+    let deleted = cleanup_key(
         &owners,
         &key.spec.key,
         &SecretOwner::namespaced(KIND, &ns, &key.name_any())
@@ -224,5 +224,8 @@ async fn cleanup(key: &ForgejoUserKey, ctx: &Ctx) -> Result<Action, Error> {
     )
     .await
     .map_err(Error::Cleanup)?;
+    if deleted {
+        record_write("ForgejoUserKey", RemoteWrite::Deleted);
+    }
     Ok(Action::await_change())
 }

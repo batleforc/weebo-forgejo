@@ -1,12 +1,17 @@
 //! `ForgejoOAuth2Application`. Forgejo regenerates the client secret on
-//! *every* update and never shows it again, so this use-case only updates
-//! when it must: a real spec difference, a target that lost the secret, or
-//! a new rotation nonce — never blindly on each requeue.
+//! *every* update and never shows it again (`routers/api/v1/user/app.go`,
+//! `UpdateOauth2Application`: `GenerateClientSecret` unconditionally, on a
+//! full-replacement body), so this use-case only updates when it must: a
+//! real drift (name, confidentiality, redirect URIs compared as a set), a
+//! target that lost the secret, or a new rotation nonce — never blindly on
+//! each requeue. Correcting a drift therefore rotates the client secret,
+//! which the `DriftCorrected` Event says.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use api::common::DeletionPolicy;
 use api::oauth2::ForgejoOAuth2ApplicationSpec;
+use domain::drift::same_set;
 use domain::error::ReasonCode;
 
 use crate::ports::{
@@ -14,8 +19,14 @@ use crate::ports::{
 };
 use crate::use_cases::emit::{self, rotation_requested};
 use crate::use_cases::{
-    CleanupGateway, Failure, Outcome, gone_ok, owner_login_now, previous_owner,
+    CleanupGateway, Drift, Failure, Outcome, RemoteWrite, deleted, gone_ok, owner_login_now,
+    previous_owner,
 };
+
+/// The `DriftCorrected` Event's addition for an application: correcting
+/// any of its fields goes through Forgejo's update, which issues a new
+/// client secret.
+pub const SECRET_ROTATED: &str = "the client secret was rotated by Forgejo";
 
 pub const KIND: &str = "ForgejoOAuth2Application";
 
@@ -113,6 +124,9 @@ async fn sync(
         None => None,
     };
 
+    // `None`: no write; `Some(drift)`: an update, for these fields (none:
+    // for a lost or rotated secret only).
+    let mut corrected = None;
     let (app, secret) = match remote {
         None => {
             // Names aren't unique: an application of this name on the
@@ -149,7 +163,8 @@ async fn sync(
                 Ok(lost) => lost,
                 Err(f) => return Outcome::failed(current, f),
             };
-            if app_differs(&desired, &remote)
+            let drift = app_differs(&desired, &remote);
+            if !drift.is_empty()
                 || lost
                 || input.secret_pending
                 || rotation_requested(&input.rotate_nonce, &input.last_rotation)
@@ -158,7 +173,10 @@ async fn sync(
                     .update_oauth2_app(input.owner.as_deref(), remote.id, &desired)
                     .await
                 {
-                    Ok(secret) => (remote, Some(secret)),
+                    Ok(secret) => {
+                        corrected = Some(drift);
+                        (remote, Some(secret))
+                    }
                     Err(e) => return Outcome::failed(current, e),
                 }
             } else {
@@ -171,8 +189,20 @@ async fn sync(
         id: app.id,
         name: owner_name,
     });
-    let mut outcome = Outcome::synced(current.clone(), "application synced");
-    if let Some(secret) = secret {
+    let wrote = |outcome: Outcome| match &corrected {
+        Some(drift) => {
+            let mut outcome = outcome.corrected(drift.clone());
+            if !drift.is_empty() {
+                outcome.drift_effect = Some(SECRET_ROTATED);
+            }
+            outcome
+        }
+        // A new application (none yet, or under another owner).
+        None if secret.is_some() => outcome.wrote(RemoteWrite::Created),
+        None => outcome,
+    };
+    let mut outcome = wrote(Outcome::synced(current.clone(), "application synced"));
+    if let Some(secret) = secret.clone() {
         let data = BTreeMap::from([
             ("FORGEJO_CLIENT_ID".to_string(), app.client_id.clone()),
             ("FORGEJO_CLIENT_SECRET".to_string(), secret),
@@ -182,7 +212,7 @@ async fn sync(
         // On failure the secret is lost and the targets that exist hold the
         // previous, now invalid one: regenerate on the next reconcile.
         if let Err(f) = emit::write_all(&targets, &owner, &data, secrets).await {
-            let mut failed = Outcome::failed(current, f);
+            let mut failed = wrote(Outcome::failed(current, f));
             failed.secret_pending = Some(true);
             return failed;
         }
@@ -193,7 +223,8 @@ async fn sync(
 }
 
 /// `owner_id` is `status.ownerId`: the application is deleted on that
-/// account under its login now (see `cleanup_token`).
+/// account under its login now (see `cleanup_token`). `Ok(true)`: it was
+/// deleted by this call.
 pub async fn cleanup_oauth2(
     spec: &ForgejoOAuth2ApplicationSpec,
     cr_name: &str,
@@ -202,19 +233,21 @@ pub async fn cleanup_oauth2(
     owner_id: Option<i64>,
     gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
+    let mut removed = false;
     if spec.deletion_policy == DeletionPolicy::Delete
         && let Some(c) = current
     {
         let gateway = gateway.map_err(Clone::clone)?;
         // A deleted account took its applications with it.
         if let Some(owner) = owner_login_now(gateway, &c.name, owner_id).await? {
-            gone_ok(gateway.delete_oauth2_app(sudo(&owner), c.id).await)?;
+            removed = deleted(gateway.delete_oauth2_app(sudo(&owner), c.id).await)?;
         }
     }
     let targets = emit::targets(&spec.secret_targets, cr_name, secrets);
     let owner = SecretOwner::namespaced(KIND, namespace, cr_name);
-    emit::delete_all(&targets, &owner, secrets).await
+    emit::delete_all(&targets, &owner, secrets).await?;
+    Ok(removed)
 }
 
 /// Deletes an application whose owner is a site admin the namespace may
@@ -258,11 +291,21 @@ fn desired_app(input: &OAuth2Input<'_>) -> DesiredOAuth2App {
     }
 }
 
-fn app_differs(d: &DesiredOAuth2App, r: &RemoteOAuth2App) -> bool {
-    let set = |v: &[String]| v.iter().cloned().collect::<BTreeSet<_>>();
-    d.name != r.name
-        || d.confidential_client != r.confidential_client
-        || set(&d.redirect_uris) != set(&r.redirect_uris)
+/// The fields of `r` that differ from `d`. Redirect URIs are a set to
+/// Forgejo (stored as sent, order meaningless): a reordered list is no
+/// drift — and no secret rotation.
+fn app_differs(d: &DesiredOAuth2App, r: &RemoteOAuth2App) -> Drift {
+    let mut drift = Drift::default();
+    drift.note("name", d.name != r.name);
+    drift.note(
+        "confidential_client",
+        d.confidential_client != r.confidential_client,
+    );
+    drift.note(
+        "redirect_uris",
+        !same_set(&d.redirect_uris, &r.redirect_uris),
+    );
+    drift
 }
 
 #[cfg(test)]
@@ -327,8 +370,55 @@ mod tests {
             .await
             .forgejo;
         fj.clear_calls();
-        reconcile_oauth2(input(&s, None, current), &fj, &secrets).await;
+        let quiet = reconcile_oauth2(input(&s, None, current), &fj, &secrets).await;
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+        assert_eq!(quiet.write, None);
+    }
+
+    #[tokio::test]
+    async fn reordered_redirect_uris_are_no_drift_and_no_rotation() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let mut s = spec();
+        s.redirect_uris.push("https://app.example.com/cb2".into());
+        let created = reconcile_oauth2(input(&s, None, None), &fj, &secrets).await;
+        assert_eq!(created.write, Some(RemoteWrite::Created));
+        s.redirect_uris.reverse();
+        fj.clear_calls();
+        let quiet = reconcile_oauth2(input(&s, None, created.forgejo), &fj, &secrets).await;
+        assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+        assert_eq!(quiet.write, None);
+    }
+
+    #[tokio::test]
+    async fn a_drift_correction_says_the_secret_rotated() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let s = spec();
+        let current = reconcile_oauth2(input(&s, None, None), &fj, &secrets)
+            .await
+            .forgejo;
+        // Turned public in Forgejo.
+        let mut changed = desired_app(&input(&s, None, None));
+        changed.confidential_client = false;
+        fj.update_oauth2_app(None, current.as_ref().unwrap().id, &changed)
+            .await
+            .unwrap();
+
+        let fixed = reconcile_oauth2(input(&s, None, current.clone()), &fj, &secrets).await;
+        assert_eq!(fixed.drift.fields(), ["confidential_client"]);
+        assert_eq!(fixed.drift_effect, Some(SECRET_ROTATED));
+        let (_, app, secret) = fj.oauth2_app(current.unwrap().id).unwrap();
+        assert!(app.confidential_client);
+        assert_eq!(
+            secrets.get("team-a/app").unwrap()["FORGEJO_CLIENT_SECRET"],
+            secret
+        );
+
+        // A lost target rotates too, but nothing drifted: no field named.
+        secrets.remove("team-a/app");
+        let reissued = reconcile_oauth2(input(&s, None, fixed.forgejo), &fj, &secrets).await;
+        assert_eq!(reissued.write, Some(RemoteWrite::Drift));
+        assert!(reissued.drift.is_empty());
+        assert_eq!(reissued.drift_effect, None);
     }
 
     #[tokio::test]

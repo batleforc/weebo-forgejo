@@ -6,7 +6,8 @@
 //! meta keys) and its hook edit ignores everything else in `config` — the
 //! secret and `http_method` included. Those are "create-only": a change
 //! means a new hook, like a type change. The authorization header is
-//! editable.
+//! editable. An edit only happens on a drift of what Forgejo shows, or a
+//! new header, and never carries the secret (see `HookPatch`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,8 +16,10 @@ use api::webhook::ForgejoWebhookSpec;
 use domain::error::ReasonCode;
 use sha2::{Digest, Sha256};
 
-use crate::ports::{DesiredHook, ForgejoGateway, ForgejoRef, GatewayError, HookTarget, RemoteHook};
-use crate::use_cases::{CleanupGateway, Failure, Outcome, gone_ok};
+use crate::ports::{
+    DesiredHook, ForgejoGateway, ForgejoRef, GatewayError, HookPatch, HookTarget, RemoteHook,
+};
+use crate::use_cases::{CleanupGateway, Drift, Failure, Outcome, RemoteWrite, gone_ok};
 
 pub struct WebhookInput<'a> {
     pub spec: &'a ForgejoWebhookSpec,
@@ -66,6 +69,7 @@ pub async fn reconcile_webhook(input: WebhookInput<'_>, gateway: &dyn ForgejoGat
     }
 
     let mut recreating = false;
+    let mut corrected = None;
     let id = match remote {
         // The type and the create-only inputs are fixed at creation.
         Some(r) if r.type_ != desired.type_ || change == Change::Recreate => {
@@ -76,10 +80,14 @@ pub async fn reconcile_webhook(input: WebhookInput<'_>, gateway: &dyn ForgejoGat
             None
         }
         Some(r) => {
-            if (hook_differs(&desired, &r) || change == Change::Edit)
-                && let Err(e) = gateway.edit_hook(&input.target, r.id, &desired).await
-            {
-                return Outcome::failed(input.current.clone(), e);
+            // A new header (from its Secret) is a write without a drifted
+            // field: counted, not announced.
+            let (drift, patch) = hook_differs(&desired, &r, change == Change::Edit);
+            if !drift.is_empty() || change == Change::Edit {
+                if let Err(e) = gateway.edit_hook(&input.target, r.id, &patch).await {
+                    return Outcome::failed(input.current.clone(), e);
+                }
+                corrected = Some(drift);
             }
             Some(r.id)
         }
@@ -127,6 +135,13 @@ pub async fn reconcile_webhook(input: WebhookInput<'_>, gateway: &dyn ForgejoGat
         }),
         "webhook synced",
     );
+    outcome = match corrected {
+        Some(drift) => outcome.corrected(drift),
+        None if input.current.as_ref().map(|c| c.id) != Some(id) => {
+            outcome.wrote(RemoteWrite::Created)
+        }
+        None => outcome,
+    };
     // Always set, so removing every write-only input is recorded too.
     outcome.secret_hash = Some(applied.encode());
     outcome
@@ -134,18 +149,19 @@ pub async fn reconcile_webhook(input: WebhookInput<'_>, gateway: &dyn ForgejoGat
 
 /// Deleted on the recorded target, else on `now` — where the referenced
 /// repository or organization lives now, which differs after a rename the
-/// status hasn't caught up with.
+/// status hasn't caught up with. `Ok(true)`: the hook was deleted by this
+/// call.
 pub async fn cleanup_webhook(
     spec: &ForgejoWebhookSpec,
     current: Option<&ForgejoRef>,
     now: Option<HookTarget>,
     gateway: CleanupGateway<'_>,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
     if spec.deletion_policy != DeletionPolicy::Delete {
-        return Ok(());
+        return Ok(false);
     }
     let Some(current) = current else {
-        return Ok(());
+        return Ok(false);
     };
     let recorded = parse_target(&current.name);
     let gateway = gateway.map_err(Clone::clone)?;
@@ -154,12 +170,12 @@ pub async fn cleanup_webhook(
         .chain(now.iter().filter(|t| Some(*t) != recorded.as_ref()))
     {
         match gateway.delete_hook(target, current.id).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => return Ok(true),
             Err(GatewayError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Inverse of `HookTarget`'s `Display`.
@@ -200,18 +216,50 @@ fn desired_hook(input: &WebhookInput<'_>) -> DesiredHook {
 }
 
 /// Only what Forgejo reads back is part of the visible diff; the rest is
-/// create-only and tracked by [`Applied`].
-fn hook_differs(d: &DesiredHook, r: &RemoteHook) -> bool {
-    let visible = d
+/// create-only and tracked by [`Applied`]. Returns the drifted fields and
+/// the edit putting them back: `config` (its editable keys only — never
+/// the secret) only when one of them drifted, `active` only when it did,
+/// the header only when its digest changed (`new_header`); events and
+/// branch filter always, since Forgejo replaces them on every edit (see
+/// [`HookPatch`]).
+fn hook_differs(d: &DesiredHook, r: &RemoteHook, new_header: bool) -> (Drift, HookPatch) {
+    let mut drift = Drift::default();
+    let editable: BTreeMap<String, String> = d
         .config
         .iter()
         .filter(|(k, _)| forgejo_echoes(&d.type_, k))
-        .any(|(k, v)| r.config.get(k) != Some(v));
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (key, value) in &editable {
+        drift.note(echoed_key(key), r.config.get(key) != Some(value));
+    }
+    let config = (!drift.is_empty()).then_some(editable);
     let remote_events: BTreeSet<String> = r.events.iter().map(|e| e.to_lowercase()).collect();
-    visible
-        || remote_events != forgejo_events(&d.events)
-        || d.branch_filter != r.branch_filter
-        || d.active != r.active
+    drift.note("events", remote_events != forgejo_events(&d.events));
+    drift.note("branch_filter", d.branch_filter != r.branch_filter);
+    let mut active = Some(d.active);
+    drift.keep("active", &mut active, &r.active);
+    let patch = HookPatch {
+        config,
+        events: d.events.clone(),
+        branch_filter: d.branch_filter.clone(),
+        active,
+        authorization_header: d.authorization_header.clone().filter(|_| new_header),
+    };
+    (drift, patch)
+}
+
+/// A key [`forgejo_echoes`] accepts, as the field a drift names.
+fn echoed_key(key: &str) -> &'static str {
+    match key {
+        "url" => "config.url",
+        "content_type" => "config.content_type",
+        "channel" => "config.channel",
+        "username" => "config.username",
+        "icon_url" => "config.icon_url",
+        "color" => "config.color",
+        _ => "config",
+    }
 }
 
 /// Config keys Forgejo returns on a GET and applies on an edit.
@@ -417,7 +465,7 @@ mod tests {
     use api::common::ObjectRef;
 
     use super::*;
-    use crate::test_support::FakeForgejo;
+    use crate::test_support::{Edit, FakeForgejo};
 
     fn spec() -> ForgejoWebhookSpec {
         ForgejoWebhookSpec {
@@ -556,6 +604,105 @@ mod tests {
             fj.calls(),
             vec![format!("edit_hook repo:weebo/app {}", current.id)]
         );
+        // Nothing Forgejo shows drifted: counted, not announced, and the
+        // config (with the secret) stays out of the edit.
+        assert_eq!(second.write, Some(RemoteWrite::Drift));
+        assert!(second.drift.is_empty());
+        let edits: [Edit; 1] = fj.edits().try_into().unwrap();
+        let [Edit::Hook(patch)] = edits else {
+            panic!("one hook edit expected");
+        };
+        assert_eq!(patch.config, None);
+        assert_eq!(patch.active, None);
+        assert_eq!(patch.authorization_header.as_deref(), Some("Bearer b"));
+    }
+
+    /// Forgejo replaces events and branch filter on every edit: they are
+    /// always sent; `config` (and the secret) never, unless an editable
+    /// key drifted; the header only when it changed.
+    #[tokio::test]
+    async fn a_drifted_active_flag_is_edited_without_the_config() {
+        let fj = FakeForgejo::default();
+        let s = spec();
+        let input = |current, applied| WebhookInput {
+            spec: &s,
+            current,
+            target: repo("app"),
+            secret: Some("k".into()),
+            authorization_header: Some("Bearer a".into()),
+            applied_secret_hash: applied,
+        };
+        let first = reconcile_webhook(input(None, None), &fj).await;
+        assert_eq!(first.write, Some(RemoteWrite::Created));
+        let current = first.forgejo.clone().unwrap();
+        let disabled = HookPatch {
+            active: Some(false),
+            events: vec!["push".into()],
+            ..Default::default()
+        };
+        fj.edit_hook(&repo("app"), current.id, &disabled)
+            .await
+            .unwrap();
+
+        fj.clear_calls();
+        let again = reconcile_webhook(input(Some(current.clone()), first.secret_hash), &fj).await;
+        assert_eq!(again.drift.fields(), ["active"]);
+        assert_eq!(again.write, Some(RemoteWrite::Drift));
+        assert_eq!(
+            fj.edits(),
+            [Edit::Hook(HookPatch {
+                config: None,
+                events: vec!["push".into()],
+                branch_filter: String::new(),
+                active: Some(true),
+                authorization_header: None,
+            })]
+        );
+        let (_, config) = fj.hook(current.id).unwrap();
+        assert_eq!(config.get("secret").map(String::as_str), Some("k"));
+    }
+
+    #[tokio::test]
+    async fn a_drifted_url_sends_the_editable_config_only() {
+        let fj = FakeForgejo::default();
+        let s = spec();
+        let first = run(&s, None, repo("app"), Some("k"), None, &fj).await;
+        let current = first.forgejo.clone().unwrap();
+        let moved = HookPatch {
+            config: Some(BTreeMap::from([(
+                "url".to_string(),
+                "https://elsewhere.example.com".to_string(),
+            )])),
+            events: vec!["push".into()],
+            ..Default::default()
+        };
+        fj.edit_hook(&repo("app"), current.id, &moved)
+            .await
+            .unwrap();
+
+        fj.clear_calls();
+        let again = run(
+            &s,
+            Some(current),
+            repo("app"),
+            Some("k"),
+            first.secret_hash,
+            &fj,
+        )
+        .await;
+        assert_eq!(again.drift.fields(), ["config.url"]);
+        let edits: [Edit; 1] = fj.edits().try_into().unwrap();
+        let [Edit::Hook(patch)] = edits else {
+            panic!("one hook edit expected");
+        };
+        let keys: Vec<&str> = patch
+            .config
+            .iter()
+            .flatten()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(keys, ["content_type", "url"]);
+        assert_eq!(patch.active, None);
     }
 
     #[tokio::test]

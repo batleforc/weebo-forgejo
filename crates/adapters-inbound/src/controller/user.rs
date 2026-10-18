@@ -6,7 +6,7 @@ use api::{ForgejoNamespacePolicy, ForgejoUser};
 use application::ports::{BoundInstance, RefKind};
 use application::use_cases::admission::enforce_on;
 use application::use_cases::reconcile_user::{UserInput, cleanup_user, reconcile_user};
-use application::use_cases::{Failure, Outcome};
+use application::use_cases::{Failure, Outcome, RemoteWrite};
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -15,7 +15,7 @@ use kube::{Client, ResourceExt};
 
 use super::status::{current_ref, password_emitted, secret_pending, spec_changed};
 use super::{Ctx, Error, FINALIZER, ScopedWatches, error_policy, requeue_after, status};
-use crate::metrics::record_reconcile;
+use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoUser";
 
@@ -88,7 +88,7 @@ async fn apply(api: &Api<ForgejoUser>, user: &ForgejoUser, ctx: &Ctx) -> Result<
         .on(bound),
     };
 
-    record_reconcile("ForgejoUser", outcome.reason(), started.elapsed());
+    record_reconcile("ForgejoUser", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
 }
@@ -120,7 +120,7 @@ async fn cleanup(user: &ForgejoUser, ctx: &Ctx) -> Result<Action, Error> {
     let instance = super::cleanup_instance(ctx, user).await;
     let gateway = super::cleanup_gateway(ctx, &instance).await;
     let secrets = super::cleanup_secrets(ctx, &instance).await;
-    cleanup_user(
+    let deleted = cleanup_user(
         &user.spec,
         &user.namespace().unwrap_or_default(),
         &user.name_any(),
@@ -131,5 +131,8 @@ async fn cleanup(user: &ForgejoUser, ctx: &Ctx) -> Result<Action, Error> {
     )
     .await
     .map_err(Error::Cleanup)?;
+    if deleted {
+        record_write("ForgejoUser", RemoteWrite::Deleted);
+    }
     Ok(Action::await_change())
 }

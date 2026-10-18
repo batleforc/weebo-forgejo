@@ -6,7 +6,7 @@ use application::ports::{BoundInstance, ForgejoGateway, ForgejoRef, RefKind};
 use application::use_cases::admission::enforce_on;
 use application::use_cases::reconcile_team::{Member, TeamInput, cleanup_team, reconcile_team};
 use application::use_cases::refs::{resolve_identity_required, resolve_member};
-use application::use_cases::{Failure, Outcome};
+use application::use_cases::{Failure, Outcome, RemoteWrite};
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -18,7 +18,7 @@ use super::{
     Ctx, Error, FINALIZER, ScopedWatches, allows_disruptive_update, error_policy, requeue_after,
     status,
 };
-use crate::metrics::record_reconcile;
+use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoTeam";
 
@@ -115,7 +115,7 @@ async fn apply(api: &Api<ForgejoTeam>, team: &ForgejoTeam, ctx: &Ctx) -> Result<
         .on(bound),
     };
 
-    record_reconcile("ForgejoTeam", outcome.reason(), started.elapsed());
+    record_reconcile("ForgejoTeam", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
 }
@@ -168,8 +168,11 @@ async fn resolve_inputs(
 async fn cleanup(team: &ForgejoTeam, ctx: &Ctx) -> Result<Action, Error> {
     let instance = super::cleanup_instance(ctx, team).await;
     let gateway = super::cleanup_gateway(ctx, &instance).await;
-    cleanup_team(&team.spec, current_ref(team).as_ref(), gateway.as_deref())
+    let deleted = cleanup_team(&team.spec, current_ref(team).as_ref(), gateway.as_deref())
         .await
         .map_err(Error::Cleanup)?;
+    if deleted {
+        record_write("ForgejoTeam", RemoteWrite::Deleted);
+    }
     Ok(Action::await_change())
 }

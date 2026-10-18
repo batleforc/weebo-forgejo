@@ -4,7 +4,7 @@
 
 use adapters_outbound::ForgejoHttpGateway;
 use application::ports::{
-    DesiredOrganization, DesiredTeam, DesiredUser, ForgejoGateway, GatewayError,
+    DesiredOrganization, DesiredTeam, DesiredUser, ForgejoGateway, GatewayError, UserPatch,
 };
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path, query_param};
@@ -183,7 +183,10 @@ async fn edit_user_switches_back_to_local_login_explicitly() {
         .await;
     let mut desired = user("alice");
     desired.password = None;
-    gateway(&server).edit_user("alice", &desired).await.unwrap();
+    gateway(&server)
+        .edit_user("alice", &UserPatch::full(&desired))
+        .await
+        .unwrap();
     let req = &server.received_requests().await.unwrap()[0];
     let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
     assert!(
@@ -380,7 +383,9 @@ async fn an_edit_422_saying_already_is_an_api_error() {
         .mount(&server)
         .await;
     assert!(matches!(
-        gateway(&server).edit_user("alice", &user("alice")).await,
+        gateway(&server)
+            .edit_user("alice", &UserPatch::full(&user("alice")))
+            .await,
         Err(GatewayError::Api(_))
     ));
 }
@@ -589,4 +594,124 @@ async fn token_user_reads_the_authenticated_account() {
         .await;
     let user = gateway(&server).token_user().await.unwrap();
     assert_eq!((user.login.as_str(), user.admin), ("root", true));
+}
+
+/// The JSON body of the only request `server` received.
+async fn only_body(server: &MockServer) -> serde_json::Value {
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "one request expected");
+    serde_json::from_slice(&requests[0].body).unwrap()
+}
+
+/// A webhook whose `active` drifted: Forgejo's `editHook` merges `config`
+/// key by key and ignores the secret in it, but replaces events, branch
+/// filter and authorization header on every edit — so those are sent, and
+/// `config` (with the secret) is not.
+#[tokio::test]
+async fn a_hook_whose_active_drifted_is_patched_without_its_secret() {
+    use application::ports::{HookPatch, HookTarget};
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/repos/weebo/app/hooks/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 3})))
+        .mount(&server)
+        .await;
+    let patch = HookPatch {
+        config: None,
+        events: vec!["push".into()],
+        branch_filter: "main".into(),
+        active: Some(true),
+        authorization_header: None,
+    };
+    let target = HookTarget::Repository {
+        owner: "weebo".into(),
+        name: "app".into(),
+    };
+    gateway(&server)
+        .edit_hook(&target, 3, &patch)
+        .await
+        .unwrap();
+    assert_eq!(
+        only_body(&server).await,
+        json!({"active": true, "events": ["push"], "branch_filter": "main"})
+    );
+}
+
+#[tokio::test]
+async fn a_drifted_organization_field_is_patched_alone() {
+    use application::ports::OrganizationPatch;
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/orgs/weebo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 1})))
+        .mount(&server)
+        .await;
+    let patch = OrganizationPatch {
+        description: Some("docs".into()),
+        ..Default::default()
+    };
+    gateway(&server)
+        .edit_organization("weebo", &patch)
+        .await
+        .unwrap();
+    assert_eq!(only_body(&server).await, json!({"description": "docs"}));
+}
+
+/// `EditTeamOption.name` is required: always sent, nothing else undrifted.
+#[tokio::test]
+async fn a_drifted_team_field_is_patched_with_the_required_name() {
+    use application::ports::TeamPatch;
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/teams/4"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 4})))
+        .mount(&server)
+        .await;
+    let patch = TeamPatch {
+        name: "devs".into(),
+        can_create_org_repo: Some(true),
+        ..Default::default()
+    };
+    gateway(&server).edit_team(4, &patch).await.unwrap();
+    assert_eq!(
+        only_body(&server).await,
+        json!({"name": "devs", "can_create_org_repo": true})
+    );
+}
+
+#[tokio::test]
+async fn a_drifted_repository_field_is_patched_alone() {
+    use application::ports::RepositoryPatch;
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/repos/weebo/app"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 9})))
+        .mount(&server)
+        .await;
+    let patch = RepositoryPatch {
+        has_wiki: Some(false),
+        ..Default::default()
+    };
+    gateway(&server)
+        .edit_repository("weebo/app", &patch)
+        .await
+        .unwrap();
+    assert_eq!(only_body(&server).await, json!({"has_wiki": false}));
+}
+
+/// No password, no login source, nothing but the drifted field.
+#[tokio::test]
+async fn a_drifted_user_field_is_patched_alone() {
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/admin/users/alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7})))
+        .mount(&server)
+        .await;
+    let patch = UserPatch {
+        prohibit_login: Some(true),
+        ..Default::default()
+    };
+    gateway(&server).edit_user("alice", &patch).await.unwrap();
+    assert_eq!(only_body(&server).await, json!({"prohibit_login": true}));
 }

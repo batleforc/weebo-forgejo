@@ -121,6 +121,8 @@ ideas behind the fields, start with [Concepts](/docs/concepts).`,
       InstanceUnreachable: "Timeouts and rate limiting (408/429) land here too. Check Forgejo's health and the URL/CA; it's retried automatically",
       TokenSecretNotFound: "Fix `tokenSecretRef` or create the Secret",
       Bound: "Nothing",
+      DriftCorrected:
+        "Nothing, unless it names the same field on every reconcile: then Forgejo stores that field differently than it is sent (a comparison bug, report it). For an OAuth2 application, the correction rotated its client secret: the `secretTargets` hold the new one",
       Released: "Nothing",
       InstanceInUse: "Delete the CRs bound to the instance first",
       KubernetesApiError: "Transient; retried automatically",

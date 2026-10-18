@@ -12,9 +12,9 @@ use std::time::Instant;
 use application::ports::{
     DesiredHook, DesiredOAuth2App, DesiredOrganization, DesiredRepository, DesiredTeam,
     DesiredToken, DesiredUser, ForgejoGateway, ForgejoRef, GatewayError, GenerateOptions,
-    HookTarget, MigrateOptions, ProtectionRule, RemoteHook, RemoteKey, RemoteOAuth2App,
-    RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
-    RepositoryInitOptions,
+    HookPatch, HookTarget, MigrateOptions, OrganizationPatch, ProtectionRule, RemoteHook,
+    RemoteKey, RemoteOAuth2App, RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken,
+    RemoteUser, RepositoryInitOptions, RepositoryPatch, TeamPatch, UserPatch,
 };
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Histogram};
@@ -124,7 +124,7 @@ impl ForgejoGateway for MeteredGateway {
             .await
     }
 
-    async fn edit_user(&self, username: &str, user: &DesiredUser) -> Result<(), GatewayError> {
+    async fn edit_user(&self, username: &str, user: &UserPatch) -> Result<(), GatewayError> {
         self.metered("edit_user", self.inner.edit_user(username, user))
             .await
     }
@@ -165,7 +165,7 @@ impl ForgejoGateway for MeteredGateway {
     async fn edit_organization(
         &self,
         name: &str,
-        org: &DesiredOrganization,
+        org: &OrganizationPatch,
     ) -> Result<(), GatewayError> {
         self.metered("edit_organization", self.inner.edit_organization(name, org))
             .await
@@ -198,7 +198,7 @@ impl ForgejoGateway for MeteredGateway {
             .await
     }
 
-    async fn edit_team(&self, id: i64, team: &DesiredTeam) -> Result<(), GatewayError> {
+    async fn edit_team(&self, id: i64, team: &TeamPatch) -> Result<(), GatewayError> {
         self.metered("edit_team", self.inner.edit_team(id, team))
             .await
     }
@@ -277,7 +277,7 @@ impl ForgejoGateway for MeteredGateway {
     async fn edit_repository(
         &self,
         full_name: &str,
-        repo: &DesiredRepository,
+        repo: &RepositoryPatch,
     ) -> Result<(), GatewayError> {
         self.metered(
             "edit_repository",
@@ -415,7 +415,7 @@ impl ForgejoGateway for MeteredGateway {
         &self,
         target: &HookTarget,
         id: i64,
-        hook: &DesiredHook,
+        hook: &HookPatch,
     ) -> Result<(), GatewayError> {
         self.metered("edit_hook", self.inner.edit_hook(target, id, hook))
             .await

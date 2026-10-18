@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use application::ports::{DesiredTeam, ForgejoRef, GatewayError, RemoteTeam};
+use application::ports::{DesiredTeam, ForgejoRef, GatewayError, RemoteTeam, TeamPatch};
 use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::organization_api as api;
 use forgejo_client::models;
@@ -38,7 +38,13 @@ pub(super) fn remote(t: models::Team) -> RemoteTeam {
 }
 
 fn units(team: &DesiredTeam) -> Option<std::collections::HashMap<String, String>> {
-    (!team.units_map.is_empty()).then(|| team.units_map.clone().into_iter().collect())
+    units_map(&team.units_map)
+}
+
+fn units_map(
+    units: &std::collections::BTreeMap<String, String>,
+) -> Option<std::collections::HashMap<String, String>> {
+    (!units.is_empty()).then(|| units.clone().into_iter().collect())
 }
 
 pub(super) async fn create(
@@ -70,14 +76,15 @@ pub(super) async fn create(
 pub(super) async fn edit(
     config: &Configuration,
     id: i64,
-    team: &DesiredTeam,
+    team: &TeamPatch,
 ) -> Result<(), GatewayError> {
+    let access = team.access.as_ref();
     let body = models::EditTeamOption {
-        can_create_org_repo: Some(team.can_create_org_repo),
+        can_create_org_repo: team.can_create_org_repo,
         description: team.description.clone(),
-        includes_all_repositories: Some(team.includes_all_repositories),
-        permission: Some(wire_enum(team.permission)?),
-        units_map: units(team),
+        includes_all_repositories: access.map(|a| a.includes_all_repositories),
+        permission: access.map(|a| wire_enum(a.permission)).transpose()?,
+        units_map: access.and_then(|a| units_map(&a.units_map)),
         ..models::EditTeamOption::new(team.name.clone())
     };
     let params = api::OrgEditTeamParams {

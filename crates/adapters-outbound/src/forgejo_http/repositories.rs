@@ -1,6 +1,6 @@
 use application::ports::{
     DesiredRepository, ForgejoRef, GatewayError, GenerateOptions, MigrateOptions, ProtectionRule,
-    RemoteRepository, RemoteTeam, RepositoryInitOptions,
+    RemoteRepository, RemoteTeam, RepositoryInitOptions, RepositoryPatch,
 };
 use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{admin_api, organization_api, repository_api as api};
@@ -166,7 +166,7 @@ pub(super) async fn migrate(
 pub(super) async fn edit(
     config: &Configuration,
     full_name: &str,
-    repo: &DesiredRepository,
+    repo: &RepositoryPatch,
 ) -> Result<(), GatewayError> {
     let (owner, name) = split(full_name)?;
     let body = models::EditRepoOption {
@@ -180,9 +180,9 @@ pub(super) async fn edit(
         has_releases: repo.has_releases,
         has_wiki: repo.has_wiki,
         mirror_interval: repo.mirror_interval.clone(),
-        name: Some(repo.name.clone()),
-        private: Some(repo.private),
-        template: Some(repo.template),
+        name: repo.name.clone(),
+        private: repo.private,
+        template: repo.template,
         website: repo.website.clone(),
         ..Default::default()
     };
