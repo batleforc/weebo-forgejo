@@ -33,13 +33,13 @@ importer = { path = "crates/importer" }
 # Shared operator kit. To iterate on it locally, temporarily swap the
 # `git`/`tag` pair for `path = "../weebo-operator-kit/crates/<crate>"` —
 # never push with a path dependency (CI and container builds don't see it).
-weebo-kit-domain = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.17.0" }
-weebo-kit-api = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.17.0" }
-weebo-kit-application = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.17.0" }
-weebo-kit-adapters = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.17.0" }
-weebo-kit-runtime = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.17.0" }
-weebo-kit-testkit = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.17.0" }
-weebo-kit-perf = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.17.0" }
+weebo-kit-domain = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
+weebo-kit-api = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
+weebo-kit-application = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
+weebo-kit-adapters = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
+weebo-kit-runtime = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
+weebo-kit-testkit = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
+weebo-kit-perf = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -76,15 +76,3 @@ envtest = "0.3"
 # (envtest alone links kube-apiserver/etcd).
 [profile.test]
 debug = false
-
-
-# TEMPORARY — the kit's unreleased v0.18.0 from the sibling checkout.
-# Remove once the tag exists (pins to v0.18.0), then `cargo update -p weebo-kit-domain`.
-[patch."https://github.com/batleforc/weebo-operator-kit"]
-weebo-kit-domain = { path = "../weebo-operator-kit/crates/weebo-kit-domain" }
-weebo-kit-api = { path = "../weebo-operator-kit/crates/weebo-kit-api" }
-weebo-kit-application = { path = "../weebo-operator-kit/crates/weebo-kit-application" }
-weebo-kit-adapters = { path = "../weebo-operator-kit/crates/weebo-kit-adapters" }
-weebo-kit-runtime = { path = "../weebo-operator-kit/crates/weebo-kit-runtime" }
-weebo-kit-testkit = { path = "../weebo-operator-kit/crates/weebo-kit-testkit" }
-weebo-kit-perf = { path = "../weebo-operator-kit/crates/weebo-kit-perf" }
