@@ -33,13 +33,13 @@ importer = { path = "crates/importer" }
 # Shared operator kit. To iterate on it locally, temporarily swap the
 # `git`/`tag` pair for `path = "../weebo-operator-kit/crates/<crate>"` —
 # never push with a path dependency (CI and container builds don't see it).
-weebo-kit-domain = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
-weebo-kit-api = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
-weebo-kit-application = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
-weebo-kit-adapters = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
-weebo-kit-runtime = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
-weebo-kit-testkit = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
-weebo-kit-perf = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.0" }
+weebo-kit-domain = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.1" }
+weebo-kit-api = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.1" }
+weebo-kit-application = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.1" }
+weebo-kit-adapters = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.1" }
+weebo-kit-runtime = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.1" }
+weebo-kit-testkit = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.1" }
+weebo-kit-perf = { git = "https://github.com/batleforc/weebo-operator-kit", tag = "v0.18.1" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
