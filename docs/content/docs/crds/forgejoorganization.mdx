@@ -28,18 +28,66 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR never deletes the organization (Forgejo also refuses while it still owns repos). |
+| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR never deletes the organization (Forgejo also refuses while it still owns repos).<br /><br />Values: `"Delete"`, `"Orphan"` |
 | `description` | `string` | no |  |  |
 | `email` | `string` | no |  |  |
 | `fullName` | `string` | no |  |  |
-| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
+| [`instanceRef`](#spec.instanceRef) | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
 | `location` | `string` | no |  |  |
 | `name` | `string` | yes |  | Organization name (its URL slug). Changing it renames in place. |
-| `ownerRef` | `object` | no |  | The user that becomes the organization's first owner. Only read at creation; without it the operator's admin account owns it. |
+| [`ownerRef`](#spec.ownerRef) | `object` | no |  | The user that becomes the organization's first owner. Only read at creation; without it the operator's admin account owns it. |
 | `repoAdminChangeTeamAccess` | `boolean` | no | `false` | Let repository admins change which teams can access their repo. |
-| `sharedWith` | `object` | no |  | Other namespaces allowed to reference this object (when the operator enables cross-namespace references). Unset: this namespace only. |
-| `visibility` | `string` | no | `"public"` | Visibility of a Forgejo user or organization. |
+| [`sharedWith`](#spec.sharedWith) | `object` | no |  | Other namespaces allowed to reference this object (when the operator enables cross-namespace references). Unset: this namespace only. |
+| `visibility` | `string` | no | `"public"` | Visibility of a Forgejo user or organization.<br /><br />Values: `"public"`, `"private"`, `"limited"` |
 | `website` | `string` | no |  |  |
+
+### `spec.instanceRef` [#spec.instanceRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | no |  | The kind of instance a reference designates.<br /><br />Values: `"Instance"`, `"LocalInstance"` |
+| `name` | `string` | yes |  | `metadata.name` of the instance. |
+| `namespace` | `string` | no |  | Namespace of a `LocalInstance`. Defaults to this object's own; required on a cluster-scoped object. Another namespace's local instance must share itself with this one (its `sharedWith`). |
+
+**Rules**
+
+- namespace only applies to kind LocalInstance — `!has(self.namespace) || !has(self.kind) || self.kind == 'LocalInstance'`
+
+### `spec.ownerRef` [#spec.ownerRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no |  | `metadata.name` of the CR. |
+| `namespace` | `string` | no |  | Namespace of the CR; defaults to this object's own. |
+| `remoteName` | `string` | no |  | Forgejo name of an object no CR manages (a user's login, an organization's or team's name). |
+
+**Rules**
+
+- set exactly one of name and remoteName — `has(self.name) != has(self.remoteName)`
+- namespace only applies with name — `!has(self.namespace) || has(self.name)`
+
+### `spec.sharedWith` [#spec.sharedWith]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clusterScoped` | `boolean` | no |  | Cluster-scoped objects may use this instance. |
+| [`namespaceSelector`](#spec.sharedWith.namespaceSelector) | `object` | no |  | Namespaces whose labels match this selector may use this instance. An empty selector (`{}`) matches every namespace: the instance — and the token it holds — is then shared with the whole cluster. |
+| `namespaces` | `string[]` | no |  | Namespaces whose objects may use this instance. |
+
+### `spec.sharedWith.namespaceSelector` [#spec.sharedWith.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.sharedWith.namespaceSelector.matchExpressions) | `object[]` | no |  | matchExpressions is a list of label selector requirements. The requirements are ANDed. |
+| `matchLabels` | `map[string]` | no |  | matchLabels is a map of \{key,value\} pairs. A single \{key,value\} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed. |
+
+### `spec.sharedWith.namespaceSelector.matchExpressions[]` [#spec.sharedWith.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | key is the label key that the selector applies to. |
+| `operator` | `string` | yes |  | operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist. |
+| `values` | `string[]` | no |  | values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch. |
 
 ## Build a manifest
 

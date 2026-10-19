@@ -43,21 +43,65 @@ spec:
 | `admin` | `boolean` | no | `false` | Site administrator. |
 | `allowCreateOrganization` | `boolean` | no |  |  |
 | `bot` | `boolean` | no | `false` | Service account: its password is random and never emitted, so it is only usable through `ForgejoAccessToken`s and `ForgejoUserKey`s. (Not `prohibitLogin`: Forgejo refuses a prohibited account's API tokens too.) |
-| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR keeps the account and the attribution of everything it authored. Users are never purged. |
+| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR keeps the account and the attribution of everything it authored. Users are never purged.<br /><br />Values: `"Delete"`, `"Orphan"` |
 | `email` | `string` | no |  | Required unless `managementPolicy: Observe`. |
 | `fullName` | `string` | no |  |  |
-| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
+| [`instanceRef`](#spec.instanceRef) | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
 | `loginName` | `string` | no |  | Identity of the account at the authentication source (for OIDC, the `sub` claim or the configured username claim). Defaults to `username`. Only used with `loginSourceId`. |
 | `loginSourceId` | `integer` | no |  | ID of the Forgejo authentication source (Site administration → Authentication sources) the account logs in through. Forgejo has no API to list sources, so this is the numeric id, not its name. |
-| `managementPolicy` | `string` | no | `"Manage"` | Whether the operator owns the Forgejo object or only looks it up. |
+| `managementPolicy` | `string` | no | `"Manage"` | Whether the operator owns the Forgejo object or only looks it up.<br /><br />Values: `"Manage"`, `"Observe"` |
 | `maxRepoCreation` | `integer` | no |  | `-1` uses the instance default. |
 | `mustChangePassword` | `boolean` | no |  | Force a password change at first login. Local, non-bot users only; defaults to `true`. Until it's changed, Forgejo also refuses the account's API tokens. |
 | `prohibitLogin` | `boolean` | no | `false` | Disable the account entirely — web, git and API tokens alike. |
 | `restricted` | `boolean` | no | `false` | Restricted users only see what they are explicitly granted. |
-| `secretTargets` | `object[]` | no |  | Where the generated password of a local, non-bot user is written (`FORGEJO_USERNAME`, `FORGEJO_PASSWORD`, `FORGEJO_URL`). Required for those users; ignored otherwise. A target deleted later triggers a password reset, since the old value can't be read back. |
-| `sharedWith` | `object` | no |  | Other namespaces allowed to reference this object (when the operator enables cross-namespace references). Unset: this namespace only. |
+| [`secretTargets`](#spec.secretTargets) | `object[]` | no |  | Where the generated password of a local, non-bot user is written (`FORGEJO_USERNAME`, `FORGEJO_PASSWORD`, `FORGEJO_URL`). Required for those users; ignored otherwise. A target deleted later triggers a password reset, since the old value can't be read back. |
+| [`sharedWith`](#spec.sharedWith) | `object` | no |  | Other namespaces allowed to reference this object (when the operator enables cross-namespace references). Unset: this namespace only. |
 | `username` | `string` | yes |  | Forgejo login. Changing it renames the account in place. |
-| `visibility` | `string` | no | `"public"` | Visibility of a Forgejo user or organization. |
+| `visibility` | `string` | no | `"public"` | Visibility of a Forgejo user or organization.<br /><br />Values: `"public"`, `"private"`, `"limited"` |
+
+### `spec.instanceRef` [#spec.instanceRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | no |  | The kind of instance a reference designates.<br /><br />Values: `"Instance"`, `"LocalInstance"` |
+| `name` | `string` | yes |  | `metadata.name` of the instance. |
+| `namespace` | `string` | no |  | Namespace of a `LocalInstance`. Defaults to this object's own; required on a cluster-scoped object. Another namespace's local instance must share itself with this one (its `sharedWith`). |
+
+**Rules**
+
+- namespace only applies to kind LocalInstance — `!has(self.namespace) || !has(self.kind) || self.kind == 'LocalInstance'`
+
+### `spec.secretTargets[]` [#spec.secretTargets]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `backend` | `string` | no | `"kubernetes"` | `kubernetes` (default) or `vault`. A Vault target reuses the Vault connection (address, mount, auth) the instance configures, which it must then do.<br /><br />Values: `"kubernetes"`, `"vault"` |
+| `name` | `string` | yes |  | Kubernetes: the `Secret` name. Vault: names the default path `<pathPrefix>/<namespace>/<name>` when `path` is unset. |
+| `namespace` | `string` | no |  | Kubernetes `Secret` namespace (Vault: the namespace segment of the default path). Defaults to the CR's own namespace; required on cluster-scoped CRs. A namespaced CR may only name its own namespace. |
+| `path` | `string` | no |  | Vault only: explicit KV v2 path under the instance's mount. It must stay under `<pathPrefix>/<namespace>/` (this object's namespace, or the target's on a cluster-scoped object), unless the instance's `pathGrants` open it to this object. |
+
+### `spec.sharedWith` [#spec.sharedWith]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clusterScoped` | `boolean` | no |  | Cluster-scoped objects may use this instance. |
+| [`namespaceSelector`](#spec.sharedWith.namespaceSelector) | `object` | no |  | Namespaces whose labels match this selector may use this instance. An empty selector (`{}`) matches every namespace: the instance — and the token it holds — is then shared with the whole cluster. |
+| `namespaces` | `string[]` | no |  | Namespaces whose objects may use this instance. |
+
+### `spec.sharedWith.namespaceSelector` [#spec.sharedWith.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.sharedWith.namespaceSelector.matchExpressions) | `object[]` | no |  | matchExpressions is a list of label selector requirements. The requirements are ANDed. |
+| `matchLabels` | `map[string]` | no |  | matchLabels is a map of \{key,value\} pairs. A single \{key,value\} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed. |
+
+### `spec.sharedWith.namespaceSelector.matchExpressions[]` [#spec.sharedWith.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | key is the label key that the selector applies to. |
+| `operator` | `string` | yes |  | operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist. |
+| `values` | `string[]` | no |  | values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch. |
 
 ## Build a manifest
 
