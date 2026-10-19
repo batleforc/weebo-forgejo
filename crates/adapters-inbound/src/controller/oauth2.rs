@@ -16,11 +16,12 @@ use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
 use kube::{Client, ResourceExt};
+use weebo_kit_runtime::shared::WatchesIn;
 
 use super::status::{current_ref, owner_id, secret_pending};
 use super::{
-    Ctx, Error, FINALIZER, ScopedWatches, allows_disruptive_update, error_policy, requeue_after,
-    rotate_nonce, status,
+    Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, rotate_nonce,
+    status,
 };
 use crate::metrics::{record_reconcile, record_write};
 
@@ -35,7 +36,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let by_policy = controller.store();
     let apps = controller.store();
     let results = controller
-        .watches_in::<ForgejoUser, _>(&ctx, &client, move |user| {
+        .watches_in::<ForgejoUser, _>(&ctx.watches, &ctx.scope, &client, move |user| {
             let (name, ns) = (user.name_any(), user.namespace());
             apps.state()
                 .into_iter()
@@ -47,13 +48,18 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                 .map(|a| ObjectRef::from_obj(a.as_ref()))
                 .collect::<Vec<_>>()
         })
-        .watches_in::<api::ForgejoNamespacePolicy, _>(&ctx, &client, move |_| {
-            by_policy
-                .state()
-                .into_iter()
-                .map(|o| ObjectRef::from_obj(o.as_ref()))
-                .collect::<Vec<_>>()
-        })
+        .watches_in::<api::ForgejoNamespacePolicy, _>(
+            &ctx.watches,
+            &ctx.scope,
+            &client,
+            move |_| {
+                by_policy
+                    .state()
+                    .into_iter()
+                    .map(|o| ObjectRef::from_obj(o.as_ref()))
+                    .collect::<Vec<_>>()
+            },
+        )
         .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx);
     super::drive(KIND, health, results).await;

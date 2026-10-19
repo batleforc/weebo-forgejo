@@ -11,7 +11,6 @@ pub mod namespace_policy;
 pub mod oauth2;
 pub mod organization;
 pub mod repository;
-pub mod shared;
 pub mod status;
 pub mod team;
 pub mod token;
@@ -33,9 +32,9 @@ use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::Controller;
 use kube::runtime::controller::Action;
 use kube::runtime::events::Recorder;
-use kube::runtime::reflector::ObjectRef;
 use weebo_kit_runtime::events;
 use weebo_kit_runtime::scope::KindScope;
+use weebo_kit_runtime::shared::SharedWatches;
 use weebo_kit_runtime::{Health, WatchScope};
 
 pub use api::FINALIZER;
@@ -62,89 +61,80 @@ pub struct Ctx {
     pub shutdown: Shutdown,
     /// Liveness: controllers report their watch errors here.
     pub health: Arc<Health>,
-    /// The binary's shared watches: one per kind for every controller
-    /// (`Watches::default()`: each controller watches on its own).
-    pub watches: shared::Watches,
+    /// The binary's shared watches ([`spawn_watches`]): one per kind for
+    /// every controller (`SharedWatches::default()`: each controller
+    /// watches on its own). A controller watching a referenced kind goes
+    /// through them too (`weebo_kit_runtime::shared::WatchesIn`).
+    pub watches: SharedWatches,
     /// What the controllers watch (`WEEBO_WATCH_NAMESPACE`,
     /// `WEEBO_WATCH_LABEL_SELECTOR`, `WEEBO_WATCH_CLUSTER_KINDS`): every
     /// watch goes through it.
     pub scope: WatchScope,
 }
 
-/// A watch on a kind the CRs reference, re-triggering the CRs `map`
-/// returns — through the watch scope, and skipped for a cluster-scoped
-/// kind when the operator watches none (full namespaced).
-pub trait ScopedWatches<C>: Sized
-where
-    C: kube::Resource<DynamicType = ()> + Clone + std::fmt::Debug + Send + Sync + 'static,
-{
-    fn watches_in<K, I>(
-        self,
-        ctx: &Ctx,
-        client: &Client,
-        map: impl Fn(K) -> I + Send + Sync + 'static,
-    ) -> Self
-    where
-        K: shared::Shared
-            + Clone
-            + std::fmt::Debug
-            + serde::de::DeserializeOwned
-            + Send
-            + Sync
-            + 'static,
-        K::Scope: KindScope,
-        I: IntoIterator<Item = ObjectRef<C>> + 'static,
-        I::IntoIter: Send;
-}
-
-impl<C> ScopedWatches<C> for Controller<C>
-where
-    C: kube::Resource<DynamicType = ()>
-        + Clone
-        + std::fmt::Debug
-        + serde::de::DeserializeOwned
-        + Send
-        + Sync
-        + 'static,
-{
-    fn watches_in<K, I>(
-        self,
-        ctx: &Ctx,
-        client: &Client,
-        map: impl Fn(K) -> I + Send + Sync + 'static,
-    ) -> Self
-    where
-        K: shared::Shared
-            + Clone
-            + std::fmt::Debug
-            + serde::de::DeserializeOwned
-            + Send
-            + Sync
-            + 'static,
-        K::Scope: KindScope,
-        I: IntoIterator<Item = ObjectRef<C>> + 'static,
-        I::IntoIter: Send,
-    {
-        if !<K::Scope as KindScope>::NAMESPACED && !ctx.scope.cluster_kinds() {
-            return self;
-        }
-        if let Some(shared) = K::shared(&ctx.watches) {
-            return self.watches_stream(shared.touched(), map);
-        }
-        self.watches(
-            ctx.scope.api::<K>(client.clone()),
-            ctx.scope.watcher_config(),
-            map,
-        )
+/// `scope` without its label selector: its namespace only.
+pub fn unselected(scope: &WatchScope) -> WatchScope {
+    match scope.watched_namespace() {
+        Some(ns) => WatchScope::namespace(ns),
+        None => WatchScope::cluster(),
     }
 }
 
+/// One watch per kind for every controller (as its primary kind or as a
+/// referenced one) and the claim and policy reads (their stores): without
+/// it, `ForgejoNamespacePolicy` was listed and watched nine times,
+/// `ForgejoUser` seven, `ForgejoRepository` five. Spawned before the lease
+/// is campaigned for: a standby keeps them warm.
+///
+/// The CRs on `scope`; the policies without its label selector, and only
+/// when it watches cluster-scoped kinds: the policy checks read every
+/// policy, whichever release selects it, so a change to any of them
+/// re-checks the CRs. Neither the instances (their own reflectors, without
+/// the label selector) nor `ForgejoNamespacePolicy` as a primary kind
+/// (its controller is on the watch scope) go through them.
+pub fn spawn_watches(client: &Client, scope: &WatchScope, health: &Arc<Health>) -> SharedWatches {
+    fn on<K>(
+        watches: &mut SharedWatches,
+        client: &Client,
+        scope: &WatchScope,
+        health: &Arc<Health>,
+        name: &'static str,
+    ) where
+        K: kube::Resource<DynamicType = ()>
+            + Clone
+            + std::fmt::Debug
+            + serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + 'static,
+        K::Scope: KindScope,
+    {
+        watches.spawn(scope.api::<K>(client.clone()), scope, health, name);
+    }
+    let mut w = SharedWatches::default();
+    let (c, s, h) = (client, scope, health);
+    if scope.cluster_kinds() {
+        let all = unselected(scope);
+        on::<api::ForgejoNamespacePolicy>(&mut w, c, &all, h, "ForgejoNamespacePolicy watch");
+    }
+    on::<api::ForgejoUser>(&mut w, c, s, h, "ForgejoUser watch");
+    on::<api::ForgejoOrganization>(&mut w, c, s, h, "ForgejoOrganization watch");
+    on::<api::ForgejoTeam>(&mut w, c, s, h, "ForgejoTeam watch");
+    on::<api::ForgejoRepository>(&mut w, c, s, h, "ForgejoRepository watch");
+    on::<api::ForgejoUserKey>(&mut w, c, s, h, "ForgejoUserKey watch");
+    on::<api::ForgejoWebhook>(&mut w, c, s, h, "ForgejoWebhook watch");
+    on::<api::ForgejoDeployKey>(&mut w, c, s, h, "ForgejoDeployKey watch");
+    on::<api::ForgejoOAuth2Application>(&mut w, c, s, h, "ForgejoOAuth2Application watch");
+    on::<api::ForgejoAccessToken>(&mut w, c, s, h, "ForgejoAccessToken watch");
+    w
+}
+
 /// The controller of `K`: on the binary's shared watch of its kind when
-/// there is one ([`shared::controller_on`]), else on its own
-/// ([`controller`]) — through the watch scope either way.
+/// there is one, else on its own (the kit's `controller`) — through the
+/// watch scope either way.
 pub fn primary<K>(ctx: &Ctx, client: &Client) -> Controller<K>
 where
-    K: shared::Shared
+    K: kube::Resource<DynamicType = ()>
         + Clone
         + std::fmt::Debug
         + serde::de::DeserializeOwned
@@ -153,10 +143,8 @@ where
         + 'static,
     K::Scope: KindScope,
 {
-    match K::shared(&ctx.watches) {
-        Some(shared) => shared::controller_on(shared),
-        None => controller(ctx.scope.api::<K>(client.clone()), &ctx.scope),
-    }
+    ctx.watches
+        .controller(ctx.scope.api::<K>(client.clone()), &ctx.scope)
 }
 
 /// The kinds with an `instanceRef`.
