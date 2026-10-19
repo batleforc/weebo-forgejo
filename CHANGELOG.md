@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.0](https://github.com/batleforc/weebo-forgejo/compare/00187c504a9ece794d635dc9d36bd25216a0ec70..v0.5.0) - 2026-10-19
+#### Features
+- write only what differs in Forgejo (kit v0.18.1, weebo-si RFC 0003) (#15) - ([00187c5](https://github.com/batleforc/weebo-forgejo/commit/00187c504a9ece794d635dc9d36bd25216a0ec70)) - Maxime, Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v0.4.1](https://github.com/batleforc/weebo-forgejo/compare/0ef9ac3af7f15eb4cbab1667b113ebbd9f1ad4bb..v0.4.1) - 2026-10-15
 #### Bug Fixes
 - (**admission**) check a renamed owner's current login before keeping its credentials (#13) - ([0ef9ac3](https://github.com/batleforc/weebo-forgejo/commit/0ef9ac3af7f15eb4cbab1667b113ebbd9f1ad4bb)) - Maxime, Claude Opus 5.5
