@@ -1,13 +1,15 @@
 //! `ForgejoOrganization`: attempt-create-first, renamed in place when
-//! `spec.name` changes, PATCHed only when it differs from Forgejo.
+//! `spec.name` changes, PATCHed only when it differs from Forgejo — and
+//! then only with the fields that do.
 
 use api::common::DeletionPolicy;
 use api::organization::ForgejoOrganizationSpec;
 
 use crate::ports::{
-    DesiredOrganization, ForgejoGateway, ForgejoRef, GatewayError, RemoteOrganization,
+    DesiredOrganization, ForgejoGateway, ForgejoRef, GatewayError, OrganizationPatch,
+    RemoteOrganization,
 };
-use crate::use_cases::{CleanupGateway, Failure, Outcome, differs};
+use crate::use_cases::{CleanupGateway, Drift, Failure, Outcome, RemoteWrite, deleted};
 
 pub struct OrganizationInput<'a> {
     pub spec: &'a ForgejoOrganizationSpec,
@@ -25,7 +27,7 @@ pub async fn reconcile_organization(
     let spec = input.spec;
     let desired = desired_organization(spec);
 
-    let remote = match locate(spec, input.current.as_ref(), gateway).await {
+    let (remote, renamed) = match locate(spec, input.current.as_ref(), gateway).await {
         Ok(r) => r,
         Err(f) => return Outcome::failed(input.current, f),
     };
@@ -34,7 +36,9 @@ pub async fn reconcile_organization(
             .create_organization(input.owner.as_deref(), &desired)
             .await
         {
-            Ok(created) => Outcome::synced(Some(created), "organization created"),
+            Ok(created) => {
+                Outcome::synced(Some(created), "organization created").wrote(RemoteWrite::Created)
+            }
             Err(e) => Outcome::failed(None, e),
         };
     };
@@ -43,35 +47,40 @@ pub async fn reconcile_organization(
         id: remote.id,
         name: remote.name.clone(),
     });
-    if organization_differs(&desired, &remote)
-        && let Err(e) = gateway.edit_organization(&remote.name, &desired).await
+    let (mut drift, patch) = organization_differs(&desired, &remote);
+    if !patch.is_empty()
+        && let Err(e) = gateway.edit_organization(&remote.name, &patch).await
     {
         return Outcome::failed(current, e);
     }
-    Outcome::synced(current, "organization synced")
+    let synced = Outcome::synced(current, "organization synced");
+    drift.note("name", renamed);
+    if drift.is_empty() {
+        synced
+    } else {
+        synced.corrected(drift)
+    }
 }
 
+/// `Ok(true)`: the Forgejo object was deleted by this call.
 pub async fn cleanup_organization(
     spec: &ForgejoOrganizationSpec,
     current: Option<&ForgejoRef>,
     gateway: CleanupGateway<'_>,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
     if spec.deletion_policy != DeletionPolicy::Delete {
-        return Ok(());
+        return Ok(false);
     }
     let Some(current) = current else {
-        return Ok(());
+        return Ok(false);
     };
     let gateway = gateway.map_err(Clone::clone)?;
     // By id: after a rename outside the operator, the stored name may
     // belong to another organization by now.
     let Some(name) = name_now(current, gateway).await? else {
-        return Ok(());
+        return Ok(false);
     };
-    match gateway.delete_organization(&name).await {
-        Ok(()) | Err(GatewayError::NotFound(_)) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
+    Ok(deleted(gateway.delete_organization(&name).await)?)
 }
 
 /// The current name of `current` (`None`: deleted): the stored name when
@@ -88,29 +97,34 @@ async fn name_now(
     gateway.organization_name(current.id).await
 }
 
+/// The organization `current` designates, and whether it was renamed (to
+/// `spec.name`) to find it.
 async fn locate(
     spec: &ForgejoOrganizationSpec,
     current: Option<&ForgejoRef>,
     gateway: &dyn ForgejoGateway,
-) -> Result<Option<RemoteOrganization>, Failure> {
+) -> Result<(Option<RemoteOrganization>, bool), Failure> {
     let Some(current) = current else {
-        return Ok(None);
+        return Ok((None, false));
     };
     // By id: renamed outside the operator, the organization is renamed
     // back instead of being recreated next to it.
     let Some(name) = name_now(current, gateway).await? else {
-        return Ok(None);
+        return Ok((None, false));
     };
+    let mut renamed = false;
     if name != spec.name {
         match gateway.rename_organization(&name, &spec.name).await {
-            Ok(()) | Err(GatewayError::NotFound(_)) => {}
+            Ok(()) => renamed = true,
+            Err(GatewayError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(gateway
+    let remote = gateway
         .get_organization(&spec.name)
         .await?
-        .filter(|o| o.id == current.id))
+        .filter(|o| o.id == current.id);
+    Ok((remote, renamed))
 }
 
 fn desired_organization(spec: &ForgejoOrganizationSpec) -> DesiredOrganization {
@@ -126,14 +140,31 @@ fn desired_organization(spec: &ForgejoOrganizationSpec) -> DesiredOrganization {
     }
 }
 
-fn organization_differs(d: &DesiredOrganization, r: &RemoteOrganization) -> bool {
-    differs(&d.full_name, &r.full_name)
-        || differs(&d.description, &r.description)
-        || differs(&d.website, &r.website)
-        || differs(&d.location, &r.location)
-        || differs(&d.email, &r.email)
-        || d.visibility != r.visibility
-        || d.repo_admin_change_team_access != r.repo_admin_change_team_access
+/// The fields of `r` that differ from `d`, and the PATCH carrying only
+/// them (a field the spec leaves unset is no opinion).
+fn organization_differs(
+    d: &DesiredOrganization,
+    r: &RemoteOrganization,
+) -> (Drift, OrganizationPatch) {
+    let mut patch = OrganizationPatch::full(d);
+    let mut drift = Drift::default();
+    drift.keep("full_name", &mut patch.full_name, &r.full_name);
+    drift.keep("description", &mut patch.description, &r.description);
+    drift.keep("website", &mut patch.website, &r.website);
+    drift.keep("location", &mut patch.location, &r.location);
+    drift.keep("email", &mut patch.email, &r.email);
+    drift.keep_with(
+        "visibility",
+        &mut patch.visibility,
+        &r.visibility,
+        |d, r| *d == r.as_str(),
+    );
+    drift.keep(
+        "repo_admin_change_team_access",
+        &mut patch.repo_admin_change_team_access,
+        &r.repo_admin_change_team_access,
+    );
+    (drift, patch)
 }
 
 #[cfg(test)]
@@ -142,7 +173,7 @@ mod tests {
     use domain::error::ReasonCode;
 
     use super::*;
-    use crate::test_support::FakeForgejo;
+    use crate::test_support::{Edit, FakeForgejo};
 
     fn spec(name: &str) -> ForgejoOrganizationSpec {
         ForgejoOrganizationSpec {
@@ -187,8 +218,40 @@ mod tests {
         assert!(fj.calls().is_empty());
 
         s.visibility = Visibility::Private;
-        run(&s, created, None, &fj).await;
+        let outcome = run(&s, created, None, &fj).await;
         assert_eq!(fj.org("weebo").unwrap().remote.visibility, "private");
+        assert_eq!(outcome.write, Some(RemoteWrite::Drift));
+        assert_eq!(outcome.drift.fields(), ["visibility"]);
+    }
+
+    #[tokio::test]
+    async fn a_drift_patches_only_the_drifted_field() {
+        let fj = FakeForgejo::default();
+        let mut s = spec("weebo");
+        s.description = Some("docs".into());
+        let created = run(&s, None, None, &fj).await;
+        assert_eq!(created.write, Some(RemoteWrite::Created));
+        fj.edit_organization(
+            "weebo",
+            &OrganizationPatch {
+                description: Some("changed in Forgejo".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        fj.clear_calls();
+        let outcome = run(&s, created.forgejo, None, &fj).await;
+        assert_eq!(
+            fj.edits(),
+            [Edit::Organization(OrganizationPatch {
+                description: Some("docs".into()),
+                ..Default::default()
+            })]
+        );
+        assert_eq!(outcome.drift.fields(), ["description"]);
+        assert_eq!(fj.org("weebo").unwrap().remote.description, "docs");
     }
 
     #[tokio::test]
@@ -247,6 +310,7 @@ mod tests {
         fj.rename_organization("weebo", "weebo-old").await.unwrap();
         let again = run(&s, Some(created.clone()), None, &fj).await;
         assert!(again.ready.is_ok(), "{again:?}");
+        assert_eq!(again.drift.fields(), ["name"]);
         assert_eq!(fj.org("weebo").unwrap().remote.id, created.id);
 
         // Renamed away again, and someone else took the stored name.

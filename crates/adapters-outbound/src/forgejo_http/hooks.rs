@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use application::ports::{DesiredHook, ForgejoRef, GatewayError, HookTarget, RemoteHook};
+use application::ports::{
+    DesiredHook, ForgejoRef, GatewayError, HookPatch, HookTarget, RemoteHook,
+};
 use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{organization_api, repository_api};
 use forgejo_client::models;
@@ -90,13 +92,16 @@ pub(super) async fn edit(
     cfg: &Configuration,
     target: &HookTarget,
     id: i64,
-    hook: &DesiredHook,
+    hook: &HookPatch,
 ) -> Result<(), GatewayError> {
+    // See `HookPatch` for what Forgejo replaces on every edit (events,
+    // branch filter: always sent) and what it leaves when absent (`config`,
+    // never with the secret; the header, only when it changed).
     let body = models::EditHookOption {
-        active: Some(hook.active),
+        active: hook.active,
         authorization_header: hook.authorization_header.clone(),
         branch_filter: Some(hook.branch_filter.clone()),
-        config: Some(config(hook)),
+        config: hook.config.clone().map(|c| c.into_iter().collect()),
         events: Some(hook.events.clone()),
     };
     match target {

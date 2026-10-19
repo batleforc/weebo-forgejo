@@ -151,3 +151,36 @@ async fn invalid_spec_is_reported_without_touching_forgejo() {
         "Warning"
     );
 }
+
+/// A change made in Forgejo is put back, counted and announced naming the
+/// field; the spec didn't change (an annotation only nudges a reconcile).
+#[tokio::test]
+async fn a_drift_in_forgejo_is_corrected_and_announced() {
+    let h = harness().await;
+    tokio::spawn(controller::user::run(h.client.clone(), h.ctx.clone()));
+
+    let users: Api<ForgejoUser> = Api::namespaced(h.client.clone(), "default");
+    users
+        .create(&PostParams::default(), &user("erin", local_spec("erin")))
+        .await
+        .unwrap();
+    wait_for(&users, "erin", |u| {
+        condition(u.status.as_ref(), "Ready").filter(|c| c.0 == "True")
+    })
+    .await;
+
+    h.forgejo.set_admin("erin", true);
+    users
+        .patch(
+            "erin",
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"metadata": {"annotations": {"nudge": "1"}}})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        wait_for_event(&h.client, "default", "erin", "DriftCorrected").await,
+        "Normal"
+    );
+    assert!(!h.forgejo.user("erin").unwrap().remote.admin);
+}

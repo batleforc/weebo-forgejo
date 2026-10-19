@@ -52,6 +52,12 @@ reason_codes! {
         /// importer, or observed (Event only: `status.forgejoId` was just
         /// recorded).
         Bound,
+        /// Fields of the Forgejo object no longer held their desired value
+        /// (changed in Forgejo, not in the spec) and were put back; the
+        /// Event names them (Event only). Coming back on every reconcile for
+        /// the same field, it is a comparison bug, not a drift (weebo-si
+        /// RFC 0003).
+        DriftCorrected,
         /// The finalizer finished: the Forgejo object was deleted or kept
         /// per `deletionPolicy`/`managementPolicy` (or force-orphaned), the
         /// emitted secrets removed (Event only).
@@ -136,6 +142,7 @@ impl ReasonCode {
             ReasonCode::Reconciled
             | ReasonCode::MemberPending
             | ReasonCode::Bound
+            | ReasonCode::DriftCorrected
             | ReasonCode::Released => Severity::Advisory,
             _ => Severity::Blocking,
         }
@@ -174,6 +181,7 @@ mod tests {
             [
                 &ReasonCode::Reconciled,
                 &ReasonCode::Bound,
+                &ReasonCode::DriftCorrected,
                 &ReasonCode::Released,
                 &ReasonCode::MemberPending
             ]

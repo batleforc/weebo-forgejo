@@ -31,11 +31,7 @@ async fn reconcile(obj: Arc<ForgejoNamespacePolicy>, ctx: Arc<Ctx>) -> Result<Ac
     let api: Api<ForgejoNamespacePolicy> = Api::all(ctx.client.clone());
     let started = Instant::now();
     let outcome = reconcile_namespace_policy(&obj.spec);
-    record_reconcile(
-        "ForgejoNamespacePolicy",
-        outcome.reason(),
-        started.elapsed(),
-    );
+    record_reconcile("ForgejoNamespacePolicy", &outcome, started.elapsed());
     status::publish(&api, &ctx.recorder, obj.as_ref(), &outcome).await?;
     Ok(requeue_after(&outcome))
 }

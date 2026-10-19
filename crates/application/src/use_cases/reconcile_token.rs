@@ -14,7 +14,8 @@ use crate::ports::{
 use crate::use_cases::emit::{self, rotation_requested};
 use crate::use_cases::reconcile_repository::go_duration_secs;
 use crate::use_cases::{
-    CleanupGateway, Failure, Outcome, gone_ok, owner_login_now, previous_owner,
+    CleanupGateway, Drift, Failure, Outcome, RemoteWrite, deleted, gone_ok, owner_login_now,
+    previous_owner,
 };
 
 pub struct TokenInput<'a> {
@@ -175,8 +176,10 @@ async fn issue(
     };
 
     // Without a remote token there's nothing to keep: issue one.
+    let mut drift = Drift::default();
     if let Some(r) = &remote {
-        if token_differs(&desired, r) && !input.allow_disruptive_update {
+        drift = token_differs(&desired, r);
+        if !drift.is_empty() && !input.allow_disruptive_update {
             return Outcome::failed(
                 input.current.clone(),
                 Failure::new(
@@ -198,7 +201,7 @@ async fn issue(
             Ok(lost) => lost,
             Err(f) => return Outcome::failed(input.current.clone(), f),
         };
-        let renew = token_differs(&desired, r)
+        let renew = !drift.is_empty()
             || expired
             || lost
             || input.secret_pending
@@ -253,7 +256,7 @@ async fn issue(
         if let Err(e) = gone_ok(gateway.delete_access_token(&input.user, token.id).await) {
             tracing::warn!(error = %e, token = token.id, "revoking an undelivered token failed");
         }
-        let mut outcome = Outcome::failed(input.current.clone(), f);
+        let mut outcome = Outcome::failed(input.current.clone(), f).wrote(RemoteWrite::Created);
         outcome.secret_pending = Some(true);
         return outcome;
     }
@@ -269,7 +272,14 @@ async fn issue(
         revoked = false;
     }
     let current = Some(issued);
-    let mut outcome = Outcome::synced(current, "token issued");
+    // Tokens can't be edited: a drift (scopes, repositories) is corrected
+    // by a new one, like an expiry or a rotation (a new token, `Created`).
+    let issued = Outcome::synced(current, "token issued");
+    let mut outcome = if drift.is_empty() {
+        issued.wrote(RemoteWrite::Created)
+    } else {
+        issued.corrected(drift)
+    };
     outcome.secret_pending = Some(!revoked);
     outcome.last_rotation = input.rotate_nonce.clone().or(input.last_rotation.clone());
     outcome.due_in = spec
@@ -283,7 +293,8 @@ async fn issue(
 /// `owner_id` is `status.ownerId`: the token is revoked on that account
 /// under its login now, not the stored one — a rename (and another account
 /// taking the old login) would otherwise revoke on the wrong user, whose
-/// `NotFound` reads as success and leaves the token live.
+/// `NotFound` reads as success and leaves the token live. `Ok(true)`: the
+/// token was revoked by this call.
 pub async fn cleanup_token(
     spec: &ForgejoAccessTokenSpec,
     cr_name: &str,
@@ -292,19 +303,21 @@ pub async fn cleanup_token(
     owner_id: Option<i64>,
     gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
+    let mut removed = false;
     if spec.deletion_policy == DeletionPolicy::Delete
         && let Some(c) = current
     {
         let gateway = gateway.map_err(Clone::clone)?;
         // A deleted account took its tokens with it.
         if let Some(user) = owner_login_now(gateway, &c.name, owner_id).await? {
-            gone_ok(gateway.delete_access_token(&user, c.id).await)?;
+            removed = deleted(gateway.delete_access_token(&user, c.id).await)?;
         }
     }
     let targets = emit::targets(&spec.secret_targets, cr_name, secrets);
     let owner = SecretOwner::namespaced(KIND, namespace, cr_name);
-    emit::delete_all(&targets, &owner, secrets).await
+    emit::delete_all(&targets, &owner, secrets).await?;
+    Ok(removed)
 }
 
 /// The site-admin rule now refuses this token (its user is a site admin
@@ -381,11 +394,15 @@ fn sorted(v: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// `d.name` is the base name: a rotated token carries [`rotated_name`].
-fn token_differs(d: &DesiredToken, r: &RemoteToken) -> bool {
-    (d.name != r.name && rotated_name(&d.name) != r.name)
-        || d.scopes != sorted(&r.scopes)
-        || d.repositories != sorted(&r.repositories)
+/// The fields of `r` that differ from `d` (scopes and repositories as
+/// sets). `d.name` is the base name: a rotated token carries
+/// [`rotated_name`].
+fn token_differs(d: &DesiredToken, r: &RemoteToken) -> Drift {
+    let mut drift = Drift::default();
+    drift.note("name", d.name != r.name && rotated_name(&d.name) != r.name);
+    drift.note("scopes", d.scopes != sorted(&r.scopes));
+    drift.note("repositories", d.repositories != sorted(&r.repositories));
+    drift
 }
 
 #[cfg(test)]

@@ -1,4 +1,6 @@
-use application::ports::{DesiredOrganization, ForgejoRef, GatewayError, RemoteOrganization};
+use application::ports::{
+    DesiredOrganization, ForgejoRef, GatewayError, OrganizationPatch, RemoteOrganization,
+};
 use forgejo_client::apis::configuration::Configuration;
 use forgejo_client::apis::{admin_api, organization_api};
 use forgejo_client::models;
@@ -78,15 +80,15 @@ pub(super) async fn create(
 pub(super) async fn edit(
     config: &Configuration,
     name: &str,
-    org: &DesiredOrganization,
+    org: &OrganizationPatch,
 ) -> Result<(), GatewayError> {
     let body = models::EditOrgOption {
         description: org.description.clone(),
         email: org.email.clone(),
         full_name: org.full_name.clone(),
         location: org.location.clone(),
-        repo_admin_change_team_access: Some(org.repo_admin_change_team_access),
-        visibility: Some(wire_enum(org.visibility)?),
+        repo_admin_change_team_access: org.repo_admin_change_team_access,
+        visibility: org.visibility.map(wire_enum).transpose()?,
         website: org.website.clone(),
     };
     let params = organization_api::OrgEditParams {

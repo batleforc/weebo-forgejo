@@ -6,6 +6,10 @@
 //! generated client's models: use-cases build the *desired* shape from a
 //! spec, the adapter returns the *remote* shape, and the diff between the
 //! two (deciding whether a PATCH is needed at all) stays in this crate.
+//!
+//! Edits take a `*Patch`: only its `Some` fields are sent — the ones that
+//! drifted (weebo-si RFC 0003, "write only what differs"), plus whatever
+//! Forgejo needs on every edit (documented per patch).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -70,6 +74,67 @@ pub struct DesiredUser {
     pub max_repo_creation: Option<i64>,
 }
 
+/// A `PATCH /admin/users/{u}` (`EditUserOption`, every field optional in
+/// Forgejo: an absent one is left as it is).
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct UserPatch {
+    pub email: Option<String>,
+    pub full_name: Option<String>,
+    /// Only when a new password is set — never resent otherwise.
+    pub password: Option<String>,
+    /// Only alongside `password`: Forgejo otherwise keeps the account's
+    /// current flag.
+    pub must_change_password: Option<bool>,
+    /// `(source_id, login_name)`: Forgejo requires both or neither; `(0,
+    /// "")` switches back to a local (password) login.
+    pub login_source: Option<(i64, String)>,
+    pub admin: Option<bool>,
+    pub restricted: Option<bool>,
+    pub visibility: Option<&'static str>,
+    pub active: Option<bool>,
+    pub prohibit_login: Option<bool>,
+    pub allow_create_organization: Option<bool>,
+    pub max_repo_creation: Option<i64>,
+}
+
+impl UserPatch {
+    /// Every field of `user` — right after a create, when the edit-only
+    /// fields (`admin`, `active`, `prohibit_login`…) still hold Forgejo's
+    /// defaults.
+    pub fn full(user: &DesiredUser) -> Self {
+        Self {
+            email: Some(user.email.clone()),
+            full_name: user.full_name.clone(),
+            password: user.password.clone(),
+            must_change_password: user.password.as_ref().map(|_| user.must_change_password),
+            login_source: Some(user.login_source()),
+            admin: Some(user.admin),
+            restricted: Some(user.restricted),
+            visibility: Some(user.visibility),
+            active: Some(user.active),
+            prohibit_login: Some(user.prohibit_login),
+            allow_create_organization: user.allow_create_organization,
+            max_repo_creation: user.max_repo_creation,
+        }
+    }
+
+    /// Nothing to send.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl DesiredUser {
+    /// `(source_id, login_name)` as Forgejo stores them: `(0, "")` for a
+    /// local account (what a freshly created one has).
+    pub fn login_source(&self) -> (i64, String) {
+        (
+            self.source_id.unwrap_or(0),
+            self.login_name.clone().unwrap_or_default(),
+        )
+    }
+}
+
 /// The subset of Forgejo's `User` the user reconciler diffs against.
 /// `allow_create_organization`/`max_repo_creation` are absent: Forgejo
 /// never returns them, so they are re-sent whenever the spec changes.
@@ -102,6 +167,36 @@ pub struct DesiredOrganization {
     pub repo_admin_change_team_access: bool,
 }
 
+/// A `PATCH /orgs/{org}` (`EditOrgOption`, every field optional).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OrganizationPatch {
+    pub full_name: Option<String>,
+    pub description: Option<String>,
+    pub website: Option<String>,
+    pub location: Option<String>,
+    pub email: Option<String>,
+    pub visibility: Option<&'static str>,
+    pub repo_admin_change_team_access: Option<bool>,
+}
+
+impl OrganizationPatch {
+    pub fn full(org: &DesiredOrganization) -> Self {
+        Self {
+            full_name: org.full_name.clone(),
+            description: org.description.clone(),
+            website: org.website.clone(),
+            location: org.location.clone(),
+            email: org.email.clone(),
+            visibility: Some(org.visibility),
+            repo_admin_change_team_access: Some(org.repo_admin_change_team_access),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RemoteOrganization {
     pub id: i64,
@@ -126,6 +221,44 @@ pub struct DesiredTeam {
     pub units_map: BTreeMap<String, String>,
     pub includes_all_repositories: bool,
     pub can_create_org_repo: bool,
+}
+
+/// A `PATCH /teams/{id}` (`EditTeamOption`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TeamPatch {
+    /// Required by Forgejo on every edit: always sent (the desired name,
+    /// which renames when it differs).
+    pub name: String,
+    pub description: Option<String>,
+    pub can_create_org_repo: Option<bool>,
+    /// Permission, units and `includes_all_repositories`, sent together:
+    /// Forgejo only applies `includes_all_repositories` alongside a
+    /// `permission`, derives a non-admin team's access mode from the
+    /// `units_map` sent with it, and replaces the team's units with the
+    /// map (`routers/api/v1/org/team.go`, `EditTeam`).
+    pub access: Option<TeamAccess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TeamAccess {
+    pub permission: &'static str,
+    pub units_map: BTreeMap<String, String>,
+    pub includes_all_repositories: bool,
+}
+
+impl TeamPatch {
+    pub fn full(team: &DesiredTeam) -> Self {
+        Self {
+            name: team.name.clone(),
+            description: team.description.clone(),
+            can_create_org_repo: Some(team.can_create_org_repo),
+            access: Some(TeamAccess {
+                permission: team.permission,
+                units_map: team.units_map.clone(),
+                includes_all_repositories: team.includes_all_repositories,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -164,6 +297,53 @@ pub struct DesiredRepository {
     pub has_actions: Option<bool>,
     /// Only sent for mirrors.
     pub mirror_interval: Option<String>,
+}
+
+/// A `PATCH /repos/{owner}/{repo}` (`EditRepoOption`, every field
+/// optional).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RepositoryPatch {
+    /// Renames.
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub website: Option<String>,
+    pub private: Option<bool>,
+    pub template: Option<bool>,
+    pub default_branch: Option<String>,
+    pub has_issues: Option<bool>,
+    pub has_wiki: Option<bool>,
+    pub has_pull_requests: Option<bool>,
+    pub has_projects: Option<bool>,
+    pub has_releases: Option<bool>,
+    pub has_packages: Option<bool>,
+    pub has_actions: Option<bool>,
+    /// Mirrors only.
+    pub mirror_interval: Option<String>,
+}
+
+impl RepositoryPatch {
+    pub fn full(repo: &DesiredRepository) -> Self {
+        Self {
+            name: Some(repo.name.clone()),
+            description: repo.description.clone(),
+            website: repo.website.clone(),
+            private: Some(repo.private),
+            template: Some(repo.template),
+            default_branch: repo.default_branch.clone(),
+            has_issues: repo.has_issues,
+            has_wiki: repo.has_wiki,
+            has_pull_requests: repo.has_pull_requests,
+            has_projects: repo.has_projects,
+            has_releases: repo.has_releases,
+            has_packages: repo.has_packages,
+            has_actions: repo.has_actions,
+            mirror_interval: repo.mirror_interval.clone(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Creation-time options of an empty repository.
@@ -296,6 +476,33 @@ pub struct DesiredHook {
     pub authorization_header: Option<String>,
 }
 
+/// A `PATCH .../hooks/{id}` (`EditHookOption`). What Forgejo (v16) does
+/// with one (`routers/api/v1/utils/hook.go`, `editHook`, checked against
+/// a live 16.0):
+/// - `config` is merged key by key, and only `url`, `content_type` and a
+///   Slack hook's `channel`/`username`/`icon_url`/`color` are read: the
+///   secret, `http_method` and every other key are ignored on edit
+///   (create-only). An absent `config` changes nothing — so the secret is
+///   never sent on an edit.
+/// - `events` and `branch_filter` are replaced on *every* edit: no
+///   `events` resets them to `push`, no `branch_filter` clears it. Always
+///   sent.
+/// - The authorization header is only replaced by a non-empty one: an
+///   absent (or empty) header leaves the stored one as it is (`editHook`
+///   nils the column, which `UpdateWebhook`'s update doesn't write). Sent
+///   only when its digest (`status.appliedSecretHash`) changed.
+/// - `active` is optional.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct HookPatch {
+    /// The editable keys only, all of them as soon as one drifted (a Slack
+    /// `channel` rebuilds the whole Slack meta from the keys sent with it).
+    pub config: Option<BTreeMap<String, String>>,
+    pub events: Vec<String>,
+    pub branch_filter: String,
+    pub active: Option<bool>,
+    pub authorization_header: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RemoteHook {
     pub id: i64,
@@ -381,9 +588,9 @@ pub trait ForgejoGateway: Send + Sync {
     /// never a silent adopt. Only the creation fields are sent; callers
     /// follow with `edit_user`.
     async fn create_user(&self, user: &DesiredUser) -> Result<ForgejoRef, GatewayError>;
-    /// `user.password` is only sent when `Some` — that's how a password is
-    /// reset.
-    async fn edit_user(&self, username: &str, user: &DesiredUser) -> Result<(), GatewayError>;
+    /// Only the patch's `Some` fields are sent; `user.password` is how a
+    /// password is reset.
+    async fn edit_user(&self, username: &str, user: &UserPatch) -> Result<(), GatewayError>;
     async fn rename_user(&self, username: &str, new_username: &str) -> Result<(), GatewayError>;
     /// Never purges: repositories and attribution survive.
     async fn delete_user(&self, username: &str) -> Result<(), GatewayError>;
@@ -402,7 +609,7 @@ pub trait ForgejoGateway: Send + Sync {
     async fn edit_organization(
         &self,
         name: &str,
-        org: &DesiredOrganization,
+        org: &OrganizationPatch,
     ) -> Result<(), GatewayError>;
     /// Current name of the organization with this id (`None`: deleted).
     /// Only called when the stored name no longer leads to it — a rename
@@ -413,7 +620,7 @@ pub trait ForgejoGateway: Send + Sync {
 
     async fn get_team(&self, id: i64) -> Result<Option<RemoteTeam>, GatewayError>;
     async fn create_team(&self, org: &str, team: &DesiredTeam) -> Result<ForgejoRef, GatewayError>;
-    async fn edit_team(&self, id: i64, team: &DesiredTeam) -> Result<(), GatewayError>;
+    async fn edit_team(&self, id: i64, team: &TeamPatch) -> Result<(), GatewayError>;
     async fn delete_team(&self, id: i64) -> Result<(), GatewayError>;
     /// Logins of every member.
     async fn list_team_members(&self, id: i64) -> Result<Vec<String>, GatewayError>;
@@ -444,11 +651,11 @@ pub trait ForgejoGateway: Send + Sync {
         repo: &DesiredRepository,
         options: &MigrateOptions,
     ) -> Result<ForgejoRef, GatewayError>;
-    /// `full_name` is `owner/name`; `repo.name` renames when it differs.
+    /// `full_name` is `owner/name`; `repo.name` renames.
     async fn edit_repository(
         &self,
         full_name: &str,
-        repo: &DesiredRepository,
+        repo: &RepositoryPatch,
     ) -> Result<(), GatewayError>;
     async fn set_repository_archived(
         &self,
@@ -503,7 +710,7 @@ pub trait ForgejoGateway: Send + Sync {
         &self,
         target: &HookTarget,
         id: i64,
-        hook: &DesiredHook,
+        hook: &HookPatch,
     ) -> Result<(), GatewayError>;
     async fn delete_hook(&self, target: &HookTarget, id: i64) -> Result<(), GatewayError>;
     /// Every hook of `target` — before a create, to never add a twin of a
@@ -550,7 +757,10 @@ pub trait ForgejoGateway: Send + Sync {
         sudo: Option<&str>,
         app: &DesiredOAuth2App,
     ) -> Result<(RemoteOAuth2App, String), GatewayError>;
-    /// Every update regenerates the client secret, returned here.
+    /// Every update regenerates the client secret, returned here (Forgejo's
+    /// `UpdateOauth2Application` calls `GenerateClientSecret`
+    /// unconditionally, and its body is a full replacement: no partial
+    /// update).
     async fn update_oauth2_app(
         &self,
         sudo: Option<&str>,
@@ -826,6 +1036,40 @@ impl std::fmt::Debug for DesiredUser {
     }
 }
 
+impl std::fmt::Debug for UserPatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserPatch")
+            .field("email", &self.email)
+            .field("full_name", &self.full_name)
+            .field("password", &redacted(&self.password))
+            .field("must_change_password", &self.must_change_password)
+            .field("login_source", &self.login_source)
+            .field("admin", &self.admin)
+            .field("restricted", &self.restricted)
+            .field("visibility", &self.visibility)
+            .field("active", &self.active)
+            .field("prohibit_login", &self.prohibit_login)
+            .field("allow_create_organization", &self.allow_create_organization)
+            .field("max_repo_creation", &self.max_repo_creation)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for HookPatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HookPatch")
+            .field("config", &self.config)
+            .field("events", &self.events)
+            .field("branch_filter", &self.branch_filter)
+            .field("active", &self.active)
+            .field(
+                "authorization_header",
+                &redacted(&self.authorization_header),
+            )
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for MigrateOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MigrateOptions")
@@ -897,10 +1141,17 @@ mod debug_tests {
             authorization_header: Some("Bearer hunter2".into()),
             ..Default::default()
         };
+        let user_patch = UserPatch::full(&user);
+        let hook_patch = HookPatch {
+            authorization_header: Some("Bearer hunter2".into()),
+            ..Default::default()
+        };
         for shown in [
             format!("{user:?}"),
             format!("{migrate:?}"),
             format!("{hook:?}"),
+            format!("{user_patch:?}"),
+            format!("{hook_patch:?}"),
         ] {
             assert!(!shown.contains("hunter2"), "{shown}");
             assert!(shown.contains("<redacted>"), "{shown}");

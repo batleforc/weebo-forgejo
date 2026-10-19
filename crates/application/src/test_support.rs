@@ -11,10 +11,10 @@ use api::namespace_policy::NamespaceRule;
 use crate::ports::{
     ClusterError, DesiredHook, DesiredOAuth2App, DesiredOrganization, DesiredRepository,
     DesiredTeam, DesiredToken, DesiredUser, ForgejoGateway, ForgejoInventory, ForgejoRef,
-    GatewayError, GenerateOptions, HookTarget, MigrateOptions, PolicySource, ProtectionRule,
-    RefKind, ReferenceReader, ReferencedCr, RemoteHook, RemoteKey, RemoteOAuth2App,
-    RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
-    RepositoryInitOptions, SecretKey,
+    GatewayError, GenerateOptions, HookPatch, HookTarget, MigrateOptions, OrganizationPatch,
+    PolicySource, ProtectionRule, RefKind, ReferenceReader, ReferencedCr, RemoteHook, RemoteKey,
+    RemoteOAuth2App, RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
+    RepositoryInitOptions, RepositoryPatch, SecretKey, TeamPatch, UserPatch,
 };
 use crate::use_cases::reconcile_webhook::{forgejo_echoes, forgejo_events};
 
@@ -52,6 +52,7 @@ pub struct FakeHook {
     pub target: String,
     pub remote: RemoteHook,
     pub secret: Option<String>,
+    pub authorization_header: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +60,16 @@ pub struct FakeKey {
     /// `owner/name` or the user login.
     pub owner: String,
     pub remote: RemoteKey,
+}
+
+/// The body of an edit call, as the gateway received it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    User(UserPatch),
+    Organization(OrganizationPatch),
+    Team(TeamPatch),
+    Repository(RepositoryPatch),
+    Hook(HookPatch),
 }
 
 #[derive(Default)]
@@ -84,6 +95,7 @@ struct State {
     /// The instance token belongs to a non-admin account.
     token_not_admin: bool,
     calls: Vec<String>,
+    edits: Vec<Edit>,
 }
 
 pub struct FakeForgejo {
@@ -129,7 +141,14 @@ impl FakeForgejo {
     }
 
     pub fn clear_calls(&self) {
-        self.state.lock().unwrap().calls.clear();
+        let mut s = self.state.lock().unwrap();
+        s.calls.clear();
+        s.edits.clear();
+    }
+
+    /// The body of every edit call since the last [`Self::clear_calls`].
+    pub fn edits(&self) -> Vec<Edit> {
+        self.state.lock().unwrap().edits.clone()
     }
 
     pub fn user(&self, login: &str) -> Option<FakeUser> {
@@ -326,16 +345,22 @@ fn repo_teams(s: &State, id: i64) -> Vec<RemoteTeam> {
         .collect()
 }
 
-fn apply_repo_edit(r: &mut RemoteRepository, d: &DesiredRepository) {
-    r.name = d.name.clone();
+fn apply_repo_edit(r: &mut RemoteRepository, d: &RepositoryPatch) {
+    if let Some(v) = &d.name {
+        r.name = v.clone();
+    }
     if let Some(v) = &d.description {
         r.description = v.clone();
     }
     if let Some(v) = &d.website {
         r.website = v.clone();
     }
-    r.private = d.private;
-    r.template = d.template;
+    if let Some(v) = d.private {
+        r.private = v;
+    }
+    if let Some(v) = d.template {
+        r.template = v;
+    }
     if let Some(v) = &d.default_branch {
         r.default_branch = v.clone();
     }
@@ -389,13 +414,13 @@ fn insert_repo(
         mirror_interval: String::new(),
         ..Default::default()
     };
-    apply_repo_edit(&mut remote, repo);
+    apply_repo_edit(&mut remote, &RepositoryPatch::full(repo));
     if let Some(interval) = mirror {
         apply_repo_edit(
             &mut remote,
-            &DesiredRepository {
+            &RepositoryPatch {
                 mirror_interval: Some(interval.to_string()),
-                ..repo.clone()
+                ..Default::default()
             },
         );
     }
@@ -409,50 +434,66 @@ fn insert_repo(
     Ok(ForgejoRef { id, name: full })
 }
 
-fn apply_user_edit(u: &mut FakeUser, d: &DesiredUser) {
-    u.remote.email = d.email.clone();
-    if let Some(n) = &d.full_name {
-        u.remote.full_name = n.clone();
+/// `Some` replaces, `None` leaves as is — like Forgejo's edit options.
+fn set<T: Clone>(field: &mut T, v: &Option<T>) {
+    if let Some(v) = v {
+        *field = v.clone();
     }
-    u.remote.admin = d.admin;
-    u.remote.restricted = d.restricted;
-    u.remote.visibility = d.visibility.to_string();
-    u.remote.active = d.active;
-    u.remote.prohibit_login = d.prohibit_login;
-    u.remote.source_id = d.source_id.unwrap_or(0);
-    u.remote.login_name = d.login_name.clone().unwrap_or_default();
-    if d.password.is_some() {
-        u.password = d.password.clone();
-        u.must_change_password = d.must_change_password;
-    }
-    u.allow_create_organization = d.allow_create_organization;
-    u.max_repo_creation = d.max_repo_creation;
 }
 
-fn apply_org_edit(o: &mut RemoteOrganization, d: &DesiredOrganization) {
-    let set = |field: &mut String, v: &Option<String>| {
-        if let Some(v) = v {
-            *field = v.clone();
-        }
-    };
+fn apply_user_edit(u: &mut FakeUser, d: &UserPatch) {
+    set(&mut u.remote.email, &d.email);
+    set(&mut u.remote.full_name, &d.full_name);
+    set(&mut u.remote.admin, &d.admin);
+    set(&mut u.remote.restricted, &d.restricted);
+    if let Some(v) = d.visibility {
+        u.remote.visibility = v.to_string();
+    }
+    set(&mut u.remote.active, &d.active);
+    set(&mut u.remote.prohibit_login, &d.prohibit_login);
+    if let Some((source, login)) = &d.login_source {
+        u.remote.source_id = *source;
+        u.remote.login_name = login.clone();
+    }
+    if d.password.is_some() {
+        u.password = d.password.clone();
+    }
+    set(&mut u.must_change_password, &d.must_change_password);
+    if d.allow_create_organization.is_some() {
+        u.allow_create_organization = d.allow_create_organization;
+    }
+    if d.max_repo_creation.is_some() {
+        u.max_repo_creation = d.max_repo_creation;
+    }
+}
+
+fn apply_org_edit(o: &mut RemoteOrganization, d: &OrganizationPatch) {
     set(&mut o.full_name, &d.full_name);
     set(&mut o.description, &d.description);
     set(&mut o.website, &d.website);
     set(&mut o.location, &d.location);
     set(&mut o.email, &d.email);
-    o.visibility = d.visibility.to_string();
-    o.repo_admin_change_team_access = d.repo_admin_change_team_access;
+    if let Some(v) = d.visibility {
+        o.visibility = v.to_string();
+    }
+    set(
+        &mut o.repo_admin_change_team_access,
+        &d.repo_admin_change_team_access,
+    );
 }
 
-fn apply_team_edit(t: &mut RemoteTeam, d: &DesiredTeam) {
-    t.name = d.name.clone();
-    if let Some(desc) = &d.description {
-        t.description = desc.clone();
+fn apply_team_edit(t: &mut RemoteTeam, d: &TeamPatch) {
+    // Like Forgejo: an empty name is ignored, the rest only when sent.
+    if !d.name.is_empty() {
+        t.name = d.name.clone();
     }
-    t.permission = d.permission.to_string();
-    t.units_map.extend(d.units_map.clone());
-    t.includes_all_repositories = d.includes_all_repositories;
-    t.can_create_org_repo = d.can_create_org_repo;
+    set(&mut t.description, &d.description);
+    set(&mut t.can_create_org_repo, &d.can_create_org_repo);
+    if let Some(access) = &d.access {
+        t.permission = access.permission.to_string();
+        t.units_map.extend(access.units_map.clone());
+        t.includes_all_repositories = access.includes_all_repositories;
+    }
 }
 
 #[async_trait::async_trait]
@@ -542,8 +583,9 @@ impl ForgejoGateway for FakeForgejo {
         })
     }
 
-    async fn edit_user(&self, username: &str, user: &DesiredUser) -> Result<(), GatewayError> {
+    async fn edit_user(&self, username: &str, user: &UserPatch) -> Result<(), GatewayError> {
         let mut s = self.begin(Some(format!("edit_user {username}")))?;
+        s.edits.push(Edit::User(user.clone()));
         let u = s
             .users
             .get_mut(username)
@@ -610,7 +652,7 @@ impl ForgejoGateway for FakeForgejo {
             name: org.name.clone(),
             ..Default::default()
         };
-        apply_org_edit(&mut remote, org);
+        apply_org_edit(&mut remote, &OrganizationPatch::full(org));
         s.orgs.insert(
             org.name.clone(),
             FakeOrg {
@@ -627,9 +669,10 @@ impl ForgejoGateway for FakeForgejo {
     async fn edit_organization(
         &self,
         name: &str,
-        org: &DesiredOrganization,
+        org: &OrganizationPatch,
     ) -> Result<(), GatewayError> {
         let mut s = self.begin(Some(format!("edit_organization {name}")))?;
+        s.edits.push(Edit::Organization(org.clone()));
         let o = s
             .orgs
             .get_mut(name)
@@ -686,7 +729,7 @@ impl ForgejoGateway for FakeForgejo {
             organization_id,
             ..Default::default()
         };
-        apply_team_edit(&mut remote, team);
+        apply_team_edit(&mut remote, &TeamPatch::full(team));
         s.teams.insert(
             id,
             FakeTeam {
@@ -700,8 +743,9 @@ impl ForgejoGateway for FakeForgejo {
         })
     }
 
-    async fn edit_team(&self, id: i64, team: &DesiredTeam) -> Result<(), GatewayError> {
+    async fn edit_team(&self, id: i64, team: &TeamPatch) -> Result<(), GatewayError> {
         let mut s = self.begin(Some(format!("edit_team {id}")))?;
+        s.edits.push(Edit::Team(team.clone()));
         let t = s
             .teams
             .get_mut(&id)
@@ -803,9 +847,10 @@ impl ForgejoGateway for FakeForgejo {
     async fn edit_repository(
         &self,
         full_name: &str,
-        repo: &DesiredRepository,
+        repo: &RepositoryPatch,
     ) -> Result<(), GatewayError> {
         let mut s = self.begin(Some(format!("edit_repository {full_name}")))?;
+        s.edits.push(Edit::Repository(repo.clone()));
         let r = repo_by_full_name(&mut s, full_name)?;
         if r.remote.archived {
             return Err(GatewayError::Api("423: repository is archived".into()));
@@ -983,6 +1028,7 @@ impl ForgejoGateway for FakeForgejo {
                     active: hook.active,
                 },
                 secret,
+                authorization_header: hook.authorization_header.clone(),
             },
         );
         Ok(ForgejoRef {
@@ -995,23 +1041,31 @@ impl ForgejoGateway for FakeForgejo {
         &self,
         target: &HookTarget,
         id: i64,
-        hook: &DesiredHook,
+        hook: &HookPatch,
     ) -> Result<(), GatewayError> {
         let mut s = self.begin(Some(format!("edit_hook {target} {id}")))?;
+        s.edits.push(Edit::Hook(hook.clone()));
         let h = s
             .hooks
             .get_mut(&id)
             .filter(|h| h.target == target.to_string())
             .ok_or_else(|| GatewayError::NotFound(id.to_string()))?;
-        // Like Forgejo: the secret and non-echoed keys are create-only.
-        for (k, v) in &hook.config {
-            if forgejo_echoes(&hook.type_, k) {
+        // Like Forgejo: `config` merged key by key, the secret and
+        // non-echoed keys create-only; events and branch filter replaced
+        // on every edit, the header only by a new one.
+        for (k, v) in hook.config.iter().flatten() {
+            if forgejo_echoes(&h.remote.type_, k) {
                 h.remote.config.insert(k.clone(), v.clone());
             }
         }
         h.remote.events = forgejo_events(&hook.events).into_iter().collect();
         h.remote.branch_filter = hook.branch_filter.clone();
-        h.remote.active = hook.active;
+        if let Some(active) = hook.active {
+            h.remote.active = active;
+        }
+        if let Some(header) = hook.authorization_header.clone().filter(|h| !h.is_empty()) {
+            h.authorization_header = Some(header);
+        }
         Ok(())
     }
 

@@ -15,9 +15,9 @@ mod users;
 use application::ports::{
     DesiredHook, DesiredOAuth2App, DesiredOrganization, DesiredRepository, DesiredTeam,
     DesiredToken, DesiredUser, ForgejoGateway, ForgejoInventory, ForgejoRef, GatewayError,
-    GenerateOptions, HookTarget, MigrateOptions, ProtectionRule, RemoteHook, RemoteKey,
-    RemoteOAuth2App, RemoteOrganization, RemoteRepository, RemoteTeam, RemoteToken, RemoteUser,
-    RepositoryInitOptions,
+    GenerateOptions, HookPatch, HookTarget, MigrateOptions, OrganizationPatch, ProtectionRule,
+    RemoteHook, RemoteKey, RemoteOAuth2App, RemoteOrganization, RemoteRepository, RemoteTeam,
+    RemoteToken, RemoteUser, RepositoryInitOptions, RepositoryPatch, TeamPatch, UserPatch,
 };
 use forgejo_client::apis::configuration::{ApiKey, Configuration};
 use forgejo_client::apis::{Error, miscellaneous_api, user_api};
@@ -97,7 +97,7 @@ impl ForgejoGateway for ForgejoHttpGateway {
     async fn create_user(&self, user: &DesiredUser) -> Result<ForgejoRef, GatewayError> {
         users::create(&self.config, user).await
     }
-    async fn edit_user(&self, username: &str, user: &DesiredUser) -> Result<(), GatewayError> {
+    async fn edit_user(&self, username: &str, user: &UserPatch) -> Result<(), GatewayError> {
         users::edit(&self.config, username, user).await
     }
     async fn rename_user(&self, username: &str, new_username: &str) -> Result<(), GatewayError> {
@@ -130,7 +130,7 @@ impl ForgejoGateway for ForgejoHttpGateway {
     async fn edit_organization(
         &self,
         name: &str,
-        org: &DesiredOrganization,
+        org: &OrganizationPatch,
     ) -> Result<(), GatewayError> {
         organizations::edit(&self.config, name, org).await
     }
@@ -147,7 +147,7 @@ impl ForgejoGateway for ForgejoHttpGateway {
     async fn create_team(&self, org: &str, team: &DesiredTeam) -> Result<ForgejoRef, GatewayError> {
         teams::create(&self.config, org, team).await
     }
-    async fn edit_team(&self, id: i64, team: &DesiredTeam) -> Result<(), GatewayError> {
+    async fn edit_team(&self, id: i64, team: &TeamPatch) -> Result<(), GatewayError> {
         teams::edit(&self.config, id, team).await
     }
     async fn delete_team(&self, id: i64) -> Result<(), GatewayError> {
@@ -195,7 +195,7 @@ impl ForgejoGateway for ForgejoHttpGateway {
     async fn edit_repository(
         &self,
         full_name: &str,
-        repo: &DesiredRepository,
+        repo: &RepositoryPatch,
     ) -> Result<(), GatewayError> {
         repositories::edit(&self.config, full_name, repo).await
     }
@@ -278,7 +278,7 @@ impl ForgejoGateway for ForgejoHttpGateway {
         &self,
         target: &HookTarget,
         id: i64,
-        hook: &DesiredHook,
+        hook: &HookPatch,
     ) -> Result<(), GatewayError> {
         hooks::edit(&self.config, target, id, hook).await
     }

@@ -9,8 +9,8 @@ use api::common::DeletionPolicy;
 use api::team::{ForgejoTeamSpec, MembersPolicy, TeamPermission};
 use domain::error::ReasonCode;
 
-use crate::ports::{DesiredTeam, ForgejoGateway, ForgejoRef, GatewayError, RemoteTeam};
-use crate::use_cases::{Advisory, CleanupGateway, Failure, Outcome, differs};
+use crate::ports::{DesiredTeam, ForgejoGateway, ForgejoRef, GatewayError, RemoteTeam, TeamPatch};
+use crate::use_cases::{Advisory, CleanupGateway, Drift, Failure, Outcome, RemoteWrite, deleted};
 
 /// A `spec.memberRefs` entry, resolved by the controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +66,8 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
         (Some(want), Some(have)) => want != have,
         _ => remote.organization != input.organization,
     };
+    let mut write = None;
+    let mut drift = Drift::default();
     let team = match remote {
         Some(remote) if moved(&remote) => {
             if !input.allow_disruptive_update {
@@ -85,6 +87,7 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
             if let Err(e) = gateway.delete_team(remote.id).await {
                 return Outcome::failed(input.current.clone(), e);
             }
+            write = Some(RemoteWrite::Created);
             match gateway.create_team(&input.organization, &desired).await {
                 Ok(r) => r,
                 Err(e) => return Outcome::failed(None, e),
@@ -95,10 +98,13 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
                 id: remote.id,
                 name: remote.name.clone(),
             };
-            if team_differs(&desired, &remote)
-                && let Err(e) = gateway.edit_team(remote.id, &desired).await
-            {
-                return Outcome::failed(Some(current), e);
+            let (fields, patch) = team_differs(&desired, &remote);
+            drift = fields;
+            if !drift.is_empty() {
+                if let Err(e) = gateway.edit_team(remote.id, &patch).await {
+                    return Outcome::failed(Some(current), e);
+                }
+                write = Some(RemoteWrite::Drift);
             }
             ForgejoRef {
                 id: remote.id,
@@ -106,19 +112,29 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
             }
         }
         None => match gateway.create_team(&input.organization, &desired).await {
-            Ok(r) => r,
+            Ok(r) => {
+                write = Some(RemoteWrite::Created);
+                r
+            }
             Err(e) => return Outcome::failed(None, e),
         },
     };
 
     let current = Some(team.clone());
-    if input.spec.members_policy == MembersPolicy::Managed
-        && let Err(e) = sync_members(team.id, &input.members, gateway).await
-    {
-        return Outcome::failed(current, e);
+    if input.spec.members_policy == MembersPolicy::Managed {
+        match sync_members(team.id, &input.members, gateway).await {
+            // The first members of a team just created aren't a drift.
+            Ok(changed) => drift.note("members", changed && write != Some(RemoteWrite::Created)),
+            Err(e) => return Outcome::failed(current, e),
+        }
     }
 
     let mut outcome = Outcome::synced(current, "team synced");
+    if !drift.is_empty() {
+        outcome = outcome.corrected(drift);
+    } else if let Some(write) = write {
+        outcome = outcome.wrote(write);
+    }
     let pending: Vec<String> = input
         .members
         .iter()
@@ -136,32 +152,32 @@ pub async fn reconcile_team(input: TeamInput<'_>, gateway: &dyn ForgejoGateway) 
     outcome
 }
 
+/// `Ok(true)`: the Forgejo object was deleted by this call.
 pub async fn cleanup_team(
     spec: &ForgejoTeamSpec,
     current: Option<&ForgejoRef>,
     gateway: CleanupGateway<'_>,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
     if spec.deletion_policy != DeletionPolicy::Delete {
-        return Ok(());
+        return Ok(false);
     }
     let Some(current) = current else {
-        return Ok(());
+        return Ok(false);
     };
-    match gateway.map_err(Clone::clone)?.delete_team(current.id).await {
-        Ok(()) | Err(GatewayError::NotFound(_)) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
+    let gateway = gateway.map_err(Clone::clone)?;
+    Ok(deleted(gateway.delete_team(current.id).await)?)
 }
 
 /// Adds every ready member, removes everyone not listed. A pending member
 /// is neither added (not confirmed yet) nor removed: its CR may only be
 /// briefly not `Ready` (an instance hiccup, a first reconcile after an
-/// import) while the account is already in the team.
+/// import) while the account is already in the team. `true` when a member
+/// was added or removed.
 async fn sync_members(
     team: i64,
     members: &[Member],
     gateway: &dyn ForgejoGateway,
-) -> Result<(), GatewayError> {
+) -> Result<bool, GatewayError> {
     // Forgejo logins are case-insensitive: compared lowercased, so
     // `Alice` in a spec never removes and re-adds `alice`.
     let fold = |l: &str| l.to_lowercase();
@@ -182,20 +198,23 @@ async fn sync_members(
     let actual = gateway.list_team_members(team).await?;
     let present: BTreeSet<String> = actual.iter().map(|l| fold(l)).collect();
 
+    let mut changed = false;
     for m in members {
         if let Member::Ready(login) = m
             && !present.contains(&fold(login))
         {
             gateway.add_team_member(team, login).await?;
+            changed = true;
         }
     }
     for login in &actual {
         let key = fold(login);
         if !wanted.contains(&key) && !kept.contains(&key) {
             gateway.remove_team_member(team, login).await?;
+            changed = true;
         }
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Repository units a team gets when `spec.unitsMap` is empty — Forgejo
@@ -238,24 +257,40 @@ fn desired_team(spec: &ForgejoTeamSpec) -> DesiredTeam {
     }
 }
 
+/// The fields of `r` that differ from `d`, and the PATCH carrying them.
 /// Only the units the spec names are compared: Forgejo returns every unit,
-/// and an unnamed one is "no opinion", not "none".
-fn team_differs(d: &DesiredTeam, r: &RemoteTeam) -> bool {
-    d.name != r.name
-        || differs(&d.description, &r.description)
-        || d.permission != r.permission
-        || d.includes_all_repositories != r.includes_all_repositories
-        || d.can_create_org_repo != r.can_create_org_repo
-        || d.units_map
-            .iter()
-            .any(|(unit, access)| r.units_map.get(unit) != Some(access))
+/// and an unnamed one is "no opinion", not "none". The access fields go
+/// together (see [`TeamPatch::access`]); `name` is always sent.
+fn team_differs(d: &DesiredTeam, r: &RemoteTeam) -> (Drift, TeamPatch) {
+    let mut patch = TeamPatch::full(d);
+    let mut drift = Drift::default();
+    drift.note("name", d.name != r.name);
+    drift.keep("description", &mut patch.description, &r.description);
+    drift.keep(
+        "can_create_org_repo",
+        &mut patch.can_create_org_repo,
+        &r.can_create_org_repo,
+    );
+    let permission = d.permission != r.permission;
+    let includes_all = d.includes_all_repositories != r.includes_all_repositories;
+    let units = d
+        .units_map
+        .iter()
+        .any(|(unit, access)| r.units_map.get(unit) != Some(access));
+    drift.note("permission", permission);
+    drift.note("includes_all_repositories", includes_all);
+    drift.note("units_map", units);
+    if !(permission || includes_all || units) {
+        patch.access = None;
+    }
+    (drift, patch)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ports::DesiredOrganization;
-    use crate::test_support::FakeForgejo;
+    use crate::test_support::{Edit, FakeForgejo};
 
     fn spec(name: &str) -> ForgejoTeamSpec {
         ForgejoTeamSpec {
@@ -438,8 +473,82 @@ mod tests {
         let s = spec("devs");
         let created = run(&s, None, "weebo", vec![], false, &fj).await.forgejo;
         fj.clear_calls();
-        run(&s, created, "weebo", vec![], false, &fj).await;
+        let quiet = run(&s, created, "weebo", vec![], false, &fj).await;
         assert!(fj.calls().is_empty(), "{:?}", fj.calls());
+        assert_eq!(quiet.write, None);
+    }
+
+    #[tokio::test]
+    async fn a_drifted_description_is_patched_alone_but_with_the_name() {
+        let fj = forgejo_with_orgs(&["weebo"]).await;
+        let mut s = spec("devs");
+        s.description = Some("developers".into());
+        let created = run(&s, None, "weebo", vec![], false, &fj).await;
+        assert_eq!(created.write, Some(RemoteWrite::Created));
+        let id = created.forgejo.as_ref().unwrap().id;
+        let drifted = TeamPatch {
+            name: "devs".into(),
+            description: Some("changed in Forgejo".into()),
+            ..Default::default()
+        };
+        fj.edit_team(id, &drifted).await.unwrap();
+
+        fj.clear_calls();
+        let outcome = run(&s, created.forgejo, "weebo", vec![], false, &fj).await;
+        // `name` is required by Forgejo on every edit; nothing else.
+        assert_eq!(
+            fj.edits(),
+            [Edit::Team(TeamPatch {
+                name: "devs".into(),
+                description: Some("developers".into()),
+                ..Default::default()
+            })]
+        );
+        assert_eq!(outcome.drift.fields(), ["description"]);
+        assert_eq!(outcome.write, Some(RemoteWrite::Drift));
+    }
+
+    #[tokio::test]
+    async fn a_drifted_unit_sends_the_access_fields_together() {
+        let fj = forgejo_with_orgs(&["weebo"]).await;
+        let s = spec("devs");
+        let created = run(&s, None, "weebo", vec![], false, &fj).await.forgejo;
+        let id = created.as_ref().unwrap().id;
+        let mut units = fj.team(id).unwrap().remote.units_map;
+        units.insert("repo.code".into(), "read".into());
+        let drifted = TeamPatch {
+            name: "devs".into(),
+            access: Some(crate::ports::TeamAccess {
+                permission: "write",
+                units_map: units,
+                includes_all_repositories: false,
+            }),
+            ..Default::default()
+        };
+        fj.edit_team(id, &drifted).await.unwrap();
+
+        fj.clear_calls();
+        let outcome = run(&s, created, "weebo", vec![], false, &fj).await;
+        let edits: [Edit; 1] = fj.edits().try_into().unwrap();
+        let [Edit::Team(patch)] = edits else {
+            panic!("one team edit expected");
+        };
+        assert_eq!(patch.description, None);
+        assert_eq!(patch.can_create_org_repo, None);
+        assert_eq!(patch.access.unwrap().permission, "write");
+        assert_eq!(outcome.drift.fields(), ["units_map"]);
+    }
+
+    #[tokio::test]
+    async fn a_member_added_in_forgejo_is_a_drift() {
+        let fj = forgejo_with_orgs(&["weebo"]).await;
+        fj.insert_user("mallory");
+        let s = spec("devs");
+        let created = run(&s, None, "weebo", vec![], false, &fj).await.forgejo;
+        fj.insert_team_member(created.as_ref().unwrap().id, "mallory");
+        let outcome = run(&s, created, "weebo", vec![], false, &fj).await;
+        assert_eq!(outcome.drift.fields(), ["members"]);
+        assert!(fj.edits().is_empty(), "the team itself didn't drift");
     }
 
     #[tokio::test]

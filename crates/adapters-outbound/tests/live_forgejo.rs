@@ -10,7 +10,8 @@
 
 use adapters_outbound::ForgejoHttpGateway;
 use application::ports::{
-    DesiredOrganization, DesiredTeam, DesiredUser, ForgejoGateway, GatewayError,
+    DesiredOrganization, DesiredTeam, DesiredUser, ForgejoGateway, GatewayError, HookPatch,
+    OrganizationPatch, RepositoryPatch, TeamPatch, UserPatch,
 };
 
 fn gateway() -> ForgejoHttpGateway {
@@ -18,6 +19,34 @@ fn gateway() -> ForgejoHttpGateway {
     let token = std::env::var("FORGEJO_TOKEN").expect("FORGEJO_TOKEN");
     let (api, web) = api::instance::split_urls(&url);
     ForgejoHttpGateway::new(api, web, token, reqwest::Client::new())
+}
+
+/// The authorization header Forgejo returns for a hook (`RemoteHook`
+/// leaves it out).
+async fn raw_hook_header(target: &application::ports::HookTarget, id: i64) -> String {
+    use application::ports::HookTarget;
+    let url = std::env::var("FORGEJO_URL").expect("FORGEJO_URL");
+    let token = std::env::var("FORGEJO_TOKEN").expect("FORGEJO_TOKEN");
+    let path = match target {
+        HookTarget::Repository { owner, name } => format!("repos/{owner}/{name}"),
+        HookTarget::Organization(org) => format!("orgs/{org}"),
+    };
+    let hook: serde_json::Value = reqwest::Client::new()
+        .get(format!(
+            "{}/api/v1/{path}/hooks/{id}",
+            url.trim_end_matches('/')
+        ))
+        .header("Authorization", format!("token {token}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    hook["authorization_header"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn suffix() -> String {
@@ -75,7 +104,9 @@ async fn user_lifecycle() {
     desired.prohibit_login = true;
     desired.visibility = "limited";
     desired.full_name = Some("Live Test".into());
-    gw.edit_user(&name, &desired).await.unwrap();
+    gw.edit_user(&name, &UserPatch::full(&desired))
+        .await
+        .unwrap();
     let remote = gw.get_user(&name).await.unwrap().unwrap();
     assert_eq!(remote.id, created.id);
     assert!(remote.admin);
@@ -111,7 +142,9 @@ async fn external_user_needs_no_password() {
     desired.login_name = Some(format!("{name}-sub"));
 
     gw.create_user(&desired).await.unwrap();
-    gw.edit_user(&name, &desired).await.unwrap();
+    gw.edit_user(&name, &UserPatch::full(&desired))
+        .await
+        .unwrap();
     let remote = gw.get_user(&name).await.unwrap().unwrap();
     assert_eq!(remote.source_id, desired.source_id.unwrap());
     assert_eq!(remote.login_name, format!("{name}-sub"));
@@ -145,7 +178,9 @@ async fn organization_and_team_lifecycle() {
         repo_admin_change_team_access: true,
         ..org.clone()
     };
-    gw.edit_organization(&org_name, &edited).await.unwrap();
+    gw.edit_organization(&org_name, &OrganizationPatch::full(&edited))
+        .await
+        .unwrap();
     let remote = gw.get_organization(&org_name).await.unwrap().unwrap();
     assert_eq!(remote.id, created.id);
     assert_eq!(remote.visibility, "private");
@@ -173,11 +208,11 @@ async fn organization_and_team_lifecycle() {
 
     gw.edit_team(
         t.id,
-        &DesiredTeam {
+        &TeamPatch::full(&DesiredTeam {
             description: Some("edited".into()),
             includes_all_repositories: true,
             ..team.clone()
-        },
+        }),
     )
     .await
     .unwrap();
@@ -288,7 +323,7 @@ async fn repository_lifecycle() {
         has_wiki: Some(false),
         ..desired.clone()
     };
-    gw.edit_repository(&format!("{org}/app"), &edited)
+    gw.edit_repository(&format!("{org}/app"), &RepositoryPatch::full(&edited))
         .await
         .unwrap();
     let remote = gw.get_repository(created.id).await.unwrap().unwrap();
@@ -375,12 +410,22 @@ async fn repository_lifecycle() {
         );
         assert_eq!(remote.events, vec!["push"]);
         assert_eq!(remote.branch_filter, "main");
-        let disabled = DesiredHook {
-            active: false,
-            ..hook
+        // What a drift of `active` alone sends: no `config` (the URL and
+        // content type stay), events and branch filter as they are, no
+        // header (Forgejo keeps the stored one: what `HookPatch` relies on).
+        let disabled = HookPatch {
+            config: None,
+            events: hook.events.clone(),
+            branch_filter: hook.branch_filter.clone(),
+            active: Some(false),
+            authorization_header: None,
         };
         gw.edit_hook(&target, h.id, &disabled).await.unwrap();
-        assert!(!gw.get_hook(&target, h.id).await.unwrap().unwrap().active);
+        let edited = gw.get_hook(&target, h.id).await.unwrap().unwrap();
+        assert!(!edited.active);
+        assert_eq!(edited.config["url"], "https://ci.example.com/hook");
+        assert_eq!(edited.branch_filter, "main");
+        assert_eq!(raw_hook_header(&target, h.id).await, "Bearer x");
         gw.delete_hook(&target, h.id).await.unwrap();
         assert!(gw.get_hook(&target, h.id).await.unwrap().is_none());
     }
@@ -689,7 +734,9 @@ async fn oauth2_apps_through_sudo_and_admin_tokens() {
     let mut prohibited = local_user(&bot);
     prohibited.password = None;
     prohibited.prohibit_login = true;
-    gw.edit_user(&bot, &prohibited).await.unwrap();
+    gw.edit_user(&bot, &UserPatch::full(&prohibited))
+        .await
+        .unwrap();
     let status = reqwest::Client::new()
         .get(format!("{url}/api/v1/user"))
         .header("Authorization", format!("token {value}"))

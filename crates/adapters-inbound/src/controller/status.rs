@@ -1,9 +1,10 @@
 //! `Outcome` → `status` translation, shared by every controller: one merge
 //! patch on the status subresource (`observedGeneration`, `forgejoId`,
 //! `forgejoName`, the resolved `instance`, conditions), then Kubernetes Events: a `Warning` for every
-//! failed reconcile, a `Normal` for every condition change and when the CR
-//! gets bound to a Forgejo object. Only `ReasonCode`s ever reach a
-//! condition or an Event.
+//! failed reconcile, a `Normal` for every condition change, when the CR
+//! gets bound to a Forgejo object, and when fields of that object were put
+//! back after a drift (`DriftCorrected`, naming them). Only `ReasonCode`s
+//! ever reach a condition or an Event.
 
 use std::fmt::Debug;
 
@@ -210,7 +211,34 @@ where
         )
         .await;
     }
+    // `obj` was read before the reconcile: a spec change being applied is
+    // not a drift, only a Forgejo object that moved on its own is.
+    if !spec_changed(obj)
+        && let Some(note) = drift_note(outcome)
+    {
+        events::announce_change(
+            recorder,
+            &object,
+            ReasonCode::DriftCorrected,
+            events::RECONCILE,
+            &note,
+        )
+        .await;
+    }
     Ok(())
+}
+
+/// The note of a `DriftCorrected` Event (the kit's, plus what else the
+/// correction did); `None` when no field drifted.
+pub fn drift_note(outcome: &Outcome) -> Option<String> {
+    if outcome.drift.is_empty() {
+        return None;
+    }
+    let note = events::drift_note(&outcome.drift);
+    Some(match outcome.drift_effect {
+        Some(effect) => format!("{note}; {effect}"),
+        None => note,
+    })
 }
 
 #[cfg(test)]
@@ -239,6 +267,27 @@ mod tests {
         let flipped = conditions(&again, &failed, Some(2), &at(30));
         assert_eq!(flipped[0].last_transition_time, Some(at(30)));
         assert_eq!(flipped[0].reason, "InstanceUnreachable");
+    }
+
+    #[test]
+    fn a_drift_note_names_the_fields_and_what_else_happened() {
+        let synced = Outcome::synced(None, "fine");
+        assert_eq!(drift_note(&synced), None);
+        let mut drift = application::use_cases::Drift::default();
+        drift.note("redirect_uris", true);
+        let mut corrected = synced.corrected(drift);
+        assert_eq!(
+            drift_note(&corrected).as_deref(),
+            Some("drift corrected on the remote object: redirect_uris")
+        );
+        corrected.drift_effect = Some("the client secret was rotated by Forgejo");
+        assert_eq!(
+            drift_note(&corrected).as_deref(),
+            Some(
+                "drift corrected on the remote object: redirect_uris; the client secret was \
+                 rotated by Forgejo"
+            )
+        );
     }
 
     #[test]

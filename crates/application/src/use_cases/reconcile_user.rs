@@ -12,8 +12,9 @@ use rand::distr::Alphanumeric;
 
 use crate::ports::{
     DesiredUser, ForgejoGateway, ForgejoRef, GatewayError, RemoteUser, SecretOwner, SecretStore,
+    UserPatch,
 };
-use crate::use_cases::{CleanupGateway, Failure, Outcome, differs, emit};
+use crate::use_cases::{CleanupGateway, Drift, Failure, Outcome, RemoteWrite, deleted, emit};
 
 pub const KIND: &str = "ForgejoUser";
 
@@ -38,7 +39,8 @@ pub struct UserInput<'a> {
     /// From `status.forgejoId`/`status.forgejoName`.
     pub current: Option<ForgejoRef>,
     /// `metadata.generation != status.observedGeneration`: re-sends the
-    /// fields Forgejo never returns (and so can't be diffed).
+    /// fields Forgejo never returns (and so can't be diffed), those the
+    /// spec sets.
     pub spec_changed: bool,
     /// `status.secretPending`: the last generated password never reached
     /// every target, which may still hold an outdated one.
@@ -61,7 +63,7 @@ pub async fn reconcile_user(
         return Outcome::failed(input.current, f);
     }
 
-    let remote = match locate(spec, input.current.as_ref(), gateway).await {
+    let (remote, renamed) = match locate(spec, input.current.as_ref(), gateway).await {
         Ok(r) => r,
         Err(f) => return Outcome::failed(input.current, f),
     };
@@ -74,8 +76,13 @@ pub async fn reconcile_user(
         name: remote.login.clone(),
     });
 
-    let mut desired = desired_user(spec);
-    let mut needs_edit = input.spec_changed || user_differs(&desired, &remote);
+    let desired = desired_user(spec);
+    let (mut drift, mut patch) = user_differs(&desired, &remote);
+    drift.note("username", renamed);
+    if input.spec_changed {
+        patch.allow_create_organization = desired.allow_create_organization;
+        patch.max_repo_creation = desired.max_repo_creation;
+    }
 
     // A password can't be read back: a vanished target (or one a failed
     // write left outdated) means the only way to hand one out again is to
@@ -86,9 +93,9 @@ pub async fn reconcile_user(
             Ok(false) if !input.secret_pending => {}
             Ok(_) => {
                 let password = generate_password();
-                desired.password = Some(password.clone());
+                patch.password = Some(password.clone());
+                patch.must_change_password = Some(desired.must_change_password);
                 new_password = Some(password);
-                needs_edit = true;
             }
             Err(f) => return Outcome::failed(current, f),
         }
@@ -99,18 +106,24 @@ pub async fn reconcile_user(
     let revoke_password = !spec.emits_password() && input.password_emitted;
     if revoke_password {
         if spec.is_local() {
-            desired.password = Some(generate_password());
-            needs_edit = true;
+            patch.password = Some(generate_password());
+            patch.must_change_password = Some(desired.must_change_password);
         }
         if let Err(f) = emit::delete_all(&spec.secret_targets, &owner, secrets).await {
             return Outcome::failed(current, f);
         }
     }
 
-    if needs_edit && let Err(e) = gateway.edit_user(&remote.login, &desired).await {
+    let wrote = !patch.is_empty();
+    if wrote && let Err(e) = gateway.edit_user(&remote.login, &patch).await {
         return Outcome::failed(current, source_failure(spec, e));
     }
     let mut outcome = Outcome::synced(current.clone(), "user synced");
+    // A new password or a spec change of the unreadable fields is a write
+    // without a drifted field: counted, not announced.
+    if wrote || !drift.is_empty() {
+        outcome = outcome.corrected(drift);
+    }
     if let Some(password) = new_password {
         if let Err(f) = write_password(spec, &owner, &password, gateway, secrets).await {
             return pending(current, f);
@@ -128,7 +141,8 @@ pub async fn reconcile_user(
 }
 
 /// Deletes the account only for `deletionPolicy: Delete` (never purged),
-/// and the emitted password secrets in every case.
+/// and the emitted password secrets in every case. `Ok(true)`: the account
+/// was deleted by this call.
 ///
 /// The account is addressed by its id, never by the stored login: after a
 /// rename outside the operator, another account may hold the old login.
@@ -140,20 +154,18 @@ pub async fn cleanup_user(
     current: Option<&ForgejoRef>,
     gateway: CleanupGateway<'_>,
     secrets: &dyn SecretStore,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
     if spec.management_policy == ManagementPolicy::Observe {
-        return Ok(());
+        return Ok(false);
     }
+    let mut removed = false;
     if spec.deletion_policy == api::common::DeletionPolicy::Delete
         && let Some(current) = current
     {
         let gateway = gateway.map_err(Clone::clone)?;
         // `None`: already deleted.
         if let Some(login) = gateway.user_login(current.id).await? {
-            match gateway.delete_user(&login).await {
-                Ok(()) | Err(GatewayError::NotFound(_)) => {}
-                Err(e) => return Err(e.into()),
-            }
+            removed = deleted(gateway.delete_user(&login).await)?;
         }
     }
     if spec.is_local() {
@@ -164,7 +176,7 @@ pub async fn cleanup_user(
         )
         .await?;
     }
-    Ok(())
+    Ok(removed)
 }
 
 async fn observe(spec: &ForgejoUserSpec, gateway: &dyn ForgejoGateway) -> Outcome {
@@ -208,29 +220,33 @@ fn validate(spec: &ForgejoUserSpec, owner: &SecretOwner<'_>) -> Result<(), Failu
 /// else by now — renaming it back to `spec.username` when they differ.
 /// `Ok(None)` means nothing is owned yet, or it was deleted out of band,
 /// in which case the CR (authoritative) recreates it.
+/// Also says whether the account was renamed to find it.
 async fn locate(
     spec: &ForgejoUserSpec,
     current: Option<&ForgejoRef>,
     gateway: &dyn ForgejoGateway,
-) -> Result<Option<RemoteUser>, Failure> {
+) -> Result<(Option<RemoteUser>, bool), Failure> {
     let Some(current) = current else {
-        return Ok(None);
+        return Ok((None, false));
     };
     let Some(login) = gateway.user_login(current.id).await? else {
-        return Ok(None);
+        return Ok((None, false));
     };
+    let mut renamed = false;
     if login != spec.username {
         match gateway.rename_user(&login, &spec.username).await {
-            Ok(()) | Err(GatewayError::NotFound(_)) => {}
+            Ok(()) => renamed = true,
+            Err(GatewayError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(gateway
+    let remote = gateway
         .get_user(&spec.username)
         .await?
         // A same-name account with another id isn't ours (deleted and
         // recreated by someone else): surface the collision via create.
-        .filter(|u| u.id == current.id))
+        .filter(|u| u.id == current.id);
+    Ok((remote, renamed))
 }
 
 async fn create(
@@ -257,15 +273,19 @@ async fn create(
     {
         // Persisting the id matters most here: the next reconcile resets
         // the password instead of failing on a second create.
-        return pending(current, f);
+        return pending(current, f).wrote(RemoteWrite::Created);
     }
 
-    // admin, active, prohibit_login & co. only exist on edit.
+    // admin, active, prohibit_login & co. only exist on edit: all of them,
+    // never the password just set.
     desired.password = None;
-    if let Err(e) = gateway.edit_user(&created.name, &desired).await {
-        return Outcome::failed(current, e);
+    if let Err(e) = gateway
+        .edit_user(&created.name, &UserPatch::full(&desired))
+        .await
+    {
+        return Outcome::failed(current, e).wrote(RemoteWrite::Created);
     }
-    let mut outcome = Outcome::synced(current, "user created");
+    let mut outcome = Outcome::synced(current, "user created").wrote(RemoteWrite::Created);
     if spec.emits_password() {
         outcome.secret_pending = Some(false);
         outcome.password_emitted = Some(true);
@@ -327,16 +347,32 @@ fn desired_user(spec: &ForgejoUserSpec) -> DesiredUser {
     }
 }
 
-fn user_differs(d: &DesiredUser, r: &RemoteUser) -> bool {
-    d.email != r.email
-        || differs(&d.full_name, &r.full_name)
-        || d.admin != r.admin
-        || d.restricted != r.restricted
-        || d.visibility != r.visibility
-        || d.active != r.active
-        || d.prohibit_login != r.prohibit_login
-        || d.source_id.unwrap_or(0) != r.source_id
-        || d.login_name.as_deref().unwrap_or("") != r.login_name
+/// The readable fields of `r` that differ from `d`, and the PATCH carrying
+/// only them — never a password, nor the fields Forgejo doesn't return
+/// (`allow_create_organization`, `max_repo_creation`: the caller adds them
+/// on a spec change).
+fn user_differs(d: &DesiredUser, r: &RemoteUser) -> (Drift, UserPatch) {
+    let mut p = UserPatch {
+        password: None,
+        must_change_password: None,
+        allow_create_organization: None,
+        max_repo_creation: None,
+        ..UserPatch::full(d)
+    };
+    let mut drift = Drift::default();
+    drift.keep("email", &mut p.email, &r.email);
+    drift.keep("full_name", &mut p.full_name, &r.full_name);
+    drift.keep("admin", &mut p.admin, &r.admin);
+    drift.keep("restricted", &mut p.restricted, &r.restricted);
+    drift.keep_with("visibility", &mut p.visibility, &r.visibility, |d, r| {
+        *d == r.as_str()
+    });
+    drift.keep("active", &mut p.active, &r.active);
+    drift.keep("prohibit_login", &mut p.prohibit_login, &r.prohibit_login);
+    drift.keep_with("login_source", &mut p.login_source, r, |(id, name), r| {
+        *id == r.source_id && *name == r.login_name
+    });
+    (drift, p)
 }
 
 async fn write_password(
@@ -370,7 +406,7 @@ mod tests {
     use api::instance::SecretStoreBackend;
 
     use super::*;
-    use crate::test_support::{FakeForgejo, FakeSecretStore};
+    use crate::test_support::{Edit, FakeForgejo, FakeSecretStore};
 
     fn target() -> SecretTarget {
         SecretTarget {
@@ -458,9 +494,51 @@ mod tests {
         let created = run(&spec, None, &fj, &secrets).await.forgejo;
 
         spec.admin = true;
+        fj.clear_calls();
         let outcome = run(&spec, created, &fj, &secrets).await;
         assert!(outcome.ready.is_ok());
         assert!(fj.user("alice").unwrap().remote.admin);
+        // Only the drifted field: never the password, nor anything else.
+        assert_eq!(
+            fj.edits(),
+            [Edit::User(UserPatch {
+                admin: Some(true),
+                ..Default::default()
+            })]
+        );
+        assert_eq!(outcome.drift.fields(), ["admin"]);
+    }
+
+    #[tokio::test]
+    async fn a_spec_change_resends_only_the_unreadable_fields_it_sets() {
+        let (fj, secrets) = (FakeForgejo::default(), FakeSecretStore::default());
+        let mut spec = local("alice");
+        let created = run(&spec, None, &fj, &secrets).await;
+        assert_eq!(created.write, Some(RemoteWrite::Created));
+        spec.max_repo_creation = Some(3);
+        fj.clear_calls();
+        let input = UserInput {
+            spec: &spec,
+            namespace: "team-a",
+            cr_name: "alice",
+            previous_owner: None,
+            current: created.forgejo,
+            spec_changed: true,
+            secret_pending: false,
+            password_emitted: true,
+        };
+        let outcome = reconcile_user(input, &fj, &secrets).await;
+        assert!(outcome.ready.is_ok(), "{outcome:?}");
+        assert_eq!(
+            fj.edits(),
+            [Edit::User(UserPatch {
+                max_repo_creation: Some(3),
+                ..Default::default()
+            })]
+        );
+        // A write, but no field Forgejo showed as drifted.
+        assert_eq!(outcome.write, Some(RemoteWrite::Drift));
+        assert!(outcome.drift.is_empty());
     }
 
     #[tokio::test]

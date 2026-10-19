@@ -9,7 +9,7 @@ use application::use_cases::reconcile_token::{
     TokenInput, cleanup_token, reconcile_token, revoke_denied, token_name,
 };
 use application::use_cases::refs::{resolve_identity_required, resolve_required};
-use application::use_cases::{Failure, Outcome};
+use application::use_cases::{Failure, Outcome, RemoteWrite};
 use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
@@ -22,7 +22,7 @@ use super::{
     Ctx, Error, FINALIZER, ScopedWatches, allows_disruptive_update, error_policy, requeue_after,
     rotate_nonce, status,
 };
-use crate::metrics::record_reconcile;
+use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoAccessToken";
 const KIND_POLICY: NamespacedKind = NamespacedKind::ForgejoAccessToken;
@@ -128,7 +128,7 @@ async fn apply(
         Ok(bound) => issue(&current, &bound, ctx).await?.on(bound),
     };
 
-    record_reconcile("ForgejoAccessToken", outcome.reason(), started.elapsed());
+    record_reconcile("ForgejoAccessToken", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
 }
@@ -248,7 +248,7 @@ async fn cleanup(token: &ForgejoAccessToken, ctx: &Ctx) -> Result<Action, Error>
     let instance = super::cleanup_instance(ctx, token).await;
     let gateway = super::cleanup_gateway(ctx, &instance).await;
     let secrets = super::cleanup_secrets(ctx, &instance).await;
-    cleanup_token(
+    let deleted = cleanup_token(
         &token.spec,
         &token.name_any(),
         &token.namespace().unwrap_or_default(),
@@ -259,5 +259,8 @@ async fn cleanup(token: &ForgejoAccessToken, ctx: &Ctx) -> Result<Action, Error>
     )
     .await
     .map_err(Error::Cleanup)?;
+    if deleted {
+        record_write("ForgejoAccessToken", RemoteWrite::Deleted);
+    }
     Ok(Action::await_change())
 }

@@ -9,7 +9,7 @@ use application::use_cases::reconcile_oauth2::{
     OAuth2Input, cleanup_oauth2, reconcile_oauth2, revoke_denied_oauth2,
 };
 use application::use_cases::refs::resolve_identity_required;
-use application::use_cases::{Failure, Outcome};
+use application::use_cases::{Failure, Outcome, RemoteWrite};
 use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
@@ -22,7 +22,7 @@ use super::{
     Ctx, Error, FINALIZER, ScopedWatches, allows_disruptive_update, error_policy, requeue_after,
     rotate_nonce, status,
 };
-use crate::metrics::record_reconcile;
+use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoOAuth2Application";
 const KIND_POLICY: NamespacedKind = NamespacedKind::ForgejoOAuth2Application;
@@ -107,11 +107,7 @@ async fn apply(
         Ok(bound) => bound_outcome(&current, &bound, ctx).await?.on(bound),
     };
 
-    record_reconcile(
-        "ForgejoOAuth2Application",
-        outcome.reason(),
-        started.elapsed(),
-    );
+    record_reconcile("ForgejoOAuth2Application", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
 }
@@ -227,7 +223,7 @@ async fn cleanup(app: &ForgejoOAuth2Application, ctx: &Ctx) -> Result<Action, Er
     let instance = super::cleanup_instance(ctx, app).await;
     let gateway = super::cleanup_gateway(ctx, &instance).await;
     let secrets = super::cleanup_secrets(ctx, &instance).await;
-    cleanup_oauth2(
+    let deleted = cleanup_oauth2(
         &app.spec,
         &app.name_any(),
         &app.namespace().unwrap_or_default(),
@@ -238,5 +234,8 @@ async fn cleanup(app: &ForgejoOAuth2Application, ctx: &Ctx) -> Result<Action, Er
     )
     .await
     .map_err(Error::Cleanup)?;
+    if deleted {
+        record_write("ForgejoOAuth2Application", RemoteWrite::Deleted);
+    }
     Ok(Action::await_change())
 }

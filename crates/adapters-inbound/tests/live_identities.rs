@@ -10,7 +10,7 @@ use api::{
     ForgejoUser,
 };
 use application::ports::{
-    DesiredOrganization, DesiredUser, ForgejoGateway, ForgejoInventory, RemoteUser,
+    DesiredUser, ForgejoGateway, ForgejoInventory, OrganizationPatch, RemoteUser, UserPatch,
 };
 use k8s_openapi::api::core::v1::{Namespace, Secret};
 use kube::api::{Api, Patch, PatchParams};
@@ -215,15 +215,10 @@ async fn user_rename_drift_and_orphan_deletion() {
     let id = wait_for(&users, "erin", |u| ready_id(u.status.as_ref())).await;
 
     // Drift made in Forgejo is reverted on the next reconcile.
-    let remote = remote_user(&l, &login).await.unwrap();
     l.fj.edit_user(
         &login,
-        &DesiredUser {
-            username: login.clone(),
-            email: remote.email.clone(),
+        &UserPatch {
             full_name: Some("Hacked".into()),
-            visibility: "public",
-            active: true,
             ..Default::default()
         },
     )
@@ -370,10 +365,8 @@ async fn organization_owner_rename_drift_and_collision() {
     // Drift is reverted.
     l.fj.edit_organization(
         &name,
-        &DesiredOrganization {
-            name: name.clone(),
+        &OrganizationPatch {
             description: Some("hacked".into()),
-            visibility: "public",
             ..Default::default()
         },
     )

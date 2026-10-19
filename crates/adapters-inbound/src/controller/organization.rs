@@ -8,7 +8,7 @@ use application::use_cases::reconcile_organization::{
     OrganizationInput, cleanup_organization, reconcile_organization,
 };
 use application::use_cases::refs::resolve_identity_required;
-use application::use_cases::{Failure, Outcome};
+use application::use_cases::{Failure, Outcome, RemoteWrite};
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -17,7 +17,7 @@ use kube::{Client, ResourceExt};
 
 use super::status::current_ref;
 use super::{Ctx, Error, FINALIZER, ScopedWatches, error_policy, requeue_after, status};
-use crate::metrics::record_reconcile;
+use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoOrganization";
 
@@ -106,7 +106,7 @@ async fn apply(
         .on(bound),
     };
 
-    record_reconcile("ForgejoOrganization", outcome.reason(), started.elapsed());
+    record_reconcile("ForgejoOrganization", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     Ok(requeue_after(&outcome))
 }
@@ -160,8 +160,11 @@ async fn owner(
 async fn cleanup(org: &ForgejoOrganization, ctx: &Ctx) -> Result<Action, Error> {
     let instance = super::cleanup_instance(ctx, org).await;
     let gateway = super::cleanup_gateway(ctx, &instance).await;
-    cleanup_organization(&org.spec, current_ref(org).as_ref(), gateway.as_deref())
+    let deleted = cleanup_organization(&org.spec, current_ref(org).as_ref(), gateway.as_deref())
         .await
         .map_err(Error::Cleanup)?;
+    if deleted {
+        record_write("ForgejoOrganization", RemoteWrite::Deleted);
+    }
     Ok(Action::await_change())
 }

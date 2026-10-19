@@ -12,7 +12,8 @@ use api::{
     ForgejoUserKey, ForgejoWebhook,
 };
 use application::ports::{
-    DesiredHook, DesiredRepository, ForgejoGateway, HookTarget, RepositoryInitOptions,
+    DesiredRepository, ForgejoGateway, HookPatch, HookTarget, RepositoryInitOptions,
+    RepositoryPatch,
 };
 use kube::api::{Api, Patch, PatchParams};
 use serde_json::json;
@@ -483,14 +484,10 @@ async fn drift_is_corrected_orphan_survives_and_collisions_are_reported() {
     let full = format!("{o}/app");
 
     // Someone edits the repository in Forgejo: the CR wins.
-    let remote = l.fj.get_repository(id).await.unwrap().unwrap();
     l.fj.edit_repository(
         &full,
-        &DesiredRepository {
-            name: remote.name.clone(),
+        &RepositoryPatch {
             description: Some("edited by hand".into()),
-            private: remote.private,
-            template: remote.template,
             has_wiki: Some(true),
             ..Default::default()
         },
@@ -614,12 +611,11 @@ async fn organization_hook_secrets_type_and_drift() {
     l.fj.edit_hook(
         &target,
         id,
-        &DesiredHook {
-            type_: "forgejo".into(),
-            config: remote.config.clone(),
+        &HookPatch {
+            config: None,
             events: vec!["push".into()],
             branch_filter: "*".into(),
-            active: false,
+            active: Some(false),
             authorization_header: None,
         },
     )
