@@ -12,12 +12,10 @@ use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
 use kube::{Client, ResourceExt};
+use weebo_kit_runtime::shared::WatchesIn;
 
 use super::status::current_ref;
-use super::{
-    Ctx, Error, FINALIZER, ScopedWatches, allows_disruptive_update, error_policy, requeue_after,
-    status,
-};
+use super::{Ctx, Error, FINALIZER, allows_disruptive_update, error_policy, requeue_after, status};
 use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoTeam";
@@ -32,7 +30,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
     // A policy change may allow or forbid any CR of this kind.
     let by_policy = controller.store();
     let results = controller
-        .watches_in::<ForgejoOrganization, _>(&ctx, &client, move |org| {
+        .watches_in::<ForgejoOrganization, _>(&ctx.watches, &ctx.scope, &client, move |org| {
             let (name, ns) = (org.name_any(), org.namespace());
             by_org
                 .state()
@@ -46,7 +44,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                 .map(|t| ObjectRef::from_obj(t.as_ref()))
                 .collect::<Vec<_>>()
         })
-        .watches_in::<ForgejoUser, _>(&ctx, &client, move |user| {
+        .watches_in::<ForgejoUser, _>(&ctx.watches, &ctx.scope, &client, move |user| {
             let (name, ns) = (user.name_any(), user.namespace());
             by_member
                 .state()
@@ -61,7 +59,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                 .map(|t| ObjectRef::from_obj(t.as_ref()))
                 .collect::<Vec<_>>()
         })
-        .watches_in::<ForgejoNamespacePolicy, _>(&ctx, &client, move |_| {
+        .watches_in::<ForgejoNamespacePolicy, _>(&ctx.watches, &ctx.scope, &client, move |_| {
             by_policy
                 .state()
                 .into_iter()

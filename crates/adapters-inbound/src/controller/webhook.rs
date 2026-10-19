@@ -17,9 +17,10 @@ use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
 use kube::runtime::reflector::ObjectRef;
 use kube::{Client, ResourceExt};
+use weebo_kit_runtime::shared::WatchesIn;
 
 use super::status::current_ref;
-use super::{Ctx, Error, FINALIZER, ScopedWatches, error_policy, requeue_after, status};
+use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
 use crate::metrics::{record_reconcile, record_write};
 
 const KIND: &str = "ForgejoWebhook";
@@ -33,7 +34,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let by_repo = controller.store();
     let by_org = controller.store();
     let results = controller
-        .watches_in::<ForgejoRepository, _>(&ctx, &client, move |repo| {
+        .watches_in::<ForgejoRepository, _>(&ctx.watches, &ctx.scope, &client, move |repo| {
             let (name, ns) = (repo.name_any(), repo.namespace());
             by_repo
                 .state()
@@ -48,7 +49,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                 .map(|h| ObjectRef::from_obj(h.as_ref()))
                 .collect::<Vec<_>>()
         })
-        .watches_in::<ForgejoOrganization, _>(&ctx, &client, move |org| {
+        .watches_in::<ForgejoOrganization, _>(&ctx.watches, &ctx.scope, &client, move |org| {
             let (name, ns) = (org.name_any(), org.namespace());
             by_org
                 .state()
@@ -61,13 +62,18 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                 .map(|h| ObjectRef::from_obj(h.as_ref()))
                 .collect::<Vec<_>>()
         })
-        .watches_in::<api::ForgejoNamespacePolicy, _>(&ctx, &client, move |_| {
-            by_policy
-                .state()
-                .into_iter()
-                .map(|o| ObjectRef::from_obj(o.as_ref()))
-                .collect::<Vec<_>>()
-        })
+        .watches_in::<api::ForgejoNamespacePolicy, _>(
+            &ctx.watches,
+            &ctx.scope,
+            &client,
+            move |_| {
+                by_policy
+                    .state()
+                    .into_iter()
+                    .map(|o| ObjectRef::from_obj(o.as_ref()))
+                    .collect::<Vec<_>>()
+            },
+        )
         .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx);
     super::drive(KIND, health, results).await;

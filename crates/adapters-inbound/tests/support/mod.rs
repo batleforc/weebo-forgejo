@@ -9,8 +9,7 @@ pub mod live;
 use std::sync::Arc;
 use std::time::Duration;
 
-use adapters_inbound::controller::shared::{SharedWatch, Watches};
-use adapters_inbound::controller::{Ctx, Shutdown};
+use adapters_inbound::controller::{self, Ctx, Shutdown};
 use adapters_outbound::cluster_reader::ClusterStores;
 use adapters_outbound::{KubeClusterReader, kubernetes_secret_store};
 use application::test_support::FakeForgejo;
@@ -19,6 +18,7 @@ use kube::runtime::events::{Recorder, Reporter};
 use testkit::envtest::EnvTestCluster;
 use testkit::static_gateway_factory::StaticGatewayFactory;
 use testkit::static_secret_store_factory::StaticSecretStoreFactory;
+use weebo_kit_runtime::shared::SharedWatch;
 
 pub struct Harness {
     // Keeps the control plane alive for the test's duration.
@@ -42,13 +42,13 @@ pub async fn harness_with(scope: weebo_kit_runtime::WatchScope) -> Harness {
     // As the binary: the controllers on shared watches, the claim and
     // policy reads on their stores (the instances read from the API).
     let health: Arc<weebo_kit_runtime::Health> = Default::default();
-    let watches = Watches::spawn(&client, &scope, &health);
+    let watches = controller::spawn_watches(&client, &scope, &health);
     let stores = ClusterStores {
-        policies: watches.policies.as_ref().map(SharedWatch::store),
-        users: watches.users.as_ref().map(SharedWatch::store),
-        organizations: watches.organizations.as_ref().map(SharedWatch::store),
-        teams: watches.teams.as_ref().map(SharedWatch::store),
-        access_tokens: watches.access_tokens.as_ref().map(SharedWatch::store),
+        policies: watches.get().map(SharedWatch::store),
+        users: watches.get().map(SharedWatch::store),
+        organizations: watches.get().map(SharedWatch::store),
+        teams: watches.get().map(SharedWatch::store),
+        access_tokens: watches.get().map(SharedWatch::store),
         ..Default::default()
     };
     let reader = Arc::new(KubeClusterReader::new(client.clone()).with_stores(stores));

@@ -15,7 +15,6 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Duration;
 
 use api::common::{
     BoundInstance, IdentityRef, InstanceKind, InstanceRef, ManagementPolicy, SharedWith,
@@ -36,6 +35,7 @@ use kube::runtime::reflector::{ObjectRef, Store};
 use kube::{Api, Client, Resource};
 use serde::de::DeserializeOwned;
 use weebo_kit_adapters::instance::STORE_READY_TIMEOUT;
+use weebo_kit_adapters::wait_synced;
 
 /// The binary's live stores. The claiming kinds' are on the operator's
 /// watch scope (its namespace and label selector, as the API reads); the
@@ -84,11 +84,6 @@ impl Stored for api::ForgejoWebhook {}
 impl Stored for api::ForgejoDeployKey {}
 impl Stored for api::ForgejoOAuth2Application {}
 
-/// How often a read waiting for a store re-checks it: kube's readiness
-/// wakes only the last task that polled it (a single oneshot), and many
-/// reconciles — and the controllers' runners — wait on the same stores.
-const STORE_READY_POLL: Duration = Duration::from_millis(50);
-
 /// `store` once it has listed: `None` when there is none, its writer is
 /// gone (shutdown) or it still hasn't listed after [`STORE_READY_TIMEOUT`]
 /// — the caller then reads the API: a decision is never made on a store
@@ -98,21 +93,9 @@ async fn ready<K: Resource<DynamicType = ()> + Clone + 'static>(
     store: Option<&Store<K>>,
 ) -> Option<&Store<K>> {
     let store = store?;
-    let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
-    loop {
-        match tokio::time::timeout(STORE_READY_POLL, store.wait_until_ready()).await {
-            Ok(Ok(())) => return Some(store),
-            Ok(Err(_)) => return None,
-            Err(_) if tokio::time::Instant::now() >= deadline => {
-                tracing::warn!(
-                    kind = %K::kind(&()),
-                    "the watch has not listed yet: reading from the API"
-                );
-                return None;
-            }
-            Err(_) => {}
-        }
-    }
+    wait_synced(store, STORE_READY_TIMEOUT)
+        .await
+        .then_some(store)
 }
 
 pub struct KubeClusterReader {
@@ -718,6 +701,8 @@ impl PolicySource<NamespaceRule> for KubeClusterReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
     use kube::runtime::reflector::store::Writer;
     use kube::runtime::{reflector, watcher};
     use serde_json::{Value, json};

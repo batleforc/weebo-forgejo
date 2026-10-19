@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use adapters_inbound::controller::shared::{self, SharedWatch, Watches};
 use adapters_inbound::controller::{self, Ctx, Shutdown};
 use adapters_inbound::webhook::{self, WebhookState};
 use adapters_outbound::cluster_reader::ClusterStores;
@@ -18,6 +17,7 @@ use application::ports::InstanceDirectory;
 use kube::Client;
 use kube::api::ApiResource;
 use kube::runtime::events::{Recorder, Reporter};
+use weebo_kit_runtime::shared::{LISTED_TIMEOUT, SharedWatch};
 use weebo_kit_runtime::store::spawn_reflector;
 use weebo_kit_runtime::{Health, WatchScope, leader, telemetry, webhook_server};
 
@@ -25,10 +25,6 @@ use weebo_kit_runtime::{Health, WatchScope, leader, telemetry, webhook_server};
 /// configurable — keep it across upgrades, or old and new pods would each
 /// hold "their" lease during the rollout.
 const DEFAULT_LEASE_NAME: &str = "weebo-forgejo-operator-leader";
-
-/// How long a replica waits for its shared watches to list before it
-/// campaigns for the lease anyway.
-const LISTED_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The kit's runtime: `WEEBO_WORKER_THREADS` workers (4 by default), not
 /// tokio's one per core (`weebo_kit_runtime::runtime`).
@@ -183,8 +179,8 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
     // instances and the policies are watched without the label selector —
     // one another release selects still counts for the claim and policy
     // checks; `ForgejoInstances` applies the selector to what it resolves.
-    let watches = Watches::spawn(&client, &scope, &health);
-    let unselected = shared::unselected(&scope);
+    let watches = controller::spawn_watches(&client, &scope, &health);
+    let unselected = controller::unselected(&scope);
     let cluster_store = scope.cluster_kinds().then(|| {
         spawn_reflector(
             unselected.api::<ForgejoInstance>(client.clone()),
@@ -200,13 +196,13 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
         "ForgejoLocalInstance reflector",
     );
     let stores = ClusterStores {
-        policies: watches.policies.as_ref().map(SharedWatch::store),
+        policies: watches.get().map(SharedWatch::store),
         instances: cluster_store.clone(),
         local_instances: Some(local_store.clone()),
-        users: watches.users.as_ref().map(SharedWatch::store),
-        organizations: watches.organizations.as_ref().map(SharedWatch::store),
-        teams: watches.teams.as_ref().map(SharedWatch::store),
-        access_tokens: watches.access_tokens.as_ref().map(SharedWatch::store),
+        users: watches.get().map(SharedWatch::store),
+        organizations: watches.get().map(SharedWatch::store),
+        teams: watches.get().map(SharedWatch::store),
+        access_tokens: watches.get().map(SharedWatch::store),
     };
     let instances = Arc::new(
         ForgejoInstances::new(client.clone())
@@ -281,14 +277,8 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
     // from full stores, their LISTs done before the lease, not in the
     // first idle minute. Bounded: a watch that can't list is reported by
     // /livez, not waited for.
-    let listed = ctx.watches.clone();
     let campaign = async {
-        if tokio::time::timeout(LISTED_TIMEOUT, listed.listed())
-            .await
-            .is_err()
-        {
-            tracing::warn!("the shared watches have not all listed: campaigning anyway");
-        }
+        ctx.watches.wait_listed(LISTED_TIMEOUT).await;
         leader::acquire_leadership(&client, holder_id, DEFAULT_LEASE_NAME).await
     };
     let leadership = tokio::select! {
