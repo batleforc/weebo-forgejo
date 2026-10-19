@@ -72,26 +72,21 @@ pub struct Ctx {
     pub scope: WatchScope,
 }
 
-/// `scope` without its label selector: its namespace only.
-pub fn unselected(scope: &WatchScope) -> WatchScope {
-    match scope.watched_namespace() {
-        Some(ns) => WatchScope::namespace(ns),
-        None => WatchScope::cluster(),
-    }
-}
-
 /// One watch per kind for every controller (as its primary kind or as a
 /// referenced one) and the claim and policy reads (their stores): without
 /// it, `ForgejoNamespacePolicy` was listed and watched nine times,
 /// `ForgejoUser` seven, `ForgejoRepository` five. Spawned before the lease
 /// is campaigned for: a standby keeps them warm.
 ///
-/// The CRs on `scope`; the policies without its label selector, and only
-/// when it watches cluster-scoped kinds: the policy checks read every
-/// policy, whichever release selects it, so a change to any of them
-/// re-checks the CRs. Neither the instances (their own reflectors, without
-/// the label selector) nor `ForgejoNamespacePolicy` as a primary kind
-/// (its controller is on the watch scope) go through them.
+/// The CRs on `scope`; the policies, only when it watches cluster-scoped
+/// kinds, both without its label selector (`scope.without_selector()`:
+/// the policy checks read every policy, whichever release selects it, so
+/// a change to any of them re-checks the CRs) and through it (their
+/// controller's watch) — one watch when there is no selector; the CRs'
+/// `watches_in` on the policies go through `scope.without_selector()`,
+/// never the selected one. The
+/// instances (their own reflectors, without the label selector, not
+/// waited for before the lease) don't go through them.
 pub fn spawn_watches(client: &Client, scope: &WatchScope, health: &Arc<Health>) -> SharedWatches {
     fn on<K>(
         watches: &mut SharedWatches,
@@ -114,8 +109,9 @@ pub fn spawn_watches(client: &Client, scope: &WatchScope, health: &Arc<Health>) 
     let mut w = SharedWatches::default();
     let (c, s, h) = (client, scope, health);
     if scope.cluster_kinds() {
-        let all = unselected(scope);
+        let all = scope.without_selector();
         on::<api::ForgejoNamespacePolicy>(&mut w, c, &all, h, "ForgejoNamespacePolicy watch");
+        on::<api::ForgejoNamespacePolicy>(&mut w, c, s, h, "ForgejoNamespacePolicy selected watch");
     }
     on::<api::ForgejoUser>(&mut w, c, s, h, "ForgejoUser watch");
     on::<api::ForgejoOrganization>(&mut w, c, s, h, "ForgejoOrganization watch");
