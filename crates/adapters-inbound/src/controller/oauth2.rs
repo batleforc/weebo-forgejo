@@ -50,7 +50,7 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
         })
         .watches_in::<api::ForgejoNamespacePolicy, _>(
             &ctx.watches,
-            &ctx.scope,
+            &ctx.scope.without_selector(),
             &client,
             move |_| {
                 by_policy

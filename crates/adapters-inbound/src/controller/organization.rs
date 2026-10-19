@@ -43,13 +43,18 @@ pub async fn run(client: Client, ctx: Arc<Ctx>) {
                 .map(|o| ObjectRef::from_obj(o.as_ref()))
                 .collect::<Vec<_>>()
         })
-        .watches_in::<ForgejoNamespacePolicy, _>(&ctx.watches, &ctx.scope, &client, move |_| {
-            by_policy
-                .state()
-                .into_iter()
-                .map(|o| ObjectRef::from_obj(o.as_ref()))
-                .collect::<Vec<_>>()
-        })
+        .watches_in::<ForgejoNamespacePolicy, _>(
+            &ctx.watches,
+            &ctx.scope.without_selector(),
+            &client,
+            move |_| {
+                by_policy
+                    .state()
+                    .into_iter()
+                    .map(|o| ObjectRef::from_obj(o.as_ref()))
+                    .collect::<Vec<_>>()
+            },
+        )
         .graceful_shutdown_on(ctx.shutdown.wait())
         .run(reconcile, error_policy, ctx);
     super::drive(KIND, health, results).await;

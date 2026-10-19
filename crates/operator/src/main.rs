@@ -180,7 +180,9 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
     // one another release selects still counts for the claim and policy
     // checks; `ForgejoInstances` applies the selector to what it resolves.
     let watches = controller::spawn_watches(&client, &scope, &health);
-    let unselected = controller::unselected(&scope);
+    // Not shared watches: `wait_listed` doesn't wait for them before the
+    // lease, as before (the instance controllers keep their own watches).
+    let unselected = scope.without_selector();
     let cluster_store = scope.cluster_kinds().then(|| {
         spawn_reflector(
             unselected.api::<ForgejoInstance>(client.clone()),
@@ -196,7 +198,9 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
         "ForgejoLocalInstance reflector",
     );
     let stores = ClusterStores {
-        policies: watches.get().map(SharedWatch::store),
+        policies: watches
+            .get_in(&scope.without_selector())
+            .map(SharedWatch::store),
         instances: cluster_store.clone(),
         local_instances: Some(local_store.clone()),
         users: watches.get().map(SharedWatch::store),
