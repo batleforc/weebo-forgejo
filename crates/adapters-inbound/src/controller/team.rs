@@ -24,7 +24,7 @@ const KIND: &str = "ForgejoTeam";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let controller = super::controller(ctx.scope.api::<ForgejoTeam>(client.clone()), &ctx.scope);
+    let controller = super::primary::<ForgejoTeam>(&ctx, &client);
     // Teams react to their organization and members changing state: an
     // observed OIDC user appearing in Forgejo joins its teams right away.
     let by_org = controller.store();

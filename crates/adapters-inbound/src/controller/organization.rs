@@ -23,10 +23,7 @@ const KIND: &str = "ForgejoOrganization";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let controller = super::controller(
-        ctx.scope.api::<ForgejoOrganization>(client.clone()),
-        &ctx.scope,
-    );
+    let controller = super::primary::<ForgejoOrganization>(&ctx, &client);
     // An org waiting on its ownerRef is re-reconciled as soon as that user
     // changes (e.g. becomes Ready), instead of on the 30 s retry.
     let orgs = controller.store();

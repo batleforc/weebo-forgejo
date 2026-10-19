@@ -27,7 +27,7 @@ const KIND: &str = "ForgejoUserKey";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let controller = super::controller(ctx.scope.api::<ForgejoUserKey>(client.clone()), &ctx.scope);
+    let controller = super::primary::<ForgejoUserKey>(&ctx, &client);
     let keys = controller.store();
     // A policy change may allow or forbid any CR of this kind.
     let by_policy = controller.store();

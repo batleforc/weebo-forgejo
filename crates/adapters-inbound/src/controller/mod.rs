@@ -11,6 +11,7 @@ pub mod namespace_policy;
 pub mod oauth2;
 pub mod organization;
 pub mod repository;
+pub mod shared;
 pub mod status;
 pub mod team;
 pub mod token;
@@ -61,6 +62,9 @@ pub struct Ctx {
     pub shutdown: Shutdown,
     /// Liveness: controllers report their watch errors here.
     pub health: Arc<Health>,
+    /// The binary's shared watches: one per kind for every controller
+    /// (`Watches::default()`: each controller watches on its own).
+    pub watches: shared::Watches,
     /// What the controllers watch (`WEEBO_WATCH_NAMESPACE`,
     /// `WEEBO_WATCH_LABEL_SELECTOR`, `WEEBO_WATCH_CLUSTER_KINDS`): every
     /// watch goes through it.
@@ -81,7 +85,7 @@ where
         map: impl Fn(K) -> I + Send + Sync + 'static,
     ) -> Self
     where
-        K: kube::Resource<DynamicType = ()>
+        K: shared::Shared
             + Clone
             + std::fmt::Debug
             + serde::de::DeserializeOwned
@@ -110,7 +114,7 @@ where
         map: impl Fn(K) -> I + Send + Sync + 'static,
     ) -> Self
     where
-        K: kube::Resource<DynamicType = ()>
+        K: shared::Shared
             + Clone
             + std::fmt::Debug
             + serde::de::DeserializeOwned
@@ -124,11 +128,34 @@ where
         if !<K::Scope as KindScope>::NAMESPACED && !ctx.scope.cluster_kinds() {
             return self;
         }
+        if let Some(shared) = K::shared(&ctx.watches) {
+            return self.watches_stream(shared.touched(), map);
+        }
         self.watches(
             ctx.scope.api::<K>(client.clone()),
             ctx.scope.watcher_config(),
             map,
         )
+    }
+}
+
+/// The controller of `K`: on the binary's shared watch of its kind when
+/// there is one ([`shared::controller_on`]), else on its own
+/// ([`controller`]) — through the watch scope either way.
+pub fn primary<K>(ctx: &Ctx, client: &Client) -> Controller<K>
+where
+    K: shared::Shared
+        + Clone
+        + std::fmt::Debug
+        + serde::de::DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
+    K::Scope: KindScope,
+{
+    match K::shared(&ctx.watches) {
+        Some(shared) => shared::controller_on(shared),
+        None => controller(ctx.scope.api::<K>(client.clone()), &ctx.scope),
     }
 }
 

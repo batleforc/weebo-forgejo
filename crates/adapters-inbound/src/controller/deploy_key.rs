@@ -23,10 +23,7 @@ const KIND: &str = "ForgejoDeployKey";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let controller = super::controller(
-        ctx.scope.api::<ForgejoDeployKey>(client.clone()),
-        &ctx.scope,
-    );
+    let controller = super::primary::<ForgejoDeployKey>(&ctx, &client);
     // A policy change may allow or forbid any CR of this kind: re-check
     // them all (policies change rarely, and the check is a local list).
     let by_policy = controller.store();

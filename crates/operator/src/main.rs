@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use adapters_inbound::controller::shared::{self, SharedWatch, Watches};
 use adapters_inbound::controller::{self, Ctx, Shutdown};
 use adapters_inbound::webhook::{self, WebhookState};
+use adapters_outbound::cluster_reader::ClusterStores;
 use adapters_outbound::{
     ForgejoGatewayFactory, ForgejoInstanceVaults, ForgejoInstances, ForgejoSecretStoreFactory,
     KubeClusterReader,
@@ -24,8 +26,17 @@ use weebo_kit_runtime::{Health, WatchScope, leader, telemetry, webhook_server};
 /// hold "their" lease during the rollout.
 const DEFAULT_LEASE_NAME: &str = "weebo-forgejo-operator-leader";
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// How long a replica waits for its shared watches to list before it
+/// campaigns for the lease anyway.
+const LISTED_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The kit's runtime: `WEEBO_WORKER_THREADS` workers (4 by default), not
+/// tokio's one per core (`weebo_kit_runtime::runtime`).
+fn main() -> anyhow::Result<()> {
+    weebo_kit_runtime::runtime::build()?.block_on(operator())
+}
+
+async fn operator() -> anyhow::Result<()> {
     let telemetry = telemetry::init("weebo-forgejo-operator")?;
     let result = match std::env::args().nth(1).as_deref() {
         Some("migrate-instance-ref") => migrate_instance_ref().await,
@@ -162,23 +173,41 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
         "watch scope"
     );
 
-    // Every resolution reads the instances: one shared reflector per kind
-    // serves them from memory instead of a LIST per reconcile (no
-    // ForgejoInstance without cluster-scoped kinds).
+    // Every resolution reads the instances, every claim check the
+    // instances and every CR of its kind, every admission and policy check
+    // the policies: reflectors serve them from memory instead of a LIST
+    // per reconcile, and one shared watch per kind feeds every controller
+    // watching it (instead of a watch, and a LIST, per controller). All
+    // started before campaigning for the lease: a standby keeps them warm,
+    // and the controllers start from stores that already listed. The
+    // instances and the policies are watched without the label selector —
+    // one another release selects still counts for the claim and policy
+    // checks; `ForgejoInstances` applies the selector to what it resolves.
+    let watches = Watches::spawn(&client, &scope, &health);
+    let unselected = shared::unselected(&scope);
     let cluster_store = scope.cluster_kinds().then(|| {
         spawn_reflector(
-            scope.api::<ForgejoInstance>(client.clone()),
-            &scope,
+            unselected.api::<ForgejoInstance>(client.clone()),
+            &unselected,
             health.clone(),
             "ForgejoInstance reflector",
         )
     });
     let local_store = spawn_reflector(
-        scope.api::<ForgejoLocalInstance>(client.clone()),
-        &scope,
+        unselected.api::<ForgejoLocalInstance>(client.clone()),
+        &unselected,
         health.clone(),
         "ForgejoLocalInstance reflector",
     );
+    let stores = ClusterStores {
+        policies: watches.policies.as_ref().map(SharedWatch::store),
+        instances: cluster_store.clone(),
+        local_instances: Some(local_store.clone()),
+        users: watches.users.as_ref().map(SharedWatch::store),
+        organizations: watches.organizations.as_ref().map(SharedWatch::store),
+        teams: watches.teams.as_ref().map(SharedWatch::store),
+        access_tokens: watches.access_tokens.as_ref().map(SharedWatch::store),
+    };
     let instances = Arc::new(
         ForgejoInstances::new(client.clone())
             .with_scope(
@@ -190,11 +219,13 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
     );
     let directory: Arc<dyn InstanceDirectory> = instances.clone();
     let reader = || {
-        KubeClusterReader::new(client.clone()).with_scope(
-            scope.watched_namespace().map(String::from),
-            scope.selector().cloned(),
-            scope.cluster_kinds(),
-        )
+        KubeClusterReader::new(client.clone())
+            .with_scope(
+                scope.watched_namespace().map(String::from),
+                scope.selector().cloned(),
+                scope.cluster_kinds(),
+            )
+            .with_stores(stores.clone())
     };
 
     let holder_id = std::env::var("HOSTNAME").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
@@ -222,6 +253,7 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
         shutdown: shutdown.clone(),
         health: health.clone(),
         scope: scope.clone(),
+        watches,
     });
 
     let webhook_cluster = Arc::new(reader());
@@ -245,8 +277,22 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
     )
     .await?;
 
+    // Campaign once the shared watches listed: the controllers then start
+    // from full stores, their LISTs done before the lease, not in the
+    // first idle minute. Bounded: a watch that can't list is reported by
+    // /livez, not waited for.
+    let listed = ctx.watches.clone();
+    let campaign = async {
+        if tokio::time::timeout(LISTED_TIMEOUT, listed.listed())
+            .await
+            .is_err()
+        {
+            tracing::warn!("the shared watches have not all listed: campaigning anyway");
+        }
+        leader::acquire_leadership(&client, holder_id, DEFAULT_LEASE_NAME).await
+    };
     let leadership = tokio::select! {
-        leadership = leader::acquire_leadership(&client, holder_id, DEFAULT_LEASE_NAME) => leadership,
+        leadership = campaign => leadership,
         () = shutdown.wait() => {
             webhook.stopped().await;
             return Ok(());

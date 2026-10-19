@@ -92,6 +92,10 @@ These are starting points, not measurements: check the real usage with
 metric) after the first full resync and adjust. Only the leader's memory
 grows with the reconcile work; the followers mostly hold the cache.
 
+The operator runs `workerThreads` tokio workers (4 by default), not one per
+node core: each worker keeps its own allocator arena, so the idle memory grows
+with them, while reconciles wait on the network, not on CPU.
+
 There is deliberately **no CPU limit**: CFS throttling would slow admission
 answers, and a slow webhook (`webhook.timeoutSeconds`, 5 s) fails writes.
 

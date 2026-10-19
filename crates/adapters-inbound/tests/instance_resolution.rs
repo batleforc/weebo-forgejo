@@ -67,6 +67,7 @@ async fn a_local_instance_binds_its_crs_outside_the_namespace_policy() {
         shutdown: Shutdown::never(),
         health: Default::default(),
         scope: weebo_kit_runtime::WatchScope::cluster(),
+        watches: Default::default(),
     });
 
     let pp = PostParams::default();

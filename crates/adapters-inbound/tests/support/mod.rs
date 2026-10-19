@@ -9,7 +9,9 @@ pub mod live;
 use std::sync::Arc;
 use std::time::Duration;
 
+use adapters_inbound::controller::shared::{SharedWatch, Watches};
 use adapters_inbound::controller::{Ctx, Shutdown};
+use adapters_outbound::cluster_reader::ClusterStores;
 use adapters_outbound::{KubeClusterReader, kubernetes_secret_store};
 use application::test_support::FakeForgejo;
 use kube::Client;
@@ -37,6 +39,19 @@ pub async fn harness_with(scope: weebo_kit_runtime::WatchScope) -> Harness {
     let cluster = EnvTestCluster::start().await;
     let client = cluster.client();
     let forgejo = Arc::new(FakeForgejo::default());
+    // As the binary: the controllers on shared watches, the claim and
+    // policy reads on their stores (the instances read from the API).
+    let health: Arc<weebo_kit_runtime::Health> = Default::default();
+    let watches = Watches::spawn(&client, &scope, &health);
+    let stores = ClusterStores {
+        policies: watches.policies.as_ref().map(SharedWatch::store),
+        users: watches.users.as_ref().map(SharedWatch::store),
+        organizations: watches.organizations.as_ref().map(SharedWatch::store),
+        teams: watches.teams.as_ref().map(SharedWatch::store),
+        access_tokens: watches.access_tokens.as_ref().map(SharedWatch::store),
+        ..Default::default()
+    };
+    let reader = Arc::new(KubeClusterReader::new(client.clone()).with_stores(stores));
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         gateways: Arc::new(StaticGatewayFactory::new(forgejo.clone())),
@@ -44,8 +59,8 @@ pub async fn harness_with(scope: weebo_kit_runtime::WatchScope) -> Harness {
         secrets: Arc::new(StaticSecretStoreFactory::new(Arc::new(
             kubernetes_secret_store(client.clone()),
         ))),
-        refs: Arc::new(KubeClusterReader::new(client.clone())),
-        policies: Arc::new(KubeClusterReader::new(client.clone())),
+        refs: reader.clone(),
+        policies: reader,
         recorder: Recorder::new(
             client.clone(),
             Reporter {
@@ -54,8 +69,9 @@ pub async fn harness_with(scope: weebo_kit_runtime::WatchScope) -> Harness {
             },
         ),
         shutdown: Shutdown::never(),
-        health: Default::default(),
+        health,
         scope,
+        watches,
     });
     Harness {
         cluster,
