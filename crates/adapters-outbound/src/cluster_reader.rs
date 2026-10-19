@@ -4,9 +4,18 @@
 //! webhook decide on — on the operator's watch scope: an object outside
 //! its label selector, or a namespaced one outside the namespace it is
 //! limited to, doesn't exist for it.
+//!
+//! The policies, the instances and the claiming kinds are read from the
+//! binary's live reflector stores when it wires them in
+//! ([`KubeClusterReader::with_stores`]), from the API otherwise: a claim
+//! check reads every CR of its kind and every instance, a policy check
+//! every policy, on every reconcile — from the API, a sweep of N CRs is
+//! N LISTs of each.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
+use std::sync::Arc;
+use std::time::Duration;
 
 use api::common::{
     BoundInstance, IdentityRef, InstanceKind, InstanceRef, ManagementPolicy, SharedWith,
@@ -23,8 +32,88 @@ use application::ports::{
 use k8s_openapi::api::core::v1::{Namespace, Secret};
 use kube::api::ListParams;
 use kube::core::{Selector, SelectorExt};
+use kube::runtime::reflector::{ObjectRef, Store};
 use kube::{Api, Client, Resource};
 use serde::de::DeserializeOwned;
+use weebo_kit_adapters::instance::STORE_READY_TIMEOUT;
+
+/// The binary's live stores. The claiming kinds' are on the operator's
+/// watch scope (its namespace and label selector, as the API reads); the
+/// policies' and the instances' on its namespace only, without the label
+/// selector — as the API reads them here: a policy or an instance another
+/// release selects still counts.
+#[derive(Clone, Default)]
+pub struct ClusterStores {
+    pub policies: Option<Store<ForgejoNamespacePolicy>>,
+    pub instances: Option<Store<ForgejoInstance>>,
+    pub local_instances: Option<Store<ForgejoLocalInstance>>,
+    pub users: Option<Store<ForgejoUser>>,
+    pub organizations: Option<Store<ForgejoOrganization>>,
+    pub teams: Option<Store<ForgejoTeam>>,
+    pub access_tokens: Option<Store<api::ForgejoAccessToken>>,
+}
+
+/// Picks a kind's store out of [`ClusterStores`] (none: always listed).
+trait Stored: Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned + 'static {
+    fn store(_stores: &ClusterStores) -> Option<&Store<Self>> {
+        None
+    }
+}
+
+macro_rules! stored {
+    ($($kind:ty => $field:ident),+ $(,)?) => {$(
+        impl Stored for $kind {
+            fn store(stores: &ClusterStores) -> Option<&Store<Self>> {
+                stores.$field.as_ref()
+            }
+        }
+    )+};
+}
+stored!(
+    ForgejoNamespacePolicy => policies,
+    ForgejoInstance => instances,
+    ForgejoLocalInstance => local_instances,
+    ForgejoUser => users,
+    ForgejoOrganization => organizations,
+    ForgejoTeam => teams,
+    api::ForgejoAccessToken => access_tokens,
+);
+impl Stored for ForgejoRepository {}
+impl Stored for api::ForgejoUserKey {}
+impl Stored for api::ForgejoWebhook {}
+impl Stored for api::ForgejoDeployKey {}
+impl Stored for api::ForgejoOAuth2Application {}
+
+/// How often a read waiting for a store re-checks it: kube's readiness
+/// wakes only the last task that polled it (a single oneshot), and many
+/// reconciles — and the controllers' runners — wait on the same stores.
+const STORE_READY_POLL: Duration = Duration::from_millis(50);
+
+/// `store` once it has listed: `None` when there is none, its writer is
+/// gone (shutdown) or it still hasn't listed after [`STORE_READY_TIMEOUT`]
+/// — the caller then reads the API: a decision is never made on a store
+/// that hasn't listed, and a watch that can't list doesn't hang every
+/// reconcile.
+async fn ready<K: Resource<DynamicType = ()> + Clone + 'static>(
+    store: Option<&Store<K>>,
+) -> Option<&Store<K>> {
+    let store = store?;
+    let deadline = tokio::time::Instant::now() + STORE_READY_TIMEOUT;
+    loop {
+        match tokio::time::timeout(STORE_READY_POLL, store.wait_until_ready()).await {
+            Ok(Ok(())) => return Some(store),
+            Ok(Err(_)) => return None,
+            Err(_) if tokio::time::Instant::now() >= deadline => {
+                tracing::warn!(
+                    kind = %K::kind(&()),
+                    "the watch has not listed yet: reading from the API"
+                );
+                return None;
+            }
+            Err(_) => {}
+        }
+    }
+}
 
 pub struct KubeClusterReader {
     client: Client,
@@ -32,6 +121,7 @@ pub struct KubeClusterReader {
     watched_namespace: Option<String>,
     selector: Option<Selector>,
     cluster_kinds: bool,
+    stores: ClusterStores,
 }
 
 impl KubeClusterReader {
@@ -41,7 +131,42 @@ impl KubeClusterReader {
             watched_namespace: None,
             selector: None,
             cluster_kinds: true,
+            stores: ClusterStores::default(),
         }
+    }
+
+    /// Reads the policies, the instances and the claiming kinds from these
+    /// stores (once they listed) instead of the API.
+    pub fn with_stores(mut self, stores: ClusterStores) -> Self {
+        self.stores = stores;
+        self
+    }
+
+    /// Every `K` of `api`: from its store once listed, else listed from
+    /// the API. `selected`: through the label selector (the store's
+    /// objects are filtered again, the API lists through it).
+    async fn read<K: Stored>(
+        &self,
+        api: Api<K>,
+        selected: bool,
+    ) -> Result<Vec<Arc<K>>, ClusterError> {
+        if let Some(store) = ready(K::store(&self.stores)).await {
+            return Ok(store
+                .state()
+                .into_iter()
+                .filter(|o| !selected || self.selects(o.as_ref()))
+                .collect());
+        }
+        let params = if selected {
+            self.params()
+        } else {
+            ListParams::default()
+        };
+        let list = api
+            .list(&params)
+            .await
+            .map_err(|e| ClusterError(format!("listing {}: {e}", K::kind(&()))))?;
+        Ok(list.items.into_iter().map(Arc::new).collect())
     }
 
     /// The operator's watch scope (`WatchScope`): the namespace it is
@@ -146,21 +271,16 @@ impl KubeClusterReader {
     async fn servers(&self) -> Result<Vec<(BoundInstance, String)>, ClusterError> {
         let mut servers = Vec::new();
         if let Some(api) = self.cluster_api::<ForgejoInstance>() {
-            let list = api
-                .list(&ListParams::default())
-                .await
-                .map_err(|e| ClusterError(format!("listing ForgejoInstance: {e}")))?;
-            servers.extend(list.items.iter().map(|i| {
+            let list = self.read(api, false).await?;
+            servers.extend(list.iter().map(|i| {
                 let name = i.meta().name.clone().unwrap_or_default();
                 (BoundInstance::cluster(name), server(&i.spec.url))
             }));
         }
         let list = self
-            .namespaced_api::<ForgejoLocalInstance>()
-            .list(&ListParams::default())
-            .await
-            .map_err(|e| ClusterError(format!("listing ForgejoLocalInstance: {e}")))?;
-        servers.extend(list.items.iter().map(|i| {
+            .read(self.namespaced_api::<ForgejoLocalInstance>(), false)
+            .await?;
+        servers.extend(list.iter().map(|i| {
             let meta = i.meta();
             let bound = BoundInstance::local(
                 meta.namespace.clone().unwrap_or_default(),
@@ -183,11 +303,24 @@ impl KubeClusterReader {
         if !self.visible(namespace) {
             return Ok(None);
         }
+        let name_of = |o: &ForgejoOrganization| {
+            o.status
+                .as_ref()
+                .and_then(|s| s.forgejo_name.clone())
+                .unwrap_or_else(|| o.spec.name.clone())
+        };
+        // A miss in the store (outside the label selector) is read from
+        // the API, as before the store.
+        if let Some(store) = ready(self.stores.organizations.as_ref()).await
+            && let Some(org) = store.get(&ObjectRef::new(name).within(namespace))
+        {
+            return Ok(Some(name_of(&org)));
+        }
         let org = Api::<ForgejoOrganization>::namespaced(self.client.clone(), namespace)
             .get_opt(name)
             .await
             .map_err(|e| ClusterError(format!("reading ForgejoOrganization {name}: {e}")))?;
-        Ok(org.map(|o| o.status.and_then(|s| s.forgejo_name).unwrap_or(o.spec.name)))
+        Ok(org.as_ref().map(name_of))
     }
 }
 
@@ -249,17 +382,13 @@ impl KubeClusterReader {
         view: fn(&K) -> (Option<&InstanceRef>, Option<&ForgejoStatus>),
     ) -> Result<Vec<String>, ClusterError>
     where
-        K: kube::Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned,
+        K: Stored,
     {
         let Some(api) = api else {
             return Ok(Vec::new());
         };
-        let list = api
-            .list(&self.params())
-            .await
-            .map_err(|e| ClusterError(format!("listing {}: {e}", K::kind(&()))))?;
+        let list = self.read(api, true).await?;
         Ok(list
-            .items
             .iter()
             .filter(|o| {
                 let (instance_ref, status) = view(o);
@@ -449,15 +578,13 @@ impl ReferenceReader for KubeClusterReader {
                 meta.name.clone().unwrap_or_default()
             )
         };
-        let list_err = |kind: &str, e: kube::Error| ClusterError(format!("listing {kind}: {e}"));
         let mut claimed = Vec::new();
         match kind {
             RefKind::User => {
-                let users = self
-                    .namespaced_api::<ForgejoUser>()
-                    .list(&self.params())
-                    .await;
-                for u in users.map_err(|e| list_err("ForgejoUser", e))?.items {
+                for u in self
+                    .read(self.namespaced_api::<ForgejoUser>(), true)
+                    .await?
+                {
                     // Observing an account doesn't own it.
                     let observed = u.spec.management_policy == ManagementPolicy::Observe;
                     let status = u.status.as_ref();
@@ -467,11 +594,8 @@ impl ReferenceReader for KubeClusterReader {
                 }
             }
             RefKind::Organization => {
-                let orgs = self
-                    .namespaced_api::<ForgejoOrganization>()
-                    .list(&self.params())
-                    .await;
-                for o in orgs.map_err(|e| list_err("ForgejoOrganization", e))?.items {
+                let orgs = self.read(self.namespaced_api::<ForgejoOrganization>(), true);
+                for o in orgs.await? {
                     let status = o.status.as_ref();
                     if same(status.and_then(|s| s.forgejo_name.as_ref()), status) {
                         claimed.push(id("ForgejoOrganization", &o.metadata));
@@ -481,11 +605,10 @@ impl ReferenceReader for KubeClusterReader {
             RefKind::Team => {
                 // `forgejo_name`: `organization/team`, a team's name being
                 // unique within its organization only.
-                let teams = self
-                    .namespaced_api::<ForgejoTeam>()
-                    .list(&self.params())
-                    .await;
-                for t in teams.map_err(|e| list_err("ForgejoTeam", e))?.items {
+                for t in self
+                    .read(self.namespaced_api::<ForgejoTeam>(), true)
+                    .await?
+                {
                     let status = t.status.as_ref();
                     let Some(team) = status.and_then(|s| s.forgejo_name.as_ref()) else {
                         continue;
@@ -529,13 +652,9 @@ impl ReferenceReader for KubeClusterReader {
                 || rotated_name(theirs) == token_name
                 || theirs == rotated_name(token_name)
         };
-        let tokens = self
-            .namespaced_api::<api::ForgejoAccessToken>()
-            .list(&self.params())
-            .await
-            .map_err(|e| ClusterError(format!("listing ForgejoAccessToken: {e}")))?;
+        let tokens = self.read(self.namespaced_api::<api::ForgejoAccessToken>(), true);
         let mut claimed = Vec::new();
-        for t in tokens.items {
+        for t in tokens.await? {
             let status = t.status.as_ref();
             let issued_for = status.and_then(|s| s.forgejo_name.as_deref());
             let on = server_of(status.and_then(|s| s.instance.as_ref()));
@@ -587,12 +706,11 @@ impl ReferenceReader for KubeClusterReader {
 impl PolicySource<NamespaceRule> for KubeClusterReader {
     async fn policies(&self) -> Result<Vec<Vec<NamespaceRule>>, ClusterError> {
         let api: Api<ForgejoNamespacePolicy> = Api::all(self.client.clone());
-        Ok(api
-            .list(&Default::default())
-            .await
-            .map_err(|e| ClusterError(format!("listing ForgejoNamespacePolicy: {e}")))?
-            .into_iter()
-            .map(|p| p.spec.rules)
+        Ok(self
+            .read(api, false)
+            .await?
+            .iter()
+            .map(|p| p.spec.rules.clone())
             .collect())
     }
 }
@@ -600,6 +718,251 @@ impl PolicySource<NamespaceRule> for KubeClusterReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kube::runtime::reflector::store::Writer;
+    use kube::runtime::{reflector, watcher};
+    use serde_json::{Value, json};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const GROUP: &str = "/apis/forgejo.weebo.io/v1alpha1";
+
+    fn manifest<K: DeserializeOwned>(kind: &str, meta: Value, spec: Value, status: Value) -> K {
+        serde_json::from_value(json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": kind,
+            "metadata": meta, "spec": spec, "status": status,
+        }))
+        .unwrap()
+    }
+
+    fn main_instance() -> ForgejoInstance {
+        manifest(
+            "ForgejoInstance",
+            json!({"name": "main"}),
+            json!({"url": "https://git.example.com",
+                   "tokenSecretRef": {"name": "t", "namespace": "default", "key": "token"}}),
+            json!({}),
+        )
+    }
+
+    /// `alice` in `team-a`, owning the account `alice` on `main`.
+    fn alice() -> ForgejoUser {
+        manifest(
+            "ForgejoUser",
+            json!({"name": "alice", "namespace": "team-a"}),
+            json!({"username": "alice"}),
+            json!({"forgejoName": "alice", "instance": {"kind": "Instance", "name": "main"}}),
+        )
+    }
+
+    fn policy() -> ForgejoNamespacePolicy {
+        manifest(
+            "ForgejoNamespacePolicy",
+            json!({"name": "deny-all"}),
+            json!({"rules": []}),
+            json!({}),
+        )
+    }
+
+    /// A store fed `objects` (listed when `listed`), and its writer.
+    fn store<K>(objects: Vec<K>, listed: bool) -> (Store<K>, Writer<K>)
+    where
+        K: Resource<DynamicType = ()> + Clone + 'static,
+    {
+        let (store, mut writer) = reflector::store::<K>();
+        writer.apply_watcher_event(&watcher::Event::Init);
+        for o in objects {
+            writer.apply_watcher_event(&watcher::Event::InitApply(o));
+        }
+        if listed {
+            writer.apply_watcher_event(&watcher::Event::InitDone);
+        }
+        (store, writer)
+    }
+
+    fn client(url: &str) -> Client {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        Client::try_from(kube::Config::new(url.parse().unwrap())).unwrap()
+    }
+
+    /// Nothing listens there: any API read fails.
+    fn no_api() -> Client {
+        client("http://127.0.0.1:9")
+    }
+
+    fn list(kind: &str, items: Vec<Value>) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "forgejo.weebo.io/v1alpha1", "kind": format!("{kind}List"),
+            "metadata": {"resourceVersion": "1"}, "items": items,
+        }))
+    }
+
+    fn instance_stores() -> ClusterStores {
+        ClusterStores {
+            instances: Some(store(vec![main_instance()], true).0),
+            local_instances: Some(store(Vec::new(), true).0),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_claim_is_read_from_the_listed_stores_without_the_api() {
+        let stores = ClusterStores {
+            users: Some(store(vec![alice()], true).0),
+            ..instance_stores()
+        };
+        let reader = KubeClusterReader::new(no_api()).with_stores(stores);
+        let main = BoundInstance::cluster("main");
+        let claimed = reader
+            .claimants(RefKind::User, "ALICE", &main)
+            .await
+            .unwrap();
+        assert_eq!(claimed, ["ForgejoUser/team-a/alice"]);
+        let none = reader.claimants(RefKind::User, "bob", &main).await.unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_store_that_never_listed_is_not_trusted_empty() {
+        // Its watch gone before listing (shutdown): the API decides, and
+        // the claim is still seen.
+        let (users, writer) = store::<ForgejoUser>(Vec::new(), false);
+        drop(writer);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("{GROUP}/forgejousers")))
+            .respond_with(list(
+                "ForgejoUser",
+                vec![serde_json::to_value(alice()).unwrap()],
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let stores = ClusterStores {
+            users: Some(users),
+            ..instance_stores()
+        };
+        let reader = KubeClusterReader::new(client(&server.uri())).with_stores(stores);
+        let main = BoundInstance::cluster("main");
+        let claimed = reader
+            .claimants(RefKind::User, "alice", &main)
+            .await
+            .unwrap();
+        assert_eq!(claimed, ["ForgejoUser/team-a/alice"]);
+    }
+
+    #[tokio::test]
+    async fn a_read_waits_for_the_store_to_list() {
+        let (users, mut writer) = store::<ForgejoUser>(Vec::new(), false);
+        let stores = ClusterStores {
+            users: Some(users),
+            ..instance_stores()
+        };
+        let reader = KubeClusterReader::new(no_api()).with_stores(stores);
+        let read = tokio::spawn(async move {
+            let main = BoundInstance::cluster("main");
+            reader.claimants(RefKind::User, "alice", &main).await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!read.is_finished(), "decided on a store that hasn't listed");
+        writer.apply_watcher_event(&watcher::Event::InitApply(alice()));
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        let claimed = read.await.unwrap().unwrap();
+        assert_eq!(claimed, ["ForgejoUser/team-a/alice"]);
+    }
+
+    #[tokio::test]
+    async fn every_read_waiting_for_a_store_is_answered_once_it_lists() {
+        let (users, mut writer) = store::<ForgejoUser>(Vec::new(), false);
+        let stores = ClusterStores {
+            users: Some(users),
+            ..instance_stores()
+        };
+        let reader = Arc::new(KubeClusterReader::new(no_api()).with_stores(stores));
+        let reads: Vec<_> = (0..8)
+            .map(|_| {
+                let reader = reader.clone();
+                tokio::spawn(async move {
+                    let main = BoundInstance::cluster("main");
+                    reader.claimants(RefKind::User, "alice", &main).await
+                })
+            })
+            .collect();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        writer.apply_watcher_event(&watcher::Event::InitApply(alice()));
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        for read in reads {
+            let claimed = tokio::time::timeout(Duration::from_secs(1), read)
+                .await
+                .expect("a waiting read was never woken")
+                .unwrap()
+                .unwrap();
+            assert_eq!(claimed, ["ForgejoUser/team-a/alice"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_policies_are_read_from_the_store_whatever_their_labels() {
+        let stores = ClusterStores {
+            policies: Some(store(vec![policy()], true).0),
+            ..Default::default()
+        };
+        let selector: Selector = kube::core::Expression::Equal("shard".into(), "a".into()).into();
+        let reader = KubeClusterReader::new(no_api())
+            .with_scope(None, Some(selector), true)
+            .with_stores(stores);
+        // An existing policy, even with no rule, switches to default-deny.
+        assert_eq!(reader.policies().await.unwrap(), vec![Vec::new()]);
+    }
+
+    #[tokio::test]
+    async fn the_policies_are_listed_while_their_store_has_not() {
+        let (policies, writer) = store::<ForgejoNamespacePolicy>(Vec::new(), false);
+        drop(writer);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("{GROUP}/forgejonamespacepolicies")))
+            .respond_with(list(
+                "ForgejoNamespacePolicy",
+                vec![serde_json::to_value(policy()).unwrap()],
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let stores = ClusterStores {
+            policies: Some(policies),
+            ..Default::default()
+        };
+        let reader = KubeClusterReader::new(client(&server.uri())).with_stores(stores);
+        assert_eq!(reader.policies().await.unwrap(), vec![Vec::new()]);
+    }
+
+    #[tokio::test]
+    async fn a_team_claim_reads_its_organization_from_the_store() {
+        let org: ForgejoOrganization = manifest(
+            "ForgejoOrganization",
+            json!({"name": "platform", "namespace": "team-a"}),
+            json!({"name": "platform"}),
+            json!({"forgejoName": "Platform"}),
+        );
+        let team: ForgejoTeam = manifest(
+            "ForgejoTeam",
+            json!({"name": "devs", "namespace": "team-a"}),
+            json!({"name": "devs", "organizationRef": {"name": "platform"}}),
+            json!({"forgejoName": "devs", "instance": {"kind": "Instance", "name": "main"}}),
+        );
+        let stores = ClusterStores {
+            organizations: Some(store(vec![org], true).0),
+            teams: Some(store(vec![team], true).0),
+            ..instance_stores()
+        };
+        let reader = KubeClusterReader::new(no_api()).with_stores(stores);
+        let main = BoundInstance::cluster("main");
+        let claimed = reader
+            .claimants(RefKind::Team, "platform/devs", &main)
+            .await
+            .unwrap();
+        assert_eq!(claimed, ["ForgejoTeam/team-a/devs"]);
+    }
 
     #[test]
     fn a_cr_is_bound_by_its_status_else_by_its_ref() {

@@ -78,6 +78,7 @@ fn ctx(client: &kube::Client) -> Arc<Ctx> {
         shutdown: Shutdown::never(),
         health: Default::default(),
         scope: weebo_kit_runtime::WatchScope::cluster(),
+        watches: Default::default(),
     })
 }
 

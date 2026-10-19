@@ -51,10 +51,12 @@ dependencies = [
  "opentelemetry",
  "rcgen",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
+ "tracing",
  "weebo-kit-adapters",
  "wiremock",
 ]

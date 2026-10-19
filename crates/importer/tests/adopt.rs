@@ -163,6 +163,7 @@ async fn imported_objects_are_adopted_without_writes() {
         shutdown: Shutdown::never(),
         health: Default::default(),
         scope: weebo_kit_runtime::WatchScope::cluster(),
+        watches: Default::default(),
     });
     tokio::spawn(controller::user::run(client.clone(), ctx.clone()));
     tokio::spawn(controller::organization::run(client.clone(), ctx.clone()));
@@ -279,6 +280,7 @@ async fn managed_users_keep_their_password() {
         shutdown: Shutdown::never(),
         health: Default::default(),
         scope: weebo_kit_runtime::WatchScope::cluster(),
+        watches: Default::default(),
     });
     tokio::spawn(controller::user::run(client.clone(), ctx.clone()));
 

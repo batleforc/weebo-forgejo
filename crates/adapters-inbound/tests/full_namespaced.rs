@@ -175,6 +175,7 @@ async fn a_full_namespaced_operator_runs_on_one_role() {
         shutdown: Shutdown::never(),
         health: Default::default(),
         scope,
+        watches: Default::default(),
     });
     let health = ctx.health.clone();
     tokio::spawn(controller::local_instance::run(
