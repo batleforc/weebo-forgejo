@@ -33,10 +33,78 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `secretStore` | `object` | no | `{"backend":"kubernetes"}` | Default destination of the secrets this instance's CRs emit (OAuth2 credentials, access tokens, generated passwords and deploy keys) when a CR sets no `secretTargets`. Defaults to a Kubernetes `Secret`. |
-| `tls` | `object` | no | `{"insecureSkipVerify":false}` | TLS verification for the API connection above — a private CA to trust (`tls.caSecretRef`), or the `tls.insecureSkipVerify` escape hatch. Defaults to plain platform-trust-store verification. |
-| `tokenSecretRef` | `object` | yes |  | `Secret` key holding an API token of a Forgejo **site admin**. The operator acts as that admin, and through the `Sudo` header as other users for per-user objects (OAuth2 applications). The token needs the scopes covering every kind it manages — `write:admin`, `write:organization`, `write:repository`, `write:user` at least. Re-read on every gateway call, so rotating it needs no restart. |
+| [`secretStore`](#spec.secretStore) | `object` | no | `{"backend":"kubernetes"}` | Default destination of the secrets this instance's CRs emit (OAuth2 credentials, access tokens, generated passwords and deploy keys) when a CR sets no `secretTargets`. Defaults to a Kubernetes `Secret`. |
+| [`tls`](#spec.tls) | `object` | no | `{"insecureSkipVerify":false}` | TLS verification for the API connection above — a private CA to trust (`tls.caSecretRef`), or the `tls.insecureSkipVerify` escape hatch. Defaults to plain platform-trust-store verification. |
+| [`tokenSecretRef`](#spec.tokenSecretRef) | `object` | yes |  | `Secret` key holding an API token of a Forgejo **site admin**. The operator acts as that admin, and through the `Sudo` header as other users for per-user objects (OAuth2 applications). The token needs the scopes covering every kind it manages — `write:admin`, `write:organization`, `write:repository`, `write:user` at least. Re-read on every gateway call, so rotating it needs no restart. |
 | `url` | `string` | yes |  | Base web URL of the Forgejo instance, e.g. `https://git.example.com` — not the `/api/v1` REST endpoint, which is derived from it (see [`split_urls`]). Written as `FORGEJO_URL` into emitted secrets. |
+
+### `spec.secretStore` [#spec.secretStore]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `backend` | `string` | no | `"kubernetes"` | Values: `"kubernetes"`, `"vault"` |
+| [`vault`](#spec.secretStore.vault) | `object` | no |  |  |
+
+### `spec.secretStore.vault` [#spec.secretStore.vault]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `address` | `string` | yes |  | Vault server address, e.g. `https://vault.example.com:8200`. |
+| [`caSecretRef`](#spec.secretStore.vault.caSecretRef) | `object` | no |  | Optional custom CA certificate to verify Vault's TLS with, read from a Kubernetes `Secret` (the referenced `key` must hold a PEM bundle). Use this to trust a private CA without mounting it into the operator pod — the operator reads the Secret via the API and hands the PEM to its Vault client. When unset, the system trust store is used. Only consulted for `https://` Vault addresses. |
+| `kubernetesAuthMount` | `string` | no | `"kubernetes"` | Mount path of Vault's Kubernetes auth backend. Defaults to `kubernetes`, Vault's own default mount name. |
+| `kubernetesAuthRole` | `string` | yes |  | Vault Kubernetes-auth role this operator authenticates as — its own ServiceAccount JWT is exchanged for a Vault token via `auth/<kubernetesAuthMount>/login`. |
+| `mount` | `string` | yes |  | KV v2 secrets engine mount (e.g. `secret`) credentials are written under. |
+| [`pathGrants`](#spec.secretStore.vault.pathGrants) | `object[]` | no |  | Vault paths this instance's CRs may write to outside their namespace's subtree `<pathPrefix>/<namespace>/`, per namespace (`clusterScoped` is refused: every object writing credentials is namespaced). A grant opens its paths to everyone allowed to create an emitting CR in a covered namespace, and may let such a CR take over a value no CR owns yet: prefer exact paths. The Vault policy of the operator's role stays the hard bound.<br /><br />Constraints: `maxItems: 32` |
+| `pathPrefix` | `string` | no | `"weebo-forgejo"` | Path prefix under `mount` — the default KV path is `<pathPrefix>/<namespace>/<name>`, one secret per emitting CR (same convention as the Kubernetes backend's Secret naming). Empty: `<namespace>/<name>`. A CR's explicit `path` must stay under `<pathPrefix>/<namespace>/` unless `pathGrants` opens it.<br /><br />An empty prefix makes every namespace's subtree a top-level folder of the mount: a namespace named like a folder that holds other values (one a grant opens, `shared/` say) owns that folder — its CRs write there without any grant. Keep a prefix unless the mount is reserved to per-namespace folders and no namespace can be created with the name of another top-level folder. |
+
+**Rules**
+
+- pathGrants name namespaces: every object writing credentials is namespaced, clusterScoped grants never apply — `!has(self.pathGrants) || self.pathGrants.all(g, !has(g.clusterScoped) || !g.clusterScoped)`
+
+### `spec.secretStore.vault.caSecretRef` [#spec.secretStore.vault.caSecretRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
+| `namespace` | `string` | yes |  |  |
+
+### `spec.secretStore.vault.pathGrants[]` [#spec.secretStore.vault.pathGrants]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clusterScoped` | `boolean` | no |  | The grant opens `paths` to cluster-scoped objects (instead of `namespaces`). |
+| `namespaces` | `string[]` | no |  | Namespaces whose objects may write `paths`: exact names, `*`, or a prefix glob such as `team-*`. `team-*` opens the paths to every matching namespace.<br /><br />Constraints: `maxItems: 64` |
+| `paths` | `string[]` | yes |  | Path patterns under the mount, compared segment by segment: a literal segment matches itself, `+` exactly one segment, and a last `*` one or more. Each holds at least one literal segment, e.g. `shared/auth`, `+/auth`, `platform/*`. Prefer exact paths where values not written by the operator live: a covered object may take over a value no object owns yet.<br /><br />Constraints: `minItems: 1`, `maxItems: 64` |
+
+**Rules**
+
+- a grant names namespaces or is clusterScoped, not both — `(has(self.namespaces) && size(self.namespaces) > 0) != (has(self.clusterScoped) && self.clusterScoped)`
+- `paths[]`: a path pattern has no "." or ".." segment — `!self.matches('(^|/)\\.\\.?(/|$)')`
+- `paths[]`: a path pattern has at least one literal segment — `self.matches('(^|/)[^/*+]+(/|$)')`
+
+### `spec.tls` [#spec.tls]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`caSecretRef`](#spec.tls.caSecretRef) | `object` | no |  | Optional custom CA certificate to verify the instance's TLS with, read from a Kubernetes `Secret` (the referenced `key` must hold a PEM bundle). Use this to trust a private CA without mounting it into the operator pod — the operator reads the Secret via the API and hands the PEM to its HTTP client. It is added *on top of* the platform trust store, so publicly-signed endpoints keep working. When unset, only the platform trust store (plus the usual `SSL_CERT_FILE`/`SSL_CERT_DIR` env vars) is used. |
+| `insecureSkipVerify` | `boolean` | no | `false` | Skip certificate verification entirely — insecure, intended only for throwaway/self-signed instances. Prefer `caSecretRef` below, which trusts a private CA without turning verification off. |
+
+### `spec.tls.caSecretRef` [#spec.tls.caSecretRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
+| `namespace` | `string` | yes |  |  |
+
+### `spec.tokenSecretRef` [#spec.tokenSecretRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
+| `namespace` | `string` | yes |  |  |
 
 ## Build a manifest
 

@@ -35,19 +35,64 @@ spec:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `active` | `boolean` | no | `true` |  |
-| `authorizationHeaderSecretRef` | `object` | no |  | Value sent as the `Authorization` header (write-only as well). The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`. |
+| [`authorizationHeaderSecretRef`](#spec.authorizationHeaderSecretRef) | `object` | no |  | Value sent as the `Authorization` header (write-only as well). The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`. |
 | `branchFilter` | `string` | no |  | Glob limiting push/branch events, e.g. `main` or `{main,release/*}`. |
 | `contentType` | `string` | no | `"json"` | `json` (default) or `form`. |
-| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
+| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted.<br /><br />Values: `"Delete"`, `"Orphan"` |
 | `events` | `string[]` | no | `["push"]` | Trigger events (`push`, `pull_request`, `issues`, `release`, `create`, `delete`, ...). |
-| `extraConfig` | `object` | no |  | Type-specific settings (e.g. `username`/`channel` for Slack). |
+| `extraConfig` | `map[string]` | no |  | Type-specific settings (e.g. `username`/`channel` for Slack). |
 | `httpMethod` | `string` | no |  |  |
-| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
-| `organizationRef` | `object` | no |  | A user, organization or team: a CR (`name`) — of this object's namespace, or of `namespace` when cross-namespace references are enabled for the operator and the target lists this namespace in its `sharedWith` — or an object that exists in Forgejo but no CR manages (`remoteName`, its Forgejo name). The operator never creates, changes nor deletes a `remoteName` object. |
-| `repositoryRef` | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw remote name: a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
-| `secretRef` | `object` | no |  | HMAC secret signing the payloads. Write-only in Forgejo: a change of the Secret's value is detected through `status.appliedSecretHash`. The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`. |
+| [`instanceRef`](#spec.instanceRef) | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
+| [`organizationRef`](#spec.organizationRef) | `object` | no |  | A user, organization or team: a CR (`name`) — of this object's namespace, or of `namespace` when cross-namespace references are enabled for the operator and the target lists this namespace in its `sharedWith` — or an object that exists in Forgejo but no CR manages (`remoteName`, its Forgejo name). The operator never creates, changes nor deletes a `remoteName` object. |
+| [`repositoryRef`](#spec.repositoryRef) | `object` | no |  | Reference to another CR of this operator, by `metadata.name`. Always a CR, never a raw remote name: a cluster-scoped target is looked up cluster-wide, a namespaced one in the referencing CR's own namespace only. |
+| [`secretRef`](#spec.secretRef) | `object` | no |  | HMAC secret signing the payloads. Write-only in Forgejo: a change of the Secret's value is detected through `status.appliedSecretHash`. The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`. |
 | `type` | `string` | no | `"forgejo"` | `forgejo` (default), `gitea`, `gogs`, `slack`, `discord`, `dingtalk`, `telegram`, `msteams`, `feishu`, `wechatwork` or `packagist`. Changing it recreates the hook. |
 | `url` | `string` | yes |  | Payload URL. |
+
+### `spec.authorizationHeaderSecretRef` [#spec.authorizationHeaderSecretRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
+
+### `spec.instanceRef` [#spec.instanceRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | no |  | The kind of instance a reference designates.<br /><br />Values: `"Instance"`, `"LocalInstance"` |
+| `name` | `string` | yes |  | `metadata.name` of the instance. |
+| `namespace` | `string` | no |  | Namespace of a `LocalInstance`. Defaults to this object's own; required on a cluster-scoped object. Another namespace's local instance must share itself with this one (its `sharedWith`). |
+
+**Rules**
+
+- namespace only applies to kind LocalInstance — `!has(self.namespace) || !has(self.kind) || self.kind == 'LocalInstance'`
+
+### `spec.organizationRef` [#spec.organizationRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no |  | `metadata.name` of the CR. |
+| `namespace` | `string` | no |  | Namespace of the CR; defaults to this object's own. |
+| `remoteName` | `string` | no |  | Forgejo name of an object no CR manages (a user's login, an organization's or team's name). |
+
+**Rules**
+
+- set exactly one of name and remoteName — `has(self.name) != has(self.remoteName)`
+- namespace only applies with name — `!has(self.namespace) || has(self.name)`
+
+### `spec.repositoryRef` [#spec.repositoryRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  |  |
+
+### `spec.secretRef` [#spec.secretRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
 
 ## Build a manifest
 

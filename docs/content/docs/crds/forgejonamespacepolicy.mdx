@@ -42,7 +42,18 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `rules` | `object[]` | yes |  |  |
+| [`rules`](#spec.rules) | `object[]` | yes |  |  |
+
+### `spec.rules[]` [#spec.rules]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `allowedKinds` | `string[]` | yes |  | Values: `"ForgejoUser"`, `"ForgejoUserKey"`, `"ForgejoOrganization"`, `"ForgejoTeam"`, `"ForgejoRepository"`, `"ForgejoWebhook"`, `"ForgejoDeployKey"`, `"ForgejoOAuth2Application"`, `"ForgejoAccessToken"` |
+| `allowedOrganizations` | `string[]` | no |  | Organizations (Forgejo names) the namespace may manage or reference — a `ForgejoOrganization`'s own name, the owner of its repositories and teams, the target of its org webhooks — whether through a CR or a `remoteName`. Unset: any. On a `Deny` rule: only deny requests referencing one of these. |
+| `allowedTemplates` | `string[]` | no |  | Template repositories (Forgejo `owner/name`, `*`, or a prefix glob like `batlehub/*`) the namespace may generate repositories from by name (`fromTemplate.repository`). Unset: any. A template referenced as a same-namespace CR (`fromTemplate.repositoryRef`) isn't governed by this list. On a `Deny` rule: only deny requests referencing one of these. |
+| `allowedUsers` | `string[]` | no |  | Users (Forgejo logins) the namespace may manage or reference — a `ForgejoUser`'s own login, the owner of a repository, organization or OAuth2 application, a team member, the holder of an access token or SSH key — whether through a CR or a `remoteName`. Unset: any. Restricting this is what stops a namespace from minting tokens for a privileged account. On a `Deny` rule: only deny requests referencing one of these. |
+| `effect` | `string` | no | `"Allow"` | Values: `"Allow"`, `"Deny"` |
+| `namespaces` | `string[]` | yes |  | Namespace names, `*` for all, or a prefix glob like `team-*`. |
 
 ## Build a manifest
 

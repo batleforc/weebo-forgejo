@@ -40,22 +40,166 @@ spec:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `archived` | `boolean` | no | `false` | Archived repositories are read-only; their settings, branch protections and teams are left alone until unarchived. |
-| `branchProtections` | `object[]` | no |  | Branch protection rules. Unset: the repository's rules are left alone (those copied from a template, or set in Forgejo). Set: authoritative — a rule not listed here is deleted, and `[]` deletes them all. |
+| [`branchProtections`](#spec.branchProtections) | `object[]` | no |  | Branch protection rules. Unset: the repository's rules are left alone (those copied from a template, or set in Forgejo). Set: authoritative — a rule not listed here is deleted, and `[]` deletes them all. |
 | `defaultBranch` | `string` | no |  |  |
-| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR never deletes git history. |
+| `deletionPolicy` | `string` | no | `"Orphan"` | Defaults to `Orphan`: deleting the CR never deletes git history.<br /><br />Values: `"Delete"`, `"Orphan"` |
 | `description` | `string` | no |  |  |
-| `fromTemplate` | `object` | no |  | Generate the repository from a template repository: a `ForgejoRepository` in the same namespace, or any Forgejo template by name (gated by the namespace policy's `allowedTemplates`). Creation-time only. |
-| `init` | `object` | no |  | Creation-time initialization of an empty repository. |
-| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
+| [`fromTemplate`](#spec.fromTemplate) | `object` | no |  | Generate the repository from a template repository: a `ForgejoRepository` in the same namespace, or any Forgejo template by name (gated by the namespace policy's `allowedTemplates`). Creation-time only. |
+| [`init`](#spec.init) | `object` | no |  | Creation-time initialization of an empty repository. |
+| [`instanceRef`](#spec.instanceRef) | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
 | `isTemplate` | `boolean` | no | `false` | Mark the repository as a template others can be generated from. |
-| `migrate` | `object` | no |  | Migrate (or pull-mirror) a remote repository. Creation-time only, except `mirrorInterval`, which stays in sync. |
+| [`migrate`](#spec.migrate) | `object` | no |  | Migrate (or pull-mirror) a remote repository. Creation-time only, except `mirrorInterval`, which stays in sync. |
 | `name` | `string` | yes |  | Repository name. Changing it renames in place (Forgejo keeps a redirect from the old name). Changing the owner transfers the repository, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
-| `organizationRef` | `object` | no |  | Owning organization. |
+| [`organizationRef`](#spec.organizationRef) | `object` | no |  | Owning organization. |
 | `private` | `boolean` | no | `false` |  |
-| `teamRefs` | `object[]` | no |  | `ForgejoTeam`s granted access (organization-owned repositories only; the teams must belong to the owning organization). Authoritative, except for the `Owners` team and teams with `includesAllRepositories`, which Forgejo always grants. |
-| `units` | `object` | no | `{}` | Repository units to enable or disable. Unset = Forgejo's default. |
-| `userRef` | `object` | no |  | Owning user. |
+| [`teamRefs`](#spec.teamRefs) | `object[]` | no |  | `ForgejoTeam`s granted access (organization-owned repositories only; the teams must belong to the owning organization). Authoritative, except for the `Owners` team and teams with `includesAllRepositories`, which Forgejo always grants. |
+| [`units`](#spec.units) | `object` | no | `{}` | Repository units to enable or disable. Unset = Forgejo's default. |
+| [`userRef`](#spec.userRef) | `object` | no |  | Owning user. |
 | `website` | `string` | no |  |  |
+
+### `spec.branchProtections[]` [#spec.branchProtections]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `applyToAdmins` | `boolean` | no | `false` |  |
+| `approvalsWhitelistTeams` | `string[]` | no |  |  |
+| `approvalsWhitelistUsernames` | `string[]` | no |  |  |
+| `blockOnOfficialReviewRequests` | `boolean` | no | `false` |  |
+| `blockOnOutdatedBranch` | `boolean` | no | `false` |  |
+| `blockOnRejectedReviews` | `boolean` | no | `false` |  |
+| `dismissStaleApprovals` | `boolean` | no | `false` |  |
+| `enablePush` | `boolean` | no | `false` | Allow pushing at all; with push allow-lists, only those may push. |
+| `ignoreStaleApprovals` | `boolean` | no | `false` |  |
+| `mergeWhitelistTeams` | `string[]` | no |  |  |
+| `mergeWhitelistUsernames` | `string[]` | no |  |  |
+| `protectedFilePatterns` | `string` | no |  |  |
+| `pushWhitelistDeployKeys` | `boolean` | no | `false` |  |
+| `pushWhitelistTeams` | `string[]` | no |  |  |
+| `pushWhitelistUsernames` | `string[]` | no |  |  |
+| `requireSignedCommits` | `boolean` | no | `false` |  |
+| `requiredApprovals` | `integer` | no | `0` |  |
+| `ruleName` | `string` | yes |  | Branch name or glob (`main`, `release/*`). |
+| `statusCheckContexts` | `string[]` | no |  | Required status checks; enables the check when non-empty. |
+| `unprotectedFilePatterns` | `string` | no |  |  |
+
+### `spec.fromTemplate` [#spec.fromTemplate]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `avatar` | `boolean` | no | `false` |  |
+| `gitContent` | `boolean` | no | `true` |  |
+| `gitHooks` | `boolean` | no | `false` |  |
+| `labels` | `boolean` | no | `false` |  |
+| `protectedBranches` | `boolean` | no | `false` | Copy the template's branch protections. Leave `branchProtections` unset to keep them: when set, it is authoritative and a copied rule it doesn't list is deleted right after. |
+| `repository` | `string` | no |  | Template repository by its Forgejo name, `owner/name` (e.g. `batlehub/weebo-base`) — one shared by every namespace, managed by a CR elsewhere or not at all. It must be marked as a template in Forgejo. A `ForgejoNamespacePolicy` restricts which ones a namespace may use with `allowedTemplates`. |
+| [`repositoryRef`](#spec.fromTemplate.repositoryRef) | `object` | no |  | Template `ForgejoRepository` in the same namespace (must have `isTemplate: true`). |
+| `topics` | `boolean` | no | `false` |  |
+| `webhooks` | `boolean` | no | `false` |  |
+
+### `spec.fromTemplate.repositoryRef` [#spec.fromTemplate.repositoryRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  |  |
+
+### `spec.init` [#spec.init]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `autoInit` | `boolean` | no | `true` | Create an initial commit (README, and the files below). |
+| `gitignores` | `string` | no |  | `.gitignore` template names, comma-separated (e.g. `Rust,Node`). |
+| `license` | `string` | no |  | License template name (e.g. `MIT`). |
+| `objectFormat` | `string` | no |  | `sha1` (default) or `sha256`. |
+| `readme` | `string` | no |  | README template name (`Default`). |
+
+### `spec.instanceRef` [#spec.instanceRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | no |  | The kind of instance a reference designates.<br /><br />Values: `"Instance"`, `"LocalInstance"` |
+| `name` | `string` | yes |  | `metadata.name` of the instance. |
+| `namespace` | `string` | no |  | Namespace of a `LocalInstance`. Defaults to this object's own; required on a cluster-scoped object. Another namespace's local instance must share itself with this one (its `sharedWith`). |
+
+**Rules**
+
+- namespace only applies to kind LocalInstance — `!has(self.namespace) || !has(self.kind) || self.kind == 'LocalInstance'`
+
+### `spec.migrate` [#spec.migrate]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`authSecretRef`](#spec.migrate.authSecretRef) | `object` | no |  | Credentials for the remote, from a `Secret` in this namespace. The `Secret` must carry the label `forgejo.weebo.io/credential: "true"`. |
+| `cloneAddr` | `string` | yes |  | URL to clone from. |
+| `issues` | `boolean` | no | `false` |  |
+| `labels` | `boolean` | no | `false` |  |
+| `lfs` | `boolean` | no | `false` |  |
+| `milestones` | `boolean` | no | `false` |  |
+| `mirror` | `boolean` | no | `false` | Keep the repository as a pull mirror of `cloneAddr`. |
+| `mirrorInterval` | `string` | no |  | Pull-mirror sync interval, a Go duration (`8h`, `30m`). Kept in sync after creation; `0` disables periodic sync. |
+| `pullRequests` | `boolean` | no | `false` |  |
+| `releases` | `boolean` | no | `false` |  |
+| `service` | `string` | no | `"git"` | `git` (default), `github`, `gitea`, `gitlab`, `gogs`, `onedev`, `gitbucket`, `codebase`, `forgejo` or `pagure`. Non-`git` services can also bring issues, PRs, releases... (flags below). |
+| `wiki` | `boolean` | no | `false` |  |
+
+### `spec.migrate.authSecretRef` [#spec.migrate.authSecretRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | yes |  |  |
+| `passwordKey` | `string` | no |  |  |
+| `tokenKey` | `string` | no |  |  |
+| `usernameKey` | `string` | no |  |  |
+
+### `spec.organizationRef` [#spec.organizationRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no |  | `metadata.name` of the CR. |
+| `namespace` | `string` | no |  | Namespace of the CR; defaults to this object's own. |
+| `remoteName` | `string` | no |  | Forgejo name of an object no CR manages (a user's login, an organization's or team's name). |
+
+**Rules**
+
+- set exactly one of name and remoteName — `has(self.name) != has(self.remoteName)`
+- namespace only applies with name — `!has(self.namespace) || has(self.name)`
+
+### `spec.teamRefs[]` [#spec.teamRefs]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no |  | `metadata.name` of the CR. |
+| `namespace` | `string` | no |  | Namespace of the CR; defaults to this object's own. |
+| `remoteName` | `string` | no |  | Forgejo name of an object no CR manages (a user's login, an organization's or team's name). |
+
+**Rules**
+
+- set exactly one of name and remoteName — `has(self.name) != has(self.remoteName)`
+- namespace only applies with name — `!has(self.namespace) || has(self.name)`
+
+### `spec.units` [#spec.units]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `actions` | `boolean` | no |  |  |
+| `issues` | `boolean` | no |  |  |
+| `packages` | `boolean` | no |  |  |
+| `projects` | `boolean` | no |  |  |
+| `pullRequests` | `boolean` | no |  |  |
+| `releases` | `boolean` | no |  |  |
+| `wiki` | `boolean` | no |  |  |
+
+### `spec.userRef` [#spec.userRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no |  | `metadata.name` of the CR. |
+| `namespace` | `string` | no |  | Namespace of the CR; defaults to this object's own. |
+| `remoteName` | `string` | no |  | Forgejo name of an object no CR manages (a user's login, an organization's or team's name). |
+
+**Rules**
+
+- set exactly one of name and remoteName — `has(self.name) != has(self.remoteName)`
+- namespace only applies with name — `!has(self.namespace) || has(self.name)`
 
 ## Build a manifest
 

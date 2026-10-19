@@ -34,17 +34,78 @@ spec:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `canCreateOrgRepo` | `boolean` | no | `false` |  |
-| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted. |
+| `deletionPolicy` | `string` | no | `"Delete"` | What happens to the Forgejo object when its CR is deleted.<br /><br />Values: `"Delete"`, `"Orphan"` |
 | `description` | `string` | no |  |  |
 | `includesAllRepositories` | `boolean` | no | `false` | Grant access to every repository of the organization, current and future. |
-| `instanceRef` | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
-| `memberRefs` | `object[]` | no |  | Users in the team. The member list is authoritative: anyone else is removed. A member whose user doesn't exist in Forgejo yet (e.g. an observed OIDC user who never logged in) is reported as `MemberPending` while the others are synced. |
-| `membersPolicy` | `string` | no | `"Managed"` | Who decides the team's members. `Managed` (the default): `memberRefs` is authoritative. `External`: the operator never adds or removes members, leaving them to Forgejo's OIDC group sync (`group-team-map` / `dyn-group-maps` on the authentication source); `memberRefs` must then be empty. |
+| [`instanceRef`](#spec.instanceRef) | `object` | no |  | The `ForgejoInstance` or `ForgejoLocalInstance` this object lives on. Unset: the cluster's only `ForgejoInstance`, else the only `ForgejoLocalInstance` of this namespace. |
+| [`memberRefs`](#spec.memberRefs) | `object[]` | no |  | Users in the team. The member list is authoritative: anyone else is removed. A member whose user doesn't exist in Forgejo yet (e.g. an observed OIDC user who never logged in) is reported as `MemberPending` while the others are synced. |
+| `membersPolicy` | `string` | no | `"Managed"` | Who decides the team's members. `Managed` (the default): `memberRefs` is authoritative. `External`: the operator never adds or removes members, leaving them to Forgejo's OIDC group sync (`group-team-map` / `dyn-group-maps` on the authentication source); `memberRefs` must then be empty.<br /><br />Values: `"Managed"`, `"External"` |
 | `name` | `string` | yes |  | Team name, unique within the organization. `Owners` is reserved. |
-| `organizationRef` | `object` | yes |  | The organization the team belongs to. A team can't move between organizations: changing this deletes and recreates it, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
-| `permission` | `string` | no | `"read"` |  |
-| `sharedWith` | `object` | no |  | Other namespaces allowed to reference this object (when the operator enables cross-namespace references). Unset: this namespace only. |
-| `unitsMap` | `object` | no |  | Per-unit access (`repo.code`, `repo.issues`, `repo.pulls`, `repo.releases`, `repo.wiki`, `repo.packages`, `repo.actions`, ...) to `none`, `read`, `write` or `admin`. Empty means every repository unit at `permission` (Forgejo refuses a team without units). Ignored by Forgejo when `permission` is `admin`. |
+| [`organizationRef`](#spec.organizationRef) | `object` | yes |  | The organization the team belongs to. A team can't move between organizations: changing this deletes and recreates it, which needs the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation. |
+| `permission` | `string` | no | `"read"` | Values: `"read"`, `"write"`, `"admin"` |
+| [`sharedWith`](#spec.sharedWith) | `object` | no |  | Other namespaces allowed to reference this object (when the operator enables cross-namespace references). Unset: this namespace only. |
+| `unitsMap` | `map[string]` | no |  | Per-unit access (`repo.code`, `repo.issues`, `repo.pulls`, `repo.releases`, `repo.wiki`, `repo.packages`, `repo.actions`, ...) to `none`, `read`, `write` or `admin`. Empty means every repository unit at `permission` (Forgejo refuses a team without units). Ignored by Forgejo when `permission` is `admin`. |
+
+### `spec.instanceRef` [#spec.instanceRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | no |  | The kind of instance a reference designates.<br /><br />Values: `"Instance"`, `"LocalInstance"` |
+| `name` | `string` | yes |  | `metadata.name` of the instance. |
+| `namespace` | `string` | no |  | Namespace of a `LocalInstance`. Defaults to this object's own; required on a cluster-scoped object. Another namespace's local instance must share itself with this one (its `sharedWith`). |
+
+**Rules**
+
+- namespace only applies to kind LocalInstance — `!has(self.namespace) || !has(self.kind) || self.kind == 'LocalInstance'`
+
+### `spec.memberRefs[]` [#spec.memberRefs]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no |  | `metadata.name` of the CR. |
+| `namespace` | `string` | no |  | Namespace of the CR; defaults to this object's own. |
+| `remoteName` | `string` | no |  | Forgejo name of an object no CR manages (a user's login, an organization's or team's name). |
+
+**Rules**
+
+- set exactly one of name and remoteName — `has(self.name) != has(self.remoteName)`
+- namespace only applies with name — `!has(self.namespace) || has(self.name)`
+
+### `spec.organizationRef` [#spec.organizationRef]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no |  | `metadata.name` of the CR. |
+| `namespace` | `string` | no |  | Namespace of the CR; defaults to this object's own. |
+| `remoteName` | `string` | no |  | Forgejo name of an object no CR manages (a user's login, an organization's or team's name). |
+
+**Rules**
+
+- set exactly one of name and remoteName — `has(self.name) != has(self.remoteName)`
+- namespace only applies with name — `!has(self.namespace) || has(self.name)`
+
+### `spec.sharedWith` [#spec.sharedWith]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clusterScoped` | `boolean` | no |  | Cluster-scoped objects may use this instance. |
+| [`namespaceSelector`](#spec.sharedWith.namespaceSelector) | `object` | no |  | Namespaces whose labels match this selector may use this instance. An empty selector (`{}`) matches every namespace: the instance — and the token it holds — is then shared with the whole cluster. |
+| `namespaces` | `string[]` | no |  | Namespaces whose objects may use this instance. |
+
+### `spec.sharedWith.namespaceSelector` [#spec.sharedWith.namespaceSelector]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| [`matchExpressions`](#spec.sharedWith.namespaceSelector.matchExpressions) | `object[]` | no |  | matchExpressions is a list of label selector requirements. The requirements are ANDed. |
+| `matchLabels` | `map[string]` | no |  | matchLabels is a map of \{key,value\} pairs. A single \{key,value\} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is "key", the operator is "In", and the values array contains only "value". The requirements are ANDed. |
+
+### `spec.sharedWith.namespaceSelector.matchExpressions[]` [#spec.sharedWith.namespaceSelector.matchExpressions]
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `key` | `string` | yes |  | key is the label key that the selector applies to. |
+| `operator` | `string` | yes |  | operator represents a key's relationship to a set of values. Valid operators are In, NotIn, Exists and DoesNotExist. |
+| `values` | `string[]` | no |  | values is an array of string values. If the operator is In or NotIn, the values array must be non-empty. If the operator is Exists or DoesNotExist, the values array must be empty. This array is replaced during a strategic merge patch. |
 
 ## Build a manifest
 
