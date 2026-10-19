@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.1](https://github.com/batleforc/weebo-forgejo/compare/54ad39145e041bf993c09d0db459773d5dbc35b9..v0.5.1) - 2026-10-19
+#### Performance Improvements
+- shared watches and store reads instead of a LIST per reconcile; kit v0.18.2, 4 tokio workers (#16) - ([54ad391](https://github.com/batleforc/weebo-forgejo/commit/54ad39145e041bf993c09d0db459773d5dbc35b9)) - Maxime, Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v0.5.0](https://github.com/batleforc/weebo-forgejo/compare/00187c504a9ece794d635dc9d36bd25216a0ec70..v0.5.0) - 2026-10-19
 #### Features
 - write only what differs in Forgejo (kit v0.18.1, weebo-si RFC 0003) (#15) - ([00187c5](https://github.com/batleforc/weebo-forgejo/commit/00187c504a9ece794d635dc9d36bd25216a0ec70)) - Maxime, Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context)
