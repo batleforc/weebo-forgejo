@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.3](https://github.com/batleforc/weebo-forgejo/compare/52eb7df8342ec29ff495639ab2a87fc2d53ca3b9..v0.5.3) - 2026-10-19
+#### Refactoring
+- (**controller**) the kit's shared watches instead of forgejo's own (#19) - ([85e6353](https://github.com/batleforc/weebo-forgejo/commit/85e63537f14c67bf82f4de17b7c0772df3918081)) - Maxime, Claude Opus 5.5 (1M context)
+#### Miscellaneous Chores
+- (**kit**) weebo-operator-kit v0.20.0 (#18) - ([52eb7df](https://github.com/batleforc/weebo-forgejo/commit/52eb7df8342ec29ff495639ab2a87fc2d53ca3b9)) - Maxime, Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v0.5.2](https://github.com/batleforc/weebo-forgejo/compare/0e999066739bea1c1d53ad2893895dfb0034ab8e..v0.5.2) - 2026-10-19
 #### Miscellaneous Chores
 - (**kit**) weebo-operator-kit v0.19.1, nested CRD fields in the reference (#17) - ([0e99906](https://github.com/batleforc/weebo-forgejo/commit/0e999066739bea1c1d53ad2893895dfb0034ab8e)) - Maxime, Claude Opus 5.5 (1M context)
