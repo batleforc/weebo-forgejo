@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.5](https://github.com/batleforc/weebo-forgejo/compare/e5271f24f5d1878e1dbd04d703051d9f2d1f7b22..v0.5.5) - 2026-10-21
+#### Miscellaneous Chores
+- (**kit**) weebo-operator-kit v0.22.1 (#21) - ([e5271f2](https://github.com/batleforc/weebo-forgejo/commit/e5271f24f5d1878e1dbd04d703051d9f2d1f7b22)) - Maxime, Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v0.5.4](https://github.com/batleforc/weebo-forgejo/compare/61c27fac56f17d363843b7ce2bb5ec0275e006f8..v0.5.4) - 2026-10-19
 #### Miscellaneous Chores
 - (**kit**) weebo-operator-kit v0.21.0, kit's without_selector instead of unselected (#20) - ([61c27fa](https://github.com/batleforc/weebo-forgejo/commit/61c27fac56f17d363843b7ce2bb5ec0275e006f8)) - Maxime, Claude Opus 5.5 (1M context)
