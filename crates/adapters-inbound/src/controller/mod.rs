@@ -496,9 +496,10 @@ fn needs_a_change(reason: ReasonCode) -> bool {
 /// 300 s steady-state drift check after a success (and after a failure
 /// only a change can clear); 30 s after other failures, often a
 /// dependency that isn't ready yet. Jittered, except for an explicit due
-/// time (a token expiring).
-pub fn requeue_after(outcome: &Outcome) -> Action {
+/// time (a token expiring). Failures back off while `obj` keeps failing.
+pub fn requeue_after<K: kube::Resource>(obj: &K, outcome: &Outcome) -> Action {
     weebo_kit_runtime::controller::requeue_after(
+        obj,
         outcome.ready.is_ok() || needs_a_change(outcome.reason()),
         outcome.due_in,
     )

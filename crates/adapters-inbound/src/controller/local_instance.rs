@@ -90,5 +90,5 @@ async fn apply(
 
     record_reconcile(KIND, &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, obj.as_ref(), &outcome).await?;
-    Ok(requeue_after(&outcome))
+    Ok(requeue_after(obj.as_ref(), &outcome))
 }

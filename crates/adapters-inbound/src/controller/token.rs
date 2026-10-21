@@ -133,7 +133,7 @@ async fn apply(
 
     record_reconcile("ForgejoAccessToken", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
-    Ok(requeue_after(&outcome))
+    Ok(requeue_after(&current, &outcome))
 }
 
 async fn issue(

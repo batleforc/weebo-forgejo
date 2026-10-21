@@ -179,10 +179,15 @@ pub async fn apply_all_with(client: &Client, i: &Manifests, force: bool) -> Summ
             Ok(()) => adopt(client, cr, force).await,
             Err(e) => Err(e),
         };
-        if let Err(e) = &result {
-            eprintln!("error: {}: {e}", describe(cr));
+        // The claim check fails with a `String`, not an `AdoptError`: a
+        // failure is counted here rather than through `Summary::record`.
+        match result {
+            Ok(adoption) => summary.record(&Ok(adoption)),
+            Err(e) => {
+                eprintln!("error: {}: {e}", describe(cr));
+                summary.failed = summary.failed.saturating_add(1);
+            }
         }
-        summary.record(&result);
     });
     summary
 }
@@ -365,6 +370,7 @@ where
             force,
         )
         .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

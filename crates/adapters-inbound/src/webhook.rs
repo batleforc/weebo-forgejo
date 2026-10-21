@@ -111,8 +111,8 @@ impl WebhookState {
         namespace: &str,
         object: &DynamicObject,
     ) -> Result<(), Denial<ReasonCode>> {
-        let not_allowed = |message| Denial::new(ReasonCode::NamespaceNotAllowed, message);
-        let typed: K = typed(object).map_err(not_allowed)?;
+        let not_allowed = |message: String| Denial::new(ReasonCode::NamespaceNotAllowed, message);
+        let typed: K = typed(object).map_err(|e| not_allowed(e.to_string()))?;
         let instance = match &self.instances {
             Some(directory) => {
                 let recorded = typed.forgejo_status().and_then(|s| s.instance.as_ref());

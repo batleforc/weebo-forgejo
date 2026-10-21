@@ -191,7 +191,7 @@ impl GatewayFactory for ForgejoGatewayFactory {
             .instances
             .get(bound)
             .await
-            .map_err(GatewayFactoryError::Kubernetes)?
+            .map_err(|e| GatewayFactoryError::Kubernetes(e.to_string()))?
             .ok_or_else(|| GatewayFactoryError::InstanceNotFound(bound.to_string()))?
         {
             Resolved::Cluster(instance) => Connection::of_cluster(&instance),
