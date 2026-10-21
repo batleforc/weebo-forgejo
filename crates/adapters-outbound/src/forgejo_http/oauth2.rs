@@ -59,7 +59,7 @@ pub(super) async fn create(
                 "OAuth2 application created without a secret could not be removed; delete it by hand"
             );
         }
-        return Err(GatewayError::Api(format!(
+        return Err(GatewayError::api(format!(
             "OAuth2 application {id} was created without a client secret"
         )));
     };
@@ -83,7 +83,7 @@ pub(super) async fn update(
     updated
         .client_secret
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| GatewayError::Api("OAuth2 update returned no client secret".into()))
+        .ok_or_else(|| GatewayError::api("OAuth2 update returned no client secret"))
 }
 
 pub(super) async fn delete(

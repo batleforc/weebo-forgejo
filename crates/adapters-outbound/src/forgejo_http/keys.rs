@@ -9,7 +9,7 @@ pub(super) fn split(full_name: &str) -> Result<(String, String), GatewayError> {
     full_name
         .split_once('/')
         .map(|(o, n)| (o.to_string(), n.to_string()))
-        .ok_or_else(|| GatewayError::Api(format!("{full_name:?} is not owner/name")))
+        .ok_or_else(|| GatewayError::api(format!("{full_name:?} is not owner/name")))
 }
 
 pub(super) async fn get_deploy(

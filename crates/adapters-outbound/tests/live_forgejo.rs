@@ -486,7 +486,10 @@ async fn repository_lifecycle() {
         Err(GatewayError::NotFound(_))
     ));
     let refused = generate_from(format!("{org}/from-tpl")).await;
-    assert!(matches!(refused, Err(GatewayError::Api(_))), "{refused:?}");
+    assert!(
+        matches!(refused, Err(GatewayError::Api { .. })),
+        "{refused:?}"
+    );
 
     // Pull mirror of the generated repo, through Forgejo's own URL.
     let base =
@@ -615,7 +618,7 @@ async fn keys_are_only_visible_on_their_owner() {
     assert!(gw.get_deploy_key(other, k.id).await.unwrap().is_none());
     let refused = gw.delete_deploy_key(other, k.id).await;
     assert!(
-        matches!(refused, Err(GatewayError::Api(ref m)) if m.contains("refused access to the object")),
+        matches!(refused, Err(GatewayError::Api { message: ref m, .. }) if m.contains("refused access to the object")),
         "deleting through another repository: {refused:?}"
     );
     assert!(gw.get_deploy_key(holder, k.id).await.unwrap().is_some());
@@ -633,7 +636,7 @@ async fn keys_are_only_visible_on_their_owner() {
     assert!(gw.get_user_key(&bob, uk.id).await.unwrap().is_none());
     let refused = gw.delete_user_key(&bob, uk.id).await;
     assert!(
-        matches!(refused, Err(GatewayError::Api(ref m)) if m.contains("refused access to the object")),
+        matches!(refused, Err(GatewayError::Api { message: ref m, .. }) if m.contains("refused access to the object")),
         "deleting through another user: {refused:?}"
     );
     assert!(gw.get_user_key(&alice, uk.id).await.unwrap().is_some());

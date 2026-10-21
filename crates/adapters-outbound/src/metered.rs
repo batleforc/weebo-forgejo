@@ -69,7 +69,7 @@ fn result_of<T>(result: &Result<T, GatewayError>) -> &'static str {
         Err(GatewayError::NotFound(_)) => "not_found",
         Err(GatewayError::AlreadyExists(_)) => "already_exists",
         Err(GatewayError::Unreachable(_)) => "unreachable",
-        Err(GatewayError::Api(_)) => "error",
+        Err(GatewayError::Api { .. }) => "error",
     }
 }
 

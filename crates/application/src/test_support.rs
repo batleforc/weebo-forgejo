@@ -552,9 +552,7 @@ impl ForgejoGateway for FakeForgejo {
             )));
         }
         if user.source_id.is_none() && user.password.is_none() {
-            return Err(GatewayError::Api(
-                "password is required for local users".into(),
-            ));
+            return Err(GatewayError::api("password is required for local users"));
         }
         let id = s.next_id;
         s.next_id += 1;
@@ -823,7 +821,7 @@ impl ForgejoGateway for FakeForgejo {
         )))?;
         let is_template = repo_by_full_name(&mut s, template)?.remote.template;
         if !is_template {
-            return Err(GatewayError::Api(format!("{template} is not a template")));
+            return Err(GatewayError::api(format!("{template} is not a template")));
         }
         insert_repo(&mut s, owner, repo, None)
     }
@@ -853,7 +851,7 @@ impl ForgejoGateway for FakeForgejo {
         s.edits.push(Edit::Repository(repo.clone()));
         let r = repo_by_full_name(&mut s, full_name)?;
         if r.remote.archived {
-            return Err(GatewayError::Api("423: repository is archived".into()));
+            return Err(GatewayError::api("423: repository is archived"));
         }
         apply_repo_edit(&mut r.remote, repo);
         Ok(())
@@ -1165,7 +1163,7 @@ impl ForgejoGateway for FakeForgejo {
         let owner = sudo.unwrap_or("admin").to_string();
         let mut s = self.begin(Some(format!("create_oauth2_app {owner} {}", app.name)))?;
         if owner != "admin" && !s.users.contains_key(&owner) {
-            return Err(GatewayError::Api(format!("sudo: no user {owner}")));
+            return Err(GatewayError::api(format!("sudo: no user {owner}")));
         }
         let id = next_id(&mut s);
         let remote = RemoteOAuth2App {

@@ -339,7 +339,7 @@ mod tests {
         async fn vault_of(
             &self,
             _: &application::ports::BoundInstance,
-        ) -> Result<InstanceVault, String> {
+        ) -> Result<InstanceVault, application::ports::ClusterError> {
             Ok(self.0.clone())
         }
     }

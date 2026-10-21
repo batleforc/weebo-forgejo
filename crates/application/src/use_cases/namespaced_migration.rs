@@ -360,25 +360,29 @@ fn without_last_applied(v: &Value) -> Value {
     v
 }
 
+/// A line of the mapping file that isn't `Kind/name: namespace`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("line {line}: expected `Kind/name: namespace` with Kind one of {}", MOVED.join(", "))]
+pub struct BadMapping {
+    pub line: usize,
+}
+
 /// The mapping file: `Kind/name: namespace` lines (a YAML map).
-pub fn parse_mapping(text: &str) -> Result<BTreeMap<String, String>, String> {
+pub fn parse_mapping(text: &str) -> Result<BTreeMap<String, String>, BadMapping> {
     let mut mapping = BTreeMap::new();
     for (n, line) in text.lines().enumerate() {
+        let bad = || BadMapping {
+            line: n.saturating_add(1),
+        };
         let line = line.split('#').next().unwrap_or_default().trim();
         if line.is_empty() || line == "---" {
             continue;
         }
-        let (key, ns) = line
-            .split_once(':')
-            .ok_or_else(|| format!("line {}: expected `Kind/name: namespace`", n + 1))?;
+        let (key, ns) = line.split_once(':').ok_or_else(bad)?;
         let (key, ns) = (key.trim(), ns.trim().trim_matches(['"', '\'']));
         let kind = key.split('/').next().unwrap_or_default();
         if !MOVED.contains(&kind) || !key.contains('/') || ns.is_empty() {
-            return Err(format!(
-                "line {}: expected `Kind/name: namespace` with Kind one of {}",
-                n + 1,
-                MOVED.join(", ")
-            ));
+            return Err(bad());
         }
         mapping.insert(key.to_string(), ns.to_string());
     }

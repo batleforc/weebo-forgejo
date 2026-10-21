@@ -29,15 +29,29 @@ pub enum GatewayError {
     NotFound(String),
     #[error("Forgejo unreachable: {0}")]
     Unreachable(String),
-    #[error("Forgejo API error: {0}")]
-    Api(String),
+    /// Any other refusal. `status`: what Forgejo answered (a refused token
+    /// is a 401/403, a bad request a 4xx), `None` when no HTTP status
+    /// applies (an unusable answer, a local check).
+    #[error("Forgejo API error: {message}")]
+    Api {
+        status: Option<u16>,
+        message: String,
+    },
 }
 
 impl GatewayError {
+    /// [`GatewayError::Api`] without an HTTP status.
+    pub fn api(message: impl Into<String>) -> Self {
+        GatewayError::Api {
+            status: None,
+            message: message.into(),
+        }
+    }
+
     pub fn reason(&self) -> ReasonCode {
         match self {
             GatewayError::AlreadyExists(_) => ReasonCode::ForgejoObjectAlreadyExists,
-            GatewayError::NotFound(_) | GatewayError::Api(_) => ReasonCode::ForgejoApiError,
+            GatewayError::NotFound(_) | GatewayError::Api { .. } => ReasonCode::ForgejoApiError,
             GatewayError::Unreachable(_) => ReasonCode::InstanceUnreachable,
         }
     }
@@ -873,7 +887,7 @@ pub enum InstanceVault {
 
 #[async_trait::async_trait]
 pub trait InstanceVaults: Send + Sync {
-    async fn vault_of(&self, instance: &BoundInstance) -> Result<InstanceVault, String>;
+    async fn vault_of(&self, instance: &BoundInstance) -> Result<InstanceVault, ClusterError>;
 }
 
 /// Secret stores are the kit's: Kubernetes `Secret`s and Vault KV, routed

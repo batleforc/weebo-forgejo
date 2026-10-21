@@ -297,7 +297,7 @@ async fn create(
 /// does not exist": surfaced as `LoginSourceNotFound`.
 fn source_failure(spec: &ForgejoUserSpec, e: GatewayError) -> Failure {
     match &e {
-        GatewayError::Api(m)
+        GatewayError::Api { message: m, .. }
             if spec.login_source_id.is_some()
                 && m.to_lowercase().contains("login source does not exist") =>
         {
