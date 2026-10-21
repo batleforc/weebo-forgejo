@@ -17,7 +17,8 @@ pub struct ForgejoInstanceVaults(pub std::sync::Arc<ForgejoInstances>);
 #[async_trait::async_trait]
 impl InstanceVaults for ForgejoInstanceVaults {
     async fn vault_of(&self, instance: &BoundInstance) -> Result<InstanceVault, String> {
-        Ok(match self.0.get(instance).await? {
+        let resolved = self.0.get(instance).await.map_err(|e| e.to_string())?;
+        Ok(match resolved {
             None => InstanceVault::NotFound,
             Some(Resolved::Local(_)) => InstanceVault::None,
             Some(Resolved::Cluster(cluster)) => match cluster.spec.secret_store.vault.clone() {

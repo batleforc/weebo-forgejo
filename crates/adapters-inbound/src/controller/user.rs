@@ -96,7 +96,7 @@ async fn apply(api: &Api<ForgejoUser>, user: &ForgejoUser, ctx: &Ctx) -> Result<
 
     record_reconcile("ForgejoUser", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
-    Ok(requeue_after(&outcome))
+    Ok(requeue_after(&current, &outcome))
 }
 
 /// The namespace policy and — before a managed account is created — its

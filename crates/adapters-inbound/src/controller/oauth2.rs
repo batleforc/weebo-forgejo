@@ -112,7 +112,7 @@ async fn apply(
 
     record_reconcile("ForgejoOAuth2Application", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
-    Ok(requeue_after(&outcome))
+    Ok(requeue_after(&current, &outcome))
 }
 
 /// The outcome of an application bound to `bound`. Refused because its

@@ -120,7 +120,7 @@ async fn apply(api: &Api<ForgejoTeam>, team: &ForgejoTeam, ctx: &Ctx) -> Result<
 
     record_reconcile("ForgejoTeam", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
-    Ok(requeue_after(&outcome))
+    Ok(requeue_after(&current, &outcome))
 }
 
 type Inputs = (Arc<dyn ForgejoGateway>, ForgejoRef, Vec<Member>);

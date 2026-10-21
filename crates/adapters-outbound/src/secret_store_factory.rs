@@ -84,6 +84,7 @@ async fn vault_for(
     logins
         .get(&instance, &config, || async move { Ok(ca) })
         .await
+        .map_err(|e| e.to_string())
 }
 
 #[async_trait::async_trait]
@@ -96,7 +97,7 @@ impl SecretStoreFactory for ForgejoSecretStoreFactory {
             .instances
             .get(bound)
             .await
-            .map_err(SecretStoreError)?
+            .map_err(|e| SecretStoreError(e.to_string()))?
             .ok_or_else(|| SecretStoreError(format!("{bound} not found")))?
         {
             Resolved::Cluster(instance) => instance,

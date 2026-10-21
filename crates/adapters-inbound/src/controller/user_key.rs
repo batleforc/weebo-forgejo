@@ -155,7 +155,7 @@ async fn apply(
     record_reconcile("ForgejoUserKey", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
     super::record_key_owner(api, &current, resolved.as_deref(), owned.as_ref(), &outcome).await?;
-    Ok(requeue_after(&outcome))
+    Ok(requeue_after(&current, &outcome))
 }
 
 /// Refused with `failure`: a key issued earlier is deleted when Forgejo

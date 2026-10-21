@@ -147,7 +147,7 @@ async fn apply(
 
     record_reconcile("ForgejoWebhook", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
-    Ok(requeue_after(&outcome))
+    Ok(requeue_after(&current, &outcome))
 }
 
 type Inputs = (HookTarget, Option<String>, Option<String>);

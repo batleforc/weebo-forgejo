@@ -188,7 +188,7 @@ async fn apply(
 
     record_reconcile("ForgejoRepository", &outcome, started.elapsed());
     status::publish(api, &ctx.recorder, &current, &outcome).await?;
-    Ok(requeue_after(&outcome))
+    Ok(requeue_after(&current, &outcome))
 }
 
 type Inputs = (Owner, Result<Source, Failure>, Vec<String>);
