@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoRepository",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "A Forgejo repository, owned by a `ForgejoOrganization` or a\n`ForgejoUser`. Created empty (optionally initialized), from a template\nrepository, or by migrating/mirroring a remote.\n\nSet exactly one of `organizationRef`/`userRef`, at most one of\n`init`/`fromTemplate`/`migrate`, and exactly one of\n`fromTemplate.repositoryRef`/`fromTemplate.repository`; anything else\nreports `InvalidSpec`.",
   "properties": {
     "archived": {

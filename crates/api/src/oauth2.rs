@@ -41,6 +41,7 @@ pub struct ForgejoOAuth2ApplicationSpec {
     /// (new client id), which needs the
     /// `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoUser" }] }))]
     pub owner_ref: Option<IdentityRef>,
     /// Display name. Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]

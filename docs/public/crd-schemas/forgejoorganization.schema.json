@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoOrganization",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "A Forgejo organization.",
   "properties": {
     "deletionPolicy": {

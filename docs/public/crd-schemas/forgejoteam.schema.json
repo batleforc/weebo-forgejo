@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoTeam",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "A team inside a `ForgejoOrganization`, with its members. Repositories\ngrant themselves access to it through `ForgejoRepository.spec.teamRefs`.",
   "properties": {
     "canCreateOrgRepo": {

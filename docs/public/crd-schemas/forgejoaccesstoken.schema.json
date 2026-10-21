@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoAccessToken",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "An access token of a `ForgejoUser` (typically a bot), issued through the\nadmin API (Forgejo v16+) and written to `secretTargets` as\n`FORGEJO_TOKEN`, `FORGEJO_USERNAME` and `FORGEJO_URL`.\n\nToken values can't be read back: a lost target, a new\n`forgejo.weebo.io/rotate-secret` nonce or an elapsed `rotationPeriod`\nissues a new token. The new token is issued and written to every target\nbefore the old one is revoked; as names are unique per user, a rotated\ntoken alternates between `name` and `name-next`.",
   "properties": {
     "deletionPolicy": {

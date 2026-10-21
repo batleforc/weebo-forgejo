@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoUserKey",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "An SSH public key of a user — typically a bot's. Same key handling as\n`ForgejoDeployKey`.",
   "properties": {
     "deletionPolicy": {

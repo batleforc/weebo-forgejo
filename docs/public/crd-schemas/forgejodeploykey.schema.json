@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoDeployKey",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "An SSH deploy key on a `ForgejoRepository` (same namespace). Without\n`publicKey`, the operator generates an ed25519 pair and writes the\nprivate half to `secretTargets` (`ssh-privatekey`, `ssh-publickey` — the\n`kubernetes.io/ssh-auth` key names). Keys are immutable in Forgejo: any\nchange recreates the key.",
   "properties": {
     "deletionPolicy": {

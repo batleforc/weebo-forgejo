@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoOAuth2Application",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "An OAuth2 application registered in Forgejo, for apps that use Forgejo\nas their identity provider. Its credentials (`FORGEJO_CLIENT_ID`,\n`FORGEJO_CLIENT_SECRET`, `FORGEJO_URL` — the OIDC issuer) are written to\n`secretTargets`.\n\nForgejo regenerates the client secret on every update and never returns\nit again, so the application is only updated when the spec actually\ndiffers, when a target lost the secret, or on a new\n`forgejo.weebo.io/rotate-secret` nonce.",
   "properties": {
     "confidentialClient": {

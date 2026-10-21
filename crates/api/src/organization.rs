@@ -51,6 +51,7 @@ pub struct ForgejoOrganizationSpec {
     /// The user that becomes the organization's first owner. Only read at
     /// creation; without it the operator's admin account owns it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoUser" }] }))]
     pub owner_ref: Option<IdentityRef>,
     /// Defaults to `Orphan`: deleting the CR never deletes the
     /// organization (Forgejo also refuses while it still owns repos).

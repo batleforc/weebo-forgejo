@@ -39,6 +39,7 @@ pub struct ForgejoTeamSpec {
     /// The organization the team belongs to. A team can't move between
     /// organizations: changing this deletes and recreates it, which needs
     /// the `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoOrganization" }] }))]
     pub organization_ref: IdentityRef,
     /// Team name, unique within the organization. `Owners` is reserved.
     pub name: String,
@@ -71,6 +72,7 @@ pub struct ForgejoTeamSpec {
     /// yet (e.g. an observed OIDC user who never logged in) is reported as
     /// `MemberPending` while the others are synced.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoUser" }] }))]
     pub member_refs: Vec<IdentityRef>,
     #[serde(default = "DeletionPolicy::delete")]
     pub deletion_policy: DeletionPolicy,

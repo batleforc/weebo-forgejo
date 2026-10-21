@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoNamespacePolicy",
   "scope": "Cluster",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "Namespace allow-list for the namespaced kinds, enforced by the\nadmission webhook (CREATE/UPDATE) and re-checked by every reconciler.\nIt governs the CRs bound to a `ForgejoInstance` (shared by every\nnamespace); a CR bound to a `ForgejoLocalInstance` is bounded by its\nnamespace's own token instead.\n\nWhile no `ForgejoNamespacePolicy` exists, everything is allowed. As soon\nas one exists, a namespaced CR is only accepted if some `Allow` rule\nmatches its namespace and kind and covers the organizations, users and\ntemplates it references — and no `Deny` rule matches. Rules of every\npolicy are pooled; deny always wins.",
   "properties": {
     "rules": {

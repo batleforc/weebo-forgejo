@@ -33,6 +33,7 @@ pub struct ForgejoDeployKeySpec {
     /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ref: Option<InstanceRef>,
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoRepository" }] }))]
     pub repository_ref: ObjectRef,
     /// Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,6 +70,7 @@ pub struct ForgejoUserKeySpec {
     /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ref: Option<InstanceRef>,
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoUser" }] }))]
     pub user_ref: IdentityRef,
     /// Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]

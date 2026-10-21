@@ -41,9 +41,11 @@ pub struct ForgejoRepositorySpec {
     pub instance_ref: Option<InstanceRef>,
     /// Owning organization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoOrganization" }] }))]
     pub organization_ref: Option<IdentityRef>,
     /// Owning user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoUser" }] }))]
     pub user_ref: Option<IdentityRef>,
     /// Repository name. Changing it renames in place (Forgejo keeps a
     /// redirect from the old name). Changing the owner transfers the
@@ -92,6 +94,7 @@ pub struct ForgejoRepositorySpec {
     /// except for the `Owners` team and teams with
     /// `includesAllRepositories`, which Forgejo always grants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoTeam" }] }))]
     pub team_refs: Vec<IdentityRef>,
     /// Defaults to `Orphan`: deleting the CR never deletes git history.
     #[serde(default = "DeletionPolicy::orphan")]
@@ -147,6 +150,7 @@ pub struct TemplateSource {
     /// Template `ForgejoRepository` in the same namespace (must have
     /// `isTemplate: true`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoRepository" }] }))]
     pub repository_ref: Option<ObjectRef>,
     /// Template repository by its Forgejo name, `owner/name` (e.g.
     /// `batlehub/weebo-base`) — one shared by every namespace, managed by a

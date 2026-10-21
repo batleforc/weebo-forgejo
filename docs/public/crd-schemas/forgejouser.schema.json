@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoUser",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "A Forgejo user, in one of three modes:\n\n- **external** — `loginSourceId` set: the account is pre-provisioned\n  against an authentication source (e.g. Authentik over OIDC) and linked\n  on the person's first login. No password.\n- **local** — no `loginSourceId`: a random password is generated and\n  written to `secretTargets`. With `bot: true` the password is generated\n  and never stored anywhere: nobody can use it, and the account works\n  only through its tokens and SSH keys.\n- **observed** — `managementPolicy: Observe`: the user is never created,\n  modified or deleted, only resolved by `username` so other CRs can\n  reference an account Forgejo auto-created at OIDC login.",
   "properties": {
     "active": {
