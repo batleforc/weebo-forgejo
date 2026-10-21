@@ -12,6 +12,7 @@ use application::use_cases::refs::{
     read_secret_key, recorded_identity, resolve_identity_required, resolve_required,
 };
 use application::use_cases::{Failure, Outcome, RemoteWrite};
+use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
@@ -165,26 +166,32 @@ async fn resolve_inputs(
     let ns = hook.namespace().unwrap_or_default();
     let refs = ctx.refs.as_ref();
 
-    let target = if let Some(repo) = &spec.repository_ref {
-        match resolve_required(refs, RefKind::Repository, &ns, &repo.name, instance).await? {
-            Ok(r) => {
-                let (owner, name) = r.name.split_once('/').unwrap_or(("", &r.name));
-                HookTarget::Repository {
-                    owner: owner.to_string(),
-                    name: name.to_string(),
+    let target = match (&spec.repository_ref, &spec.organization_ref) {
+        (Some(repo), _) => {
+            match resolve_required(refs, RefKind::Repository, &ns, &repo.name, instance).await? {
+                Ok(r) => {
+                    let (owner, name) = r.name.split_once('/').unwrap_or(("", &r.name));
+                    HookTarget::Repository {
+                        owner: owner.to_string(),
+                        name: name.to_string(),
+                    }
                 }
+                Err(f) => return Ok(Err(f)),
             }
-            Err(f) => return Ok(Err(f)),
         }
-    } else {
-        let org = spec
-            .organization_ref
-            .as_ref()
-            .expect("validated: exactly one target");
-        let from = super::referrer(ctx, &ns, instance, Some(gateway));
-        match resolve_identity_required(&from, RefKind::Organization, org).await? {
-            Ok(r) => HookTarget::Organization(r.name),
-            Err(f) => return Ok(Err(f)),
+        (None, Some(org)) => {
+            let from = super::referrer(ctx, &ns, instance, Some(gateway));
+            match resolve_identity_required(&from, RefKind::Organization, org).await? {
+                Ok(r) => HookTarget::Organization(r.name),
+                Err(f) => return Ok(Err(f)),
+            }
+        }
+        // Ruled out by `validate` above; a status, never a panic.
+        (None, None) => {
+            return Ok(Err(Failure::new(
+                ReasonCode::InvalidSpec,
+                "set exactly one of spec.repositoryRef and spec.organizationRef",
+            )));
         }
     };
 
