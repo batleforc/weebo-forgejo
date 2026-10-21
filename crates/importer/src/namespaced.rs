@@ -35,8 +35,8 @@ use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::api::{Api, ApiResource, DeleteParams, DynamicObject, ListParams, Patch, PatchParams};
 use kube::{Client, CustomResourceExt, Resource};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use weebo_kit_adapters::Adopter;
 
@@ -366,38 +366,65 @@ fn write_plan(out: &Path, plan: &Plan) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `plan.json` as `write_plan` writes it: every field required, so a
+/// truncated or hand-edited plan fails to load instead of resuming with
+/// blanks.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedPlan {
+    moves: Vec<SavedMove>,
+    rewrites: Vec<SavedRewrite>,
+    owner_renames: Vec<(String, String)>,
+    cross_namespace: bool,
+}
+
+#[derive(Deserialize)]
+struct SavedMove {
+    kind: String,
+    name: String,
+    namespace: String,
+    manifest: Value,
+    seed: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct SavedRewrite {
+    kind: String,
+    name: String,
+    namespace: String,
+    spec: Value,
+}
+
 fn read_plan(path: &Path) -> anyhow::Result<Plan> {
-    let saved: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
-    let text = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
-    let moves = saved["moves"]
-        .as_array()
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
+    let saved: SavedPlan =
+        serde_json::from_str(&text).with_context(|| format!("parsing {path:?}"))?;
+    let moves = saved
+        .moves
         .into_iter()
-        .flatten()
         .map(|m| Move {
-            kind: text(m, "kind"),
-            name: text(m, "name"),
-            namespace: text(m, "namespace"),
-            manifest: m["manifest"].clone(),
-            seed: Some(m["seed"].clone()).filter(|s| !s.is_null()),
+            kind: m.kind,
+            name: m.name,
+            namespace: m.namespace,
+            manifest: m.manifest,
+            seed: m.seed,
         })
         .collect();
-    let rewrites = saved["rewrites"]
-        .as_array()
+    let rewrites = saved
+        .rewrites
         .into_iter()
-        .flatten()
         .map(|r| Rewrite {
-            kind: text(r, "kind"),
-            name: text(r, "name"),
-            namespace: text(r, "namespace"),
-            spec: r["spec"].clone(),
+            kind: r.kind,
+            name: r.name,
+            namespace: r.namespace,
+            spec: r.spec,
         })
         .collect();
-    let owner_renames = serde_json::from_value(saved["ownerRenames"].clone()).unwrap_or_default();
     Ok(Plan {
         moves,
         rewrites,
-        cross_namespace: saved["crossNamespace"].as_bool().unwrap_or_default(),
-        owner_renames,
+        cross_namespace: saved.cross_namespace,
+        owner_renames: saved.owner_renames,
         warnings: Vec::new(),
     })
 }
@@ -433,6 +460,21 @@ mod tests {
         write_plan(&dir, &plan).unwrap();
         assert_eq!(read_plan(&dir.join(PLAN_FILE)).unwrap(), plan);
         assert!(dir.join("ForgejoUser-team-a-alice.yaml").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_plan_missing_a_field_is_refused() {
+        let dir = std::env::temp_dir().join(format!("plan-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PLAN_FILE);
+        std::fs::write(
+            &path,
+            r#"{"moves": [{"kind": "ForgejoUser", "name": "alice"}], "rewrites": [],
+                "ownerRenames": [], "crossNamespace": false}"#,
+        )
+        .unwrap();
+        assert!(read_plan(&path).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

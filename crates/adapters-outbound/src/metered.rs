@@ -24,11 +24,20 @@ use tokio::sync::Semaphore;
 pub const DEFAULT_MAX_INFLIGHT: usize = 8;
 
 pub fn max_inflight() -> usize {
-    std::env::var("WEEBO_FORGEJO_MAX_INFLIGHT")
-        .ok()
-        .and_then(|n| n.parse().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_MAX_INFLIGHT)
+    let Ok(raw) = std::env::var("WEEBO_FORGEJO_MAX_INFLIGHT") else {
+        return DEFAULT_MAX_INFLIGHT;
+    };
+    match raw.parse() {
+        Ok(n) if n > 0 => n,
+        _ => {
+            tracing::warn!(
+                value = %raw,
+                default = DEFAULT_MAX_INFLIGHT,
+                "WEEBO_FORGEJO_MAX_INFLIGHT is not a positive integer, using the default"
+            );
+            DEFAULT_MAX_INFLIGHT
+        }
+    }
 }
 
 struct Instruments {
