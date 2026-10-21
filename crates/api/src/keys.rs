@@ -91,6 +91,8 @@ pub struct KeySource {
     /// is unset; a target that disappears (or a new
     /// `forgejo.weebo.io/rotate-secret` nonce) generates a fresh pair.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // The keys each target holds, for the docs' CRD IDE (as `reconcile_key` writes them).
+    #[schemars(extend("x-weebo-keys" = ["ssh-privatekey", "ssh-publickey"]))]
     pub secret_targets: Vec<SecretTarget>,
 }
 
