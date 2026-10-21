@@ -14,6 +14,7 @@ use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
+use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt};
 
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
@@ -23,19 +24,33 @@ const KIND: &str = "ForgejoInstance";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let results = super::controller(ctx.scope.api::<ForgejoInstance>(client.clone()), &ctx.scope)
-        .graceful_shutdown_on(ctx.shutdown.wait())
-        .run(reconcile, error_policy, ctx);
+    let controller =
+        super::controller(ctx.scope.api::<ForgejoInstance>(client.clone()), &ctx.scope);
+    let instances = controller.store();
+    let results = controller.graceful_shutdown_on(ctx.shutdown.wait()).run(
+        move |obj, ctx| reconcile(obj, ctx, instances.clone()),
+        error_policy,
+        ctx,
+    );
     super::drive(KIND, health, results).await;
 }
 
-async fn reconcile(obj: Arc<ForgejoInstance>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+async fn reconcile(
+    obj: Arc<ForgejoInstance>,
+    ctx: Arc<Ctx>,
+    instances: Store<ForgejoInstance>,
+) -> Result<Action, Error> {
     let api: Api<ForgejoInstance> = Api::all(ctx.client.clone());
     finalizer(&api, FINALIZER, obj, |event| async {
         match event {
             FinalizerEvent::Apply(instance) => apply(&api, instance, &ctx).await,
             FinalizerEvent::Cleanup(instance) => {
-                super::finalize(instance.as_ref(), &ctx, cleanup(&api, &instance, &ctx)).await
+                super::finalize(
+                    instance.as_ref(),
+                    &ctx,
+                    cleanup(&api, &instances, &instance, &ctx),
+                )
+                .await
             }
         }
     })
@@ -46,12 +61,17 @@ async fn reconcile(obj: Arc<ForgejoInstance>, ctx: Arc<Ctx>) -> Result<Action, E
 /// Released once no CR is bound to the instance any more.
 async fn cleanup(
     api: &Api<ForgejoInstance>,
+    instances: &Store<ForgejoInstance>,
     instance: &ForgejoInstance,
     ctx: &Ctx,
 ) -> Result<Action, Error> {
     let name = instance.name_any();
-    // Bound by default too when it is the only instance.
-    let default = api.list(&Default::default()).await?.items.len() == 1;
+    // Bound by default too when it is the only instance (in scope, as the
+    // resolution counts them): from the controller's store once it listed.
+    let default = match instances.wait_until_ready().await {
+        Ok(()) => instances.state().len() == 1,
+        Err(_) => api.list(&Default::default()).await?.items.len() == 1,
+    };
     let bound = BoundInstance::cluster(&name);
     let dependents = ctx.refs.instance_dependents(&bound, default).await?;
     if dependents.is_empty() {

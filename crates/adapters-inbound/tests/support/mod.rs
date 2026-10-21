@@ -2,7 +2,13 @@
 //! (`testkit::envtest`), the controller under test, the in-memory
 //! `FakeForgejo` behind a `StaticGatewayFactory`, and the real
 //! `K8sSecretStore` writing into the test apiserver.
-#![allow(dead_code)]
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test helpers fail the test on purpose"
+)]
+// Not an expect: each test binary uses a different part of this harness.
+#![allow(dead_code, reason = "shared by test binaries that each use part of it")]
 
 pub mod live;
 
@@ -35,7 +41,8 @@ pub async fn harness() -> Harness {
 /// [`harness`] with the controllers on `scope` (e.g. cross-namespace
 /// references enabled).
 pub async fn harness_with(scope: weebo_kit_runtime::WatchScope) -> Harness {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    // Err: another test set the subscriber first, which is as good.
+    tracing_subscriber::fmt().with_test_writer().try_init().ok();
     let cluster = EnvTestCluster::start().await;
     let client = cluster.client();
     let forgejo = Arc::new(FakeForgejo::default());

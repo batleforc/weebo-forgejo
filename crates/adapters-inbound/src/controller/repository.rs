@@ -207,19 +207,23 @@ async fn resolve_inputs(
     let ns = repo.namespace().unwrap_or_default();
     let from = super::referrer(ctx, &ns, instance, Some(gateway));
 
-    let owner = if let Some(org) = &spec.organization_ref {
-        match resolve_identity_required(&from, RefKind::Organization, org).await? {
-            Ok(r) => Owner::Organization(r.name),
-            Err(f) => return Ok(Err(f)),
+    let owner = match (&spec.organization_ref, &spec.user_ref) {
+        (Some(org), _) => {
+            match resolve_identity_required(&from, RefKind::Organization, org).await? {
+                Ok(r) => Owner::Organization(r.name),
+                Err(f) => return Ok(Err(f)),
+            }
         }
-    } else {
-        let user = spec
-            .user_ref
-            .as_ref()
-            .expect("validated: exactly one owner");
-        match resolve_identity_required(&from, RefKind::User, user).await? {
+        (None, Some(user)) => match resolve_identity_required(&from, RefKind::User, user).await? {
             Ok(r) => Owner::User(r.name),
             Err(f) => return Ok(Err(f)),
+        },
+        // Ruled out by `validate` above; a status, never a panic.
+        (None, None) => {
+            return Ok(Err(Failure::new(
+                ReasonCode::InvalidSpec,
+                "set exactly one of spec.organizationRef and spec.userRef",
+            )));
         }
     };
 
@@ -273,12 +277,17 @@ async fn source(
             avatar: t.avatar,
         };
         // By name: Forgejo itself says whether it exists and is a template.
-        let Some(template_ref) = &t.repository_ref else {
-            let name = t
-                .repository
-                .clone()
-                .expect("validated: one template source");
-            return Ok(Ok(Source::Template(name, options)));
+        let template_ref = match (&t.repository_ref, &t.repository) {
+            (Some(r), _) => r,
+            (None, Some(name)) => return Ok(Ok(Source::Template(name.clone(), options))),
+            // Ruled out by `validate`; a status, never a panic.
+            (None, None) => {
+                return Ok(Err(Failure::new(
+                    ReasonCode::InvalidSpec,
+                    "set exactly one of spec.fromTemplate.repositoryRef and \
+                     spec.fromTemplate.repository",
+                )));
+            }
         };
         let refs = ctx.refs.as_ref();
         let template =

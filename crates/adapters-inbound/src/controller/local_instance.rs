@@ -13,6 +13,7 @@ use domain::error::ReasonCode;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event as FinalizerEvent, finalizer};
+use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt};
 
 use super::{Ctx, Error, FINALIZER, error_policy, requeue_after, status};
@@ -22,23 +23,36 @@ const KIND: &str = "ForgejoLocalInstance";
 
 pub async fn run(client: Client, ctx: Arc<Ctx>) {
     let health = ctx.health.clone();
-    let results = super::controller(
+    let controller = super::controller(
         ctx.scope.api::<ForgejoLocalInstance>(client.clone()),
         &ctx.scope,
-    )
-    .graceful_shutdown_on(ctx.shutdown.wait())
-    .run(reconcile, error_policy, ctx);
+    );
+    let instances = controller.store();
+    let results = controller.graceful_shutdown_on(ctx.shutdown.wait()).run(
+        move |obj, ctx| reconcile(obj, ctx, instances.clone()),
+        error_policy,
+        ctx,
+    );
     super::drive(KIND, health, results).await;
 }
 
-async fn reconcile(obj: Arc<ForgejoLocalInstance>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+async fn reconcile(
+    obj: Arc<ForgejoLocalInstance>,
+    ctx: Arc<Ctx>,
+    instances: Store<ForgejoLocalInstance>,
+) -> Result<Action, Error> {
     let ns = obj.namespace().unwrap_or_default();
     let api: Api<ForgejoLocalInstance> = Api::namespaced(ctx.client.clone(), &ns);
     finalizer(&api, FINALIZER, obj, |event| async {
         match event {
             FinalizerEvent::Apply(instance) => apply(&api, instance, &ctx).await,
             FinalizerEvent::Cleanup(instance) => {
-                super::finalize(instance.as_ref(), &ctx, cleanup(&api, &instance, &ctx)).await
+                super::finalize(
+                    instance.as_ref(),
+                    &ctx,
+                    cleanup(&api, &instances, &instance, &ctx),
+                )
+                .await
             }
         }
     })
@@ -56,11 +70,24 @@ fn bound(instance: &ForgejoLocalInstance) -> BoundInstance {
 /// Released once no CR is bound to the instance any more.
 async fn cleanup(
     api: &Api<ForgejoLocalInstance>,
+    instances: &Store<ForgejoLocalInstance>,
     instance: &ForgejoLocalInstance,
     ctx: &Ctx,
 ) -> Result<Action, Error> {
-    // Bound by default too when it is the only one of its namespace.
-    let default = api.list(&Default::default()).await?.items.len() == 1;
+    // Bound by default too when it is the only one of its namespace (in
+    // scope, as the resolution counts them): from the controller's store
+    // once it listed.
+    let default = match instances.wait_until_ready().await {
+        Ok(()) => {
+            let ns = instance.namespace();
+            let mut same_ns = instances
+                .state()
+                .into_iter()
+                .filter(|l| l.namespace() == ns);
+            same_ns.next().is_some() && same_ns.next().is_none()
+        }
+        Err(_) => api.list(&Default::default()).await?.items.len() == 1,
+    };
     let bound = bound(instance);
     let dependents = ctx.refs.instance_dependents(&bound, default).await?;
     if dependents.is_empty() {

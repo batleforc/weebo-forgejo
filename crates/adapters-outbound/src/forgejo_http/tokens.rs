@@ -68,7 +68,7 @@ pub(super) async fn create(
     let value = created
         .sha1
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| GatewayError::Api("token creation returned no value".into()))?;
+        .ok_or_else(|| GatewayError::api("token creation returned no value"))?;
     Ok((
         ForgejoRef {
             id: created.id.ok_or_else(|| missing_id("access token"))?,

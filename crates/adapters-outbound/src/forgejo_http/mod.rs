@@ -430,19 +430,26 @@ fn classify_as<T: std::fmt::Debug>(err: Error<T>, claims_name: bool) -> GatewayE
                 404 => GatewayError::NotFound(body),
                 s @ (408 | 429) => GatewayError::Unreachable(format!("{s}: {body}")),
                 s if s >= 500 => GatewayError::Unreachable(format!("{s}: {body}")),
-                s @ (401 | 403) if s == 401 || refused => GatewayError::Api(format!(
-                    "{s}: the instance's admin token was refused (revoked, or missing a scope): {body}"
-                )),
+                s @ (401 | 403) if s == 401 || refused => GatewayError::Api {
+                    status: Some(s),
+                    message: format!(
+                        "{s}: the instance's admin token was refused (revoked, or missing a scope): {body}"
+                    ),
+                },
                 // The token is fine, the object isn't its to touch (e.g. a
                 // key that belongs to another repository or user).
-                403 => {
-                    GatewayError::Api(format!("403: Forgejo refused access to the object: {body}"))
-                }
-                s => GatewayError::Api(format!("{s}: {body}")),
+                403 => GatewayError::Api {
+                    status: Some(403),
+                    message: format!("403: Forgejo refused access to the object: {body}"),
+                },
+                s => GatewayError::Api {
+                    status: Some(s),
+                    message: format!("{s}: {body}"),
+                },
             }
         }
         Error::Reqwest(e) => GatewayError::Unreachable(e.to_string()),
-        other => GatewayError::Api(other.to_string()),
+        other => GatewayError::api(other.to_string()),
     }
 }
 
@@ -574,7 +581,7 @@ where
         if ids == previous {
             return Ok(());
         }
-        seen += batch.len();
+        seen = seen.saturating_add(batch.len());
         if seen > MAX_ITEMS {
             break;
         }
@@ -583,7 +590,7 @@ where
         }
         previous = ids;
     }
-    Err(GatewayError::Api(format!(
+    Err(GatewayError::api(format!(
         "listing still not exhausted after {MAX_ITEMS} items"
     )))
 }
@@ -605,7 +612,7 @@ pub(crate) fn found<T, E: std::fmt::Debug>(
 /// options struct generates its own `Visibility`/`Permission` type).
 pub(crate) fn wire_enum<T: DeserializeOwned>(value: &str) -> Result<T, GatewayError> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|e| GatewayError::Api(format!("unsupported value {value:?}: {e}")))
+        .map_err(|e| GatewayError::api(format!("unsupported value {value:?}: {e}")))
 }
 
 /// The inverse of [`wire_enum`], for reading generated enums back.
@@ -617,7 +624,7 @@ pub(crate) fn wire_string<T: serde::Serialize>(value: &T) -> String {
 }
 
 pub(crate) fn missing_id(what: &str) -> GatewayError {
-    GatewayError::Api(format!("Forgejo returned a {what} without an id"))
+    GatewayError::api(format!("Forgejo returned a {what} without an id"))
 }
 
 #[cfg(test)]
@@ -647,6 +654,10 @@ mod paging_tests {
     }
 
     /// A listing of `total` items served `clamp` at a time.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "test helper: small page numbers"
+    )]
     async fn served(
         total: i32,
         clamp: i32,
@@ -683,7 +694,7 @@ mod paging_tests {
         // Page 2 filtered down after pagination, page 3 still full.
         let pages = [vec![1, 2, 3], vec![4], vec![5, 6, 7], vec![]];
         let items = all_pages(|page| {
-            let batch = pages[page as usize - 1].clone();
+            let batch = pages[usize::try_from(page).unwrap() - 1].clone();
             async move { Ok(batch) }
         })
         .await

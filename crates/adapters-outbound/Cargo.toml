@@ -27,3 +27,6 @@ rcgen = "0.14.10"
 tokio = { workspace = true }
 wiremock = { workspace = true }
 rustls = { workspace = true }
+
+[lints]
+workspace = true

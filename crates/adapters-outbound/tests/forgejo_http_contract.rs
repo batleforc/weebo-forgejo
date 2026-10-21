@@ -1,6 +1,11 @@
 //! Layer-2 contract tests: `ForgejoHttpGateway` against scripted HTTP
 //! (`wiremock`), pinning the wire format and the error classification the
 //! use-cases depend on.
+#![expect(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 use adapters_outbound::ForgejoHttpGateway;
 use application::ports::{
@@ -97,7 +102,7 @@ async fn forbidden_tells_the_token_from_the_object() {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, GatewayError::Api(m) if m.starts_with(&status.to_string()) && m.contains(expected)),
+            matches!(&err, GatewayError::Api { status: Some(s), message: m } if *s == status && m.starts_with(&status.to_string()) && m.contains(expected)),
             "{status} {message:?}: {err:?}"
         );
     }
@@ -151,7 +156,7 @@ async fn any_other_422_is_an_api_error() {
         .await;
     assert!(matches!(
         gateway(&server).create_user(&user("alice")).await,
-        Err(GatewayError::Api(_))
+        Err(GatewayError::Api { .. })
     ));
 }
 
@@ -386,7 +391,7 @@ async fn an_edit_422_saying_already_is_an_api_error() {
         gateway(&server)
             .edit_user("alice", &UserPatch::full(&user("alice")))
             .await,
-        Err(GatewayError::Api(_))
+        Err(GatewayError::Api { .. })
     ));
 }
 
@@ -410,7 +415,7 @@ async fn an_oauth2_app_created_without_a_secret_is_removed_and_fails() {
     };
     assert!(matches!(
         gateway(&server).create_oauth2_app(None, &app).await,
-        Err(GatewayError::Api(_))
+        Err(GatewayError::Api { .. })
     ));
 }
 

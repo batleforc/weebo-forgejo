@@ -142,6 +142,10 @@ where
         }
     }
     if let Some(instance) = &outcome.instance {
+        #[expect(
+            clippy::expect_used,
+            reason = "BoundInstance is strings and an enum: serializing it cannot fail"
+        )]
         let instance = serde_json::to_value(instance).expect("a BoundInstance serializes");
         fields.insert("instance".into(), instance);
     }

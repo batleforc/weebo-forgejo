@@ -1,5 +1,10 @@
 //! Layer-3: OAuth2 application and access token controllers, emitting into
 //! real Secrets of a real apiserver.
+#![expect(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 mod support;
 

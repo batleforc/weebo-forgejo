@@ -52,8 +52,14 @@ pub(super) async fn create(
     // unusable, unrecoverable credential. It is removed (best effort, app
     // names aren't unique) so the retry starts clean instead of piling up.
     let Some(secret) = created.client_secret.take().filter(|s| !s.is_empty()) else {
-        let _ = delete(config, sudo, id).await;
-        return Err(GatewayError::Api(format!(
+        if let Err(e) = delete(config, sudo, id).await {
+            tracing::warn!(
+                error = %e,
+                id,
+                "OAuth2 application created without a secret could not be removed; delete it by hand"
+            );
+        }
+        return Err(GatewayError::api(format!(
             "OAuth2 application {id} was created without a client secret"
         )));
     };
@@ -77,7 +83,7 @@ pub(super) async fn update(
     updated
         .client_secret
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| GatewayError::Api("OAuth2 update returned no client secret".into()))
+        .ok_or_else(|| GatewayError::api("OAuth2 update returned no client secret"))
 }
 
 pub(super) async fn delete(

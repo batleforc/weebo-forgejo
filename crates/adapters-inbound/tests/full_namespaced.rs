@@ -8,6 +8,7 @@
 //!
 //! The Role mirrors what the chart renders for `watch.namespace` (the kit
 //! library chart's `watchRole`): keep them in step.
+#![expect(clippy::unwrap_used, reason = "test helpers fail the test on purpose")]
 
 mod support;
 
@@ -127,7 +128,8 @@ async fn grant_one_role(admin: &Client) {
 
 #[tokio::test]
 async fn a_full_namespaced_operator_runs_on_one_role() {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    // Err: another test set the subscriber first, which is as good.
+    tracing_subscriber::fmt().with_test_writer().try_init().ok();
     let cluster = EnvTestCluster::start().await;
     let admin = cluster.client();
     grant_one_role(&admin).await;

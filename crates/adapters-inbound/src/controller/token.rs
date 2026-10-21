@@ -226,7 +226,7 @@ async fn issue(
         allow_disruptive_update: allows_disruptive_update(&current.metadata),
         now: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
             .unwrap_or_default(),
     };
     Ok(reconcile_token(input, gateway.as_ref(), secrets.as_ref()).await)

@@ -4,6 +4,12 @@
 //! `ForgejoRepository` referencing them are moved into namespaces — CRs
 //! recreated with their binding to Forgejo, references and sharing
 //! rewritten, the owner of the user's emitted `Secret` renamed.
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 use std::path::Path;
 use std::time::Duration;

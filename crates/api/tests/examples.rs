@@ -2,6 +2,14 @@
 //! (`deploy/e2e/`) must deserialize into its CRD type and set no field the
 //! CRD doesn't have, so neither can drift from the API.
 
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
+
 use serde::Deserialize;
 use serde_norway::Value;
 

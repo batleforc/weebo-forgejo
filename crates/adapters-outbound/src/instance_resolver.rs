@@ -5,7 +5,7 @@
 //! `InstanceDirectory` resolving a CR's `instanceRef`.
 
 use api::{ForgejoInstance, ForgejoLocalInstance};
-use application::ports::{BoundInstance, InstanceVault, InstanceVaults};
+use application::ports::{BoundInstance, ClusterError, InstanceVault, InstanceVaults};
 use weebo_kit_adapters::Resolved;
 
 pub type ForgejoInstances = weebo_kit_adapters::Instances<ForgejoInstance, ForgejoLocalInstance>;
@@ -16,8 +16,12 @@ pub struct ForgejoInstanceVaults(pub std::sync::Arc<ForgejoInstances>);
 
 #[async_trait::async_trait]
 impl InstanceVaults for ForgejoInstanceVaults {
-    async fn vault_of(&self, instance: &BoundInstance) -> Result<InstanceVault, String> {
-        let resolved = self.0.get(instance).await.map_err(|e| e.to_string())?;
+    async fn vault_of(&self, instance: &BoundInstance) -> Result<InstanceVault, ClusterError> {
+        let resolved = self
+            .0
+            .get(instance)
+            .await
+            .map_err(|e| ClusterError(e.to_string()))?;
         Ok(match resolved {
             None => InstanceVault::NotFound,
             Some(Resolved::Local(_)) => InstanceVault::None,

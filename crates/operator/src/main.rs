@@ -52,7 +52,10 @@ async fn operator() -> anyhow::Result<()> {
 /// operator stopped, new CRDs applied, then this, then the operator.
 async fn migrate_instance_ref() -> anyhow::Result<()> {
     let dry_run = std::env::args().any(|a| a == "--dry-run");
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Err: a provider is already installed, which is as good.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     let client = Client::try_default().await?;
     let kinds = [
         ApiResource::erase::<ForgejoUser>(&()),
@@ -96,7 +99,7 @@ async fn migrate_to_namespaced() -> anyhow::Result<()> {
     let value = |flag: &str| {
         args.iter()
             .position(|a| a == flag)
-            .and_then(|i| args.get(i + 1))
+            .and_then(|i| args.get(i.saturating_add(1)))
             .cloned()
     };
     let has = |flag: &str| args.iter().any(|a| a == flag);
@@ -123,7 +126,10 @@ async fn migrate_to_namespaced() -> anyhow::Result<()> {
         allow_cross_namespace: has("--allow-cross-namespace"),
         wait: Duration::from_secs(value("--wait").map_or(Ok(600), |w| w.parse())?),
     };
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Err: a provider is already installed, which is as good.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     let client = Client::try_default().await?;
     let report = importer::namespaced::migrate(&client, &options).await?;
     if report.applied {
@@ -139,7 +145,10 @@ async fn migrate_to_namespaced() -> anyhow::Result<()> {
 async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
     // `ring` and `aws-lc-rs` can both end up linked transitively; rustls
     // refuses to pick a default provider when more than one is present.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Err: a provider is already installed, which is as good.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
 
     telemetry.serve_metrics().await?;
     // `weebo_forgejo_leader`: 1 on the replica holding the lease.
@@ -322,6 +331,11 @@ async fn run(telemetry: &telemetry::Telemetry) -> anyhow::Result<()> {
     // instead of making the next leader wait out the TTL.
     leadership.release().await;
     // Bounded: the drain started with the signal, long before.
-    let _ = tokio::time::timeout(Duration::from_secs(30), webhook.stopped()).await;
+    if tokio::time::timeout(Duration::from_secs(30), webhook.stopped())
+        .await
+        .is_err()
+    {
+        tracing::warn!("the webhook server was still draining after 30 s: exiting anyway");
+    }
     Ok(())
 }

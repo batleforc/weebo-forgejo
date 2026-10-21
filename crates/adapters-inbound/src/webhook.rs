@@ -16,7 +16,7 @@ use api::{
     ForgejoRepository, ForgejoTeam, ForgejoUser, ForgejoUserKey, ForgejoWebhook,
 };
 use application::ports::{
-    InstanceDirectory, InstanceVault, InstanceVaults, PolicySource, ReferenceReader,
+    InstanceDirectory, InstanceError, InstanceVault, InstanceVaults, PolicySource, ReferenceReader,
 };
 use application::use_cases::admission::{Governed, enforce_on};
 use axum::Router;
@@ -116,10 +116,23 @@ impl WebhookState {
         let instance = match &self.instances {
             Some(directory) => {
                 let recorded = typed.forgejo_status().and_then(|s| s.instance.as_ref());
-                directory
+                match directory
                     .resolve(Some(namespace), typed.instance_ref(), recorded)
                     .await
-                    .ok()
+                {
+                    Ok(instance) => Some(instance),
+                    // No such instance: the reconcile reports it.
+                    Err(InstanceError::Resolve(_)) => None,
+                    // Fail open: the Vault path rule is enforced again by
+                    // the secret store on every write of the reconcile.
+                    Err(e @ InstanceError::Kubernetes(_)) => {
+                        tracing::warn!(
+                            error = %e,
+                            "instance unresolved, admitted without the Vault path check"
+                        );
+                        None
+                    }
+                }
             }
             None => None,
         };
@@ -326,7 +339,7 @@ mod tests {
         async fn vault_of(
             &self,
             _: &application::ports::BoundInstance,
-        ) -> Result<InstanceVault, String> {
+        ) -> Result<InstanceVault, application::ports::ClusterError> {
             Ok(self.0.clone())
         }
     }

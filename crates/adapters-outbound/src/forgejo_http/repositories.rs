@@ -13,7 +13,7 @@ fn split(full_name: &str) -> Result<(String, String), GatewayError> {
     full_name
         .split_once('/')
         .map(|(o, n)| (o.to_string(), n.to_string()))
-        .ok_or_else(|| GatewayError::Api(format!("{full_name:?} is not owner/name")))
+        .ok_or_else(|| GatewayError::api(format!("{full_name:?} is not owner/name")))
 }
 
 fn created(repo: models::Repository, fallback: &str) -> Result<ForgejoRef, GatewayError> {
@@ -318,7 +318,7 @@ fn protection_option<T: serde::de::DeserializeOwned>(
     rule: &ProtectionRule,
 ) -> Result<T, GatewayError> {
     serde_json::from_value(protection_json(rule))
-        .map_err(|e| GatewayError::Api(format!("branch protection body: {e}")))
+        .map_err(|e| GatewayError::api(format!("branch protection body: {e}")))
 }
 
 pub(super) async fn create_protection(

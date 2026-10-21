@@ -4,6 +4,11 @@
 //! archiving, authoritative protections and team access, drift, deletion
 //! policies, webhooks (secrets, retyping, retargeting) and SSH keys.
 //! Ignored by default; `task test:live-forgejo` runs it.
+#![expect(
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 mod support;
 

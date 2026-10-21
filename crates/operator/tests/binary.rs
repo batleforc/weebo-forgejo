@@ -1,6 +1,7 @@
 //! The real `operator` binary on envtest, against a scripted Forgejo: it
 //! serves the admission webhook over TLS on every replica, takes the
 //! leader lease, reconciles, and exits as soon as the lease is lost.
+#![expect(clippy::unwrap_used, reason = "test helpers fail the test on purpose")]
 
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -22,7 +23,8 @@ struct Operator(Child);
 
 impl Drop for Operator {
     fn drop(&mut self) {
-        let _ = self.0.kill();
+        // Err: it already exited on its own.
+        self.0.kill().ok();
     }
 }
 

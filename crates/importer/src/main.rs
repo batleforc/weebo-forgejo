@@ -60,7 +60,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Err: a provider is already installed, which is as good.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     let args = Args::parse();
 
     let (api_base, web_url) = api::instance::split_urls(&args.url);

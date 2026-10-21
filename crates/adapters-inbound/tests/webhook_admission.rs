@@ -1,6 +1,11 @@
 //! Layer-3: the admission webhook router answering real `AdmissionReview`s
 //! against real `ForgejoNamespacePolicy` objects in a real apiserver, and
 //! the Vault paths of `secretTargets` against a real `ForgejoInstance`.
+#![expect(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 mod support;
 

@@ -30,3 +30,6 @@ testkit = { workspace = true }
 k8s-openapi = { workspace = true }
 serde_json = { workspace = true }
 rcgen = "0.14.10"
+
+[lints]
+workspace = true

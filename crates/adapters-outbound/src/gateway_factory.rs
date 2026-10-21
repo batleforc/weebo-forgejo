@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use api::ForgejoInstance;
 use api::common::SecretKeyRef;
@@ -21,6 +21,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// `generate`): a timeout there would leave a half-imported repository the
 /// next reconcile collides with, so it gets a generous budget.
 const MIGRATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Instances whose clients are kept; past it, the least recently used are
+/// dropped (a deleted instance's are, as soon as a lookup misses it).
+const MAX_CACHED_INSTANCES: usize = 64;
 
 /// Builds a [`ForgejoHttpGateway`] per call from the resolved
 /// `ForgejoInstance` or `ForgejoLocalInstance` (whose token and CA live in
@@ -71,6 +74,7 @@ struct CachedClients {
     http: reqwest::Client,
     slow: reqwest::Client,
     permits: Arc<Semaphore>,
+    used: Instant,
 }
 
 impl ForgejoGatewayFactory {
@@ -97,9 +101,10 @@ impl ForgejoGatewayFactory {
         };
         let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         let name = instance.key.clone();
-        if let Some(c) = cache.get(&name)
+        if let Some(c) = cache.get_mut(&name)
             && c.key == key
         {
+            c.used = Instant::now();
             return Ok((c.http.clone(), c.slow.clone(), c.permits.clone()));
         }
         let http = build_http_client(&instance.tls, ca_pem, REQUEST_TIMEOUT)?;
@@ -110,6 +115,15 @@ impl ForgejoGatewayFactory {
             .get(&name)
             .map(|c| c.permits.clone())
             .unwrap_or_else(|| Arc::new(Semaphore::new(max_inflight())));
+        if !cache.contains_key(&name)
+            && cache.len() >= MAX_CACHED_INSTANCES
+            && let Some(oldest) = cache
+                .iter()
+                .min_by_key(|(_, c)| c.used)
+                .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest);
+        }
         cache.insert(
             name,
             CachedClients {
@@ -117,6 +131,7 @@ impl ForgejoGatewayFactory {
                 http: http.clone(),
                 slow: slow.clone(),
                 permits: permits.clone(),
+                used: Instant::now(),
             },
         );
         Ok((http, slow, permits))
@@ -187,13 +202,20 @@ impl GatewayFactory for ForgejoGatewayFactory {
         &self,
         bound: &BoundInstance,
     ) -> Result<Arc<dyn ForgejoGateway>, GatewayFactoryError> {
-        let connection = match self
+        let found = self
             .instances
             .get(bound)
             .await
-            .map_err(|e| GatewayFactoryError::Kubernetes(e.to_string()))?
-            .ok_or_else(|| GatewayFactoryError::InstanceNotFound(bound.to_string()))?
-        {
+            .map_err(|e| GatewayFactoryError::Kubernetes(e.to_string()))?;
+        let Some(found) = found else {
+            // Deleted: its clients go with it.
+            self.cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&bound.to_string());
+            return Err(GatewayFactoryError::InstanceNotFound(bound.to_string()));
+        };
+        let connection = match found {
             Resolved::Cluster(instance) => Connection::of_cluster(&instance),
             Resolved::Local(local) => {
                 let namespace = local.namespace().unwrap_or_default();
