@@ -147,7 +147,10 @@ pub fn plan(old: &[Value], namespaced: &[Value], targets: &Targets) -> Result<Pl
 
     for cr in old {
         let (kind, name) = (kind_of(cr), name_of(cr));
-        let namespace = placed[&(kind.clone(), name.clone())].clone();
+        let namespace = placed
+            .get(&(kind.clone(), name.clone()))
+            .ok_or_else(|| Unmapped(format!("{kind}/{name}")))?
+            .clone();
         let mut spec = cr.get("spec").cloned().unwrap_or_else(|| json!({}));
         let changed = rewrite_refs(&kind, &namespace, &mut spec, &placed, &mut shared);
         plan.cross_namespace |= changed;
@@ -181,12 +184,13 @@ pub fn plan(old: &[Value], namespaced: &[Value], targets: &Targets) -> Result<Pl
         // Its secrets were recorded under its cluster-scoped id: the
         // operator takes them back (Vault values included, which this tool
         // can't reach) and rewrites them under the new one.
-        if emits_secrets {
-            let annotations = meta
+        // Only an object is ever put under `annotations` above.
+        if emits_secrets
+            && let Some(annotations) = meta
                 .entry("annotations")
                 .or_insert_with(|| json!({}))
                 .as_object_mut()
-                .expect("annotations is an object");
+        {
             annotations.insert(
                 api::ANNOTATIONS.key(weebo_kit_api::annotations::PREVIOUS_OWNER),
                 format!("{kind}/{name}").into(),
@@ -242,12 +246,19 @@ pub fn plan(old: &[Value], namespaced: &[Value], targets: &Targets) -> Result<Pl
         if !SHARING.contains(&m.kind.as_str()) {
             continue;
         }
-        let spec = m.manifest["spec"].as_object_mut().expect("a spec object");
-        let entry = spec
-            .entry("sharedWith")
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .expect("sharedWith is an object");
+        let Some(entry) = m
+            .manifest
+            .get_mut("spec")
+            .and_then(Value::as_object_mut)
+            .map(|spec| spec.entry("sharedWith").or_insert_with(|| json!({})))
+            .and_then(Value::as_object_mut)
+        else {
+            plan.warnings.push(format!(
+                "{}/{}: spec or spec.sharedWith is not an object, sharedWith not seeded",
+                m.kind, m.name
+            ));
+            continue;
+        };
         let mut listed: BTreeSet<String> = entry
             .get("namespaces")
             .and_then(Value::as_array)

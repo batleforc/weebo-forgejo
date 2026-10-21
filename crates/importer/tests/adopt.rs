@@ -1,6 +1,7 @@
 //! `--apply` on a real apiserver (envtest), then the real controllers:
 //! every imported object must be adopted as is — `Ready`, and not a single
 //! create or edit sent to Forgejo.
+#![expect(clippy::unwrap_used, reason = "test helpers fail the test on purpose")]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

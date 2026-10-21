@@ -585,7 +585,7 @@ impl Names {
         }
         let base = dns_name(forgejo_name);
         let mut name = base.clone();
-        let mut n = 1;
+        let mut n: u32 = 1;
         while name.is_empty() || self.taken.contains(&name) {
             // The id is unique per kind, but `{base}-{id}` may still be some
             // other object's natural name: count until free.
@@ -593,7 +593,7 @@ impl Names {
                 1 => suffixed(&base, &id.to_string()),
                 _ => suffixed(&base, &format!("{id}-{n}")),
             };
-            n += 1;
+            n = n.saturating_add(1);
         }
         self.taken.insert(name.clone());
         name
@@ -603,7 +603,7 @@ impl Names {
 /// `{base}-{suffix}`, `base` shortened so the whole stays a valid name —
 /// the suffix carries the id that keeps it unique, so it's never cut.
 fn suffixed(base: &str, suffix: &str) -> String {
-    let room = MAX_NAME.saturating_sub(suffix.len() + 1);
+    let room = MAX_NAME.saturating_sub(suffix.len().saturating_add(1));
     let base = base[..base.len().min(room)].trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
     if base.is_empty() {
         suffix.to_string()

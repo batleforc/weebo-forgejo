@@ -2,6 +2,13 @@
 //! are rewritten as `{name: …}` by the kit's migration (the operator's
 //! `migrate-instance-ref` command) once the new CRDs are applied — the
 //! immutability rule on `instanceRef` included.
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 use std::time::Duration;
 

@@ -319,7 +319,9 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<bool>>,
 {
-    let deadline = tokio::time::Instant::now() + timeout;
+    let deadline = tokio::time::Instant::now()
+        .checked_add(timeout)
+        .with_context(|| format!("waiting {timeout:?} for {what}: too long"))?;
     loop {
         if done().await? {
             return Ok(());

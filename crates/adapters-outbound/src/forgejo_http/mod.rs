@@ -581,7 +581,7 @@ where
         if ids == previous {
             return Ok(());
         }
-        seen += batch.len();
+        seen = seen.saturating_add(batch.len());
         if seen > MAX_ITEMS {
             break;
         }
@@ -654,6 +654,10 @@ mod paging_tests {
     }
 
     /// A listing of `total` items served `clamp` at a time.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "test helper: small page numbers"
+    )]
     async fn served(
         total: i32,
         clamp: i32,
@@ -690,7 +694,7 @@ mod paging_tests {
         // Page 2 filtered down after pagination, page 3 still full.
         let pages = [vec![1, 2, 3], vec![4], vec![5, 6, 7], vec![]];
         let items = all_pages(|page| {
-            let batch = pages[page as usize - 1].clone();
+            let batch = pages[usize::try_from(page).unwrap() - 1].clone();
             async move { Ok(batch) }
         })
         .await

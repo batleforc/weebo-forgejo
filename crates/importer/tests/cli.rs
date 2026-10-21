@@ -1,6 +1,7 @@
 //! The real `weebo-forgejo-importer` binary against a scripted Forgejo
 //! (wiremock): YAML on stdout, `--apply` into envtest through `KUBECONFIG`,
 //! and a non-zero exit when Forgejo can't be read.
+#![expect(clippy::expect_used, reason = "test helpers fail the test on purpose")]
 
 use std::process::{Command, Output};
 

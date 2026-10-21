@@ -4,6 +4,7 @@
 //! not governed by `ForgejoNamespacePolicy` (its namespace's own token
 //! bounds it) and records its instance in `status.instance`; one bound to a
 //! cluster `ForgejoInstance` still is.
+#![expect(clippy::unwrap_used, reason = "test helpers fail the test on purpose")]
 
 mod support;
 
@@ -44,7 +45,8 @@ fn repository(name: &str, instance_ref: Value) -> ForgejoRepository {
 
 #[tokio::test]
 async fn a_local_instance_binds_its_crs_outside_the_namespace_policy() {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    // Err: another test set the subscriber first, which is as good.
+    tracing_subscriber::fmt().with_test_writer().try_init().ok();
     let cluster = EnvTestCluster::start().await;
     let client = cluster.client();
     let reader = Arc::new(KubeClusterReader::new(client.clone()));

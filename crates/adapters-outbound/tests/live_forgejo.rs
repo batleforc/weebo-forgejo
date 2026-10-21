@@ -7,6 +7,12 @@
 //!   to cover external users
 //!
 //! Object names carry a per-run suffix so reruns don't collide.
+#![expect(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 use adapters_outbound::ForgejoHttpGateway;
 use application::ports::{

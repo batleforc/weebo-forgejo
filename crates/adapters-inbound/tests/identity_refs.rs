@@ -2,6 +2,7 @@
 //! namespaced — across namespaces (enabled for the operator *and* shared by
 //! the target), by Forgejo name (`remoteName`), and the unique claim of a
 //! Forgejo object by one CR across namespaces.
+#![expect(clippy::unwrap_used, reason = "test helpers fail the test on purpose")]
 
 mod support;
 

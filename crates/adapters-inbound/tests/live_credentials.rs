@@ -2,6 +2,13 @@
 //! end to end — every controller on envtest against the live Forgejo
 //! (`task test:live-forgejo`), and for Vault a real `vault server -dev`
 //! whose Kubernetes auth validates envtest-issued ServiceAccount tokens.
+#![expect(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 mod support;
 
@@ -517,8 +524,9 @@ struct VaultDev {
 
 impl Drop for VaultDev {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Err: it already exited, nothing left to stop or reap.
+        self.child.kill().ok();
+        self.child.wait().ok();
     }
 }
 
@@ -646,6 +654,7 @@ async fn sa_token(l: &Live, sa: &str, audience: Option<&str>) -> String {
 
 #[tokio::test]
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
+#[expect(unsafe_code, reason = "set_var is unsafe since edition 2024")]
 async fn vault_secret_store_end_to_end() {
     use base64::Engine;
 
@@ -836,5 +845,6 @@ async fn vault_secret_store_end_to_end() {
     assert!(vault.kv(&format!("weebo-forgejo/{NS}/ci")).await.is_none());
     assert!(vault.kv("weebo-forgejo/default/ci/fan").await.is_none());
     assert!(l.secret_value("fan-k8s", "FORGEJO_TOKEN").await.is_none());
-    let _ = std::fs::remove_file(&jwt_file);
+    // Err: a temp file left behind, harmless.
+    std::fs::remove_file(&jwt_file).ok();
 }

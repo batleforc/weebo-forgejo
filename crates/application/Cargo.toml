@@ -30,3 +30,6 @@ tokio = { workspace = true }
 # Exposes `test_support` (in-memory Forgejo + secret store) to other
 # crates' tests.
 test-support = ["weebo-kit-application/test-support"]
+
+[lints]
+workspace = true

@@ -1,5 +1,6 @@
 //! Layer-3: repository, webhook and deploy-key controllers on a real
 //! apiserver, wired to the organization/team controllers they reference.
+#![expect(clippy::unwrap_used, reason = "test helpers fail the test on purpose")]
 
 mod support;
 

@@ -1,6 +1,11 @@
 //! Layer-2 contract tests: `ForgejoHttpGateway` against scripted HTTP
 //! (`wiremock`), pinning the wire format and the error classification the
 //! use-cases depend on.
+#![expect(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "test helpers fail the test on purpose"
+)]
 
 use adapters_outbound::ForgejoHttpGateway;
 use application::ports::{

@@ -1,6 +1,7 @@
 //! Layer-3: `ForgejoInstance.spec.tls` end to end — the instance controller
 //! with the real `ForgejoGatewayFactory` against an HTTPS stand-in for
 //! Forgejo whose certificate no public root trusts.
+#![expect(clippy::unwrap_used, reason = "test helpers fail the test on purpose")]
 
 mod support;
 
@@ -23,7 +24,10 @@ use testkit::envtest::EnvTestCluster;
 /// `GET /api/v1/version` and `/api/v1/user` (a site admin) over TLS with a fresh self-signed certificate;
 /// returns the URL and the certificate's PEM.
 async fn https_forgejo() -> (String, String) {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Err: a provider is already installed, which is as good.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
     let pem = cert.cert.pem();
     let tls = RustlsConfig::from_pem(pem.clone().into(), cert.signing_key.serialize_pem().into())

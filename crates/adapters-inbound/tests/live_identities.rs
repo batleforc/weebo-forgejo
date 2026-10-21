@@ -2,6 +2,7 @@
 //! selection and failures, and the allow-list as the reconcilers enforce
 //! it — every controller against envtest and the live Forgejo
 //! (`task test:live-forgejo`; harness in `support::live`).
+#![expect(clippy::unwrap_used, reason = "test helpers fail the test on purpose")]
 
 mod support;
 

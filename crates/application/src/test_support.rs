@@ -3,6 +3,13 @@
 //! [`FakeSecretStore`]. Use-case tests assert on the resulting state and on
 //! the recorded call log rather than scripting every response.
 
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "test fakes (behind `test-support`): a broken fake fails the test on purpose"
+)]
+
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 

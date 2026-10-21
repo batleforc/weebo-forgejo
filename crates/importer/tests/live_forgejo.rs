@@ -2,6 +2,7 @@
 //! `task test:live-forgejo`, needs `FORGEJO_URL`/`FORGEJO_TOKEN`): builds a
 //! small org through the gateway, imports it, and checks that reconciling
 //! the imported CRs keeps every object (same ids, nothing duplicated).
+#![expect(clippy::expect_used, reason = "test helpers fail the test on purpose")]
 
 use std::collections::BTreeMap;
 
@@ -29,7 +30,10 @@ fn gateway() -> ForgejoHttpGateway {
 #[tokio::test]
 #[ignore = "needs a live Forgejo: task test:live-forgejo"]
 async fn import_round_trips_a_live_organization() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Err: a provider is already installed, which is as good.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     let g = gateway();
     let sfx = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

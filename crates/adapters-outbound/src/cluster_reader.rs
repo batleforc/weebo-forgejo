@@ -765,7 +765,10 @@ mod tests {
     }
 
     fn client(url: &str) -> Client {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        // Err: another test installed it first, which is as good.
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
         Client::try_from(kube::Config::new(url.parse().unwrap())).unwrap()
     }
 

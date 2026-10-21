@@ -45,3 +45,6 @@ base64 = "0.22"
 # A TLS stand-in for Forgejo (instance_tls.rs).
 axum-server = { workspace = true }
 rcgen = "0.14.10"
+
+[lints]
+workspace = true

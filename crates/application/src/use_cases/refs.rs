@@ -337,9 +337,10 @@ pub async fn resolve_member(
                 login,
             }
         }
-        other @ RefState::OtherInstance(_) => {
-            return Ok(Err(require(RefKind::User, &shown, other).unwrap_err()));
-        }
+        other @ RefState::OtherInstance(_) => match require(RefKind::User, &shown, other) {
+            Ok(r) => Member::Ready(r.name),
+            Err(f) => return Ok(Err(f)),
+        },
     }))
 }
 
