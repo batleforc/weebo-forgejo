@@ -36,6 +36,7 @@ pub struct ForgejoAccessTokenSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ref: Option<InstanceRef>,
     /// The user the token belongs to.
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoUser" }] }))]
     pub user_ref: IdentityRef,
     /// Token name, unique per user. Defaults to `<namespace>-<cr name>`.
     /// A token of that name the user already has, or another CR issues, is
@@ -52,6 +53,7 @@ pub struct ForgejoAccessTokenSpec {
     /// Forgejo then only accepts the `read:`/`write:` `issue` and
     /// `repository` scopes. Same disruptive-update rule as `scopes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoRepository" }] }))]
     pub repository_refs: Vec<ObjectRef>,
     /// Issue a new token once the current one is this old — a Go duration
     /// such as `720h`.
@@ -60,6 +62,8 @@ pub struct ForgejoAccessTokenSpec {
     /// Defaults to one target named after the CR, in its namespace, on the
     /// instance's default `secretStore` backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // The keys each target holds, for the docs' CRD IDE (as `reconcile_token` writes them).
+    #[schemars(extend("x-weebo-keys" = ["FORGEJO_TOKEN", "FORGEJO_USERNAME", "FORGEJO_URL"]))]
     pub secret_targets: Vec<SecretTarget>,
     #[serde(default = "DeletionPolicy::delete")]
     pub deletion_policy: DeletionPolicy,

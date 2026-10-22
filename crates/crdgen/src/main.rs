@@ -1,12 +1,18 @@
 //! Emits `deploy/crd/*.yaml`, one file per CRD kind, via
-//! `CustomResourceExt::crd()`. Invoked directly by `task recu` — see
+//! `CustomResourceExt::crd()`, and `deploy/crd/links.json`, the reference
+//! fields and produced Secrets of each kind (`weebo_kit_api::links`) for
+//! the docs' CRD IDE. Invoked directly by `task recu` — see
 //! `.prompt/plan.md`, "Architecture hexagonale".
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::CustomResourceExt;
+use schemars::JsonSchema;
+use weebo_kit_api::links::{self, GroupKind, KindLinks, Roles};
 
 #[derive(Parser)]
 struct Args {
@@ -17,51 +23,49 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     fs::create_dir_all(&args.out)?;
-
-    write_crd(&args.out, "forgejoinstance", api::ForgejoInstance::crd())?;
-    write_crd(
-        &args.out,
-        "forgejolocalinstance",
-        api::ForgejoLocalInstance::crd(),
-    )?;
-    write_crd(&args.out, "forgejouser", api::ForgejoUser::crd())?;
-    write_crd(
-        &args.out,
-        "forgejoorganization",
-        api::ForgejoOrganization::crd(),
-    )?;
-    write_crd(&args.out, "forgejoteam", api::ForgejoTeam::crd())?;
-    write_crd(
-        &args.out,
-        "forgejorepository",
-        api::ForgejoRepository::crd(),
-    )?;
-    write_crd(&args.out, "forgejowebhook", api::ForgejoWebhook::crd())?;
-    write_crd(&args.out, "forgejodeploykey", api::ForgejoDeployKey::crd())?;
-    write_crd(&args.out, "forgejouserkey", api::ForgejoUserKey::crd())?;
-    write_crd(
-        &args.out,
-        "forgejooauth2application",
-        api::ForgejoOAuth2Application::crd(),
-    )?;
-    write_crd(
-        &args.out,
-        "forgejoaccesstoken",
-        api::ForgejoAccessToken::crd(),
+    let roles = Roles {
+        instance: group_kind(&api::ForgejoInstance::crd()),
+        local_instance: group_kind(&api::ForgejoLocalInstance::crd()),
+    };
+    let mut kinds = BTreeMap::new();
+    let out = &args.out;
+    write::<api::ForgejoInstance>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoLocalInstance>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoUser>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoOrganization>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoTeam>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoRepository>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoWebhook>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoDeployKey>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoUserKey>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoOAuth2Application>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoAccessToken>(out, &roles, &mut kinds)?;
+    write::<api::ForgejoNamespacePolicy>(out, &roles, &mut kinds)?;
+    let links = serde_json::json!({ "version": 1, "kinds": kinds });
+    fs::write(
+        out.join("links.json"),
+        serde_json::to_string_pretty(&links)? + "\n",
     )?;
 
-    write_crd(
-        &args.out,
-        "forgejonamespacepolicy",
-        api::ForgejoNamespacePolicy::crd(),
-    )?;
-
-    println!("wrote CRDs to {}", args.out.display());
+    println!("wrote CRDs and links.json to {}", out.display());
     Ok(())
 }
 
-fn write_crd(out: &Path, name: &str, crd: impl serde::Serialize) -> anyhow::Result<()> {
-    let yaml = serde_norway::to_string(&crd)?;
-    fs::write(out.join(format!("{name}.yaml")), yaml)?;
+fn write<K: CustomResourceExt + JsonSchema>(
+    out: &Path,
+    roles: &Roles,
+    kinds: &mut BTreeMap<String, KindLinks>,
+) -> anyhow::Result<()> {
+    let crd = K::crd();
+    let kind = crd.spec.names.kind.clone();
+    fs::write(
+        out.join(format!("{}.yaml", kind.to_lowercase())),
+        serde_norway::to_string(&crd)?,
+    )?;
+    kinds.insert(kind, links::of::<K>(roles)?);
     Ok(())
+}
+
+fn group_kind(crd: &CustomResourceDefinition) -> GroupKind {
+    GroupKind::new(&crd.spec.group, &crd.spec.names.kind)
 }

@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoWebhook",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "A webhook on a `ForgejoRepository` (same namespace) or a\n`ForgejoOrganization` — exactly one of the two refs.",
   "properties": {
     "active": {

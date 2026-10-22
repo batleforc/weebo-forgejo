@@ -10,6 +10,7 @@ export default function HomePage() {
       actions={[
         { href: '/docs/getting-started', label: 'Get started', primary: true },
         { href: '/docs', label: 'Read the docs' },
+        { href: '/docs/ide', label: 'Access the CRD IDE' },
       ]}
       install={`helm install weebo-forgejo \\
   oci://ghcr.io/batleforc/charts/weebo-forgejo \\

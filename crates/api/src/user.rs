@@ -99,6 +99,8 @@ pub struct ForgejoUserSpec {
     /// those users; ignored otherwise. A target deleted later triggers a
     /// password reset, since the old value can't be read back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // The keys each target holds, for the docs' CRD IDE (as `reconcile_user` writes them).
+    #[schemars(extend("x-weebo-keys" = ["FORGEJO_USERNAME", "FORGEJO_PASSWORD", "FORGEJO_URL"]))]
     pub secret_targets: Vec<SecretTarget>,
     /// Defaults to `Orphan`: deleting the CR keeps the account and the
     /// attribution of everything it authored. Users are never purged.

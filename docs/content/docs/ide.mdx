@@ -1,0 +1,14 @@
+---
+title: CRD IDE
+description: Compose linked Forgejo resources and export them as manifests.
+full: true
+---
+
+import { RECIPES } from '@/lib/recipes';
+
+Add resources, point each reference field (an `instanceRef`, an
+`organizationRef`, a `tokenSecretRef`…) at another resource of the project
+or at the Secret one of them writes, and export the whole set as YAML.
+Start from the recipe to see how the kinds fit together.
+
+<CrdIde recipes={RECIPES} />

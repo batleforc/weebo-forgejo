@@ -33,8 +33,10 @@ pub struct ForgejoWebhookSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ref: Option<InstanceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoRepository" }] }))]
     pub repository_ref: Option<ObjectRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoOrganization" }] }))]
     pub organization_ref: Option<IdentityRef>,
     /// `forgejo` (default), `gitea`, `gogs`, `slack`, `discord`,
     /// `dingtalk`, `telegram`, `msteams`, `feishu`, `wechatwork` or

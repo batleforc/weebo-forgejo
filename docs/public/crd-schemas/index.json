@@ -2,61 +2,109 @@
   {
     "kind": "ForgejoInstance",
     "singular": "forgejoinstance",
-    "scope": "Cluster"
+    "scope": "Cluster",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoLocalInstance",
     "singular": "forgejolocalinstance",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoUser",
     "singular": "forgejouser",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoUserKey",
     "singular": "forgejouserkey",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoOrganization",
     "singular": "forgejoorganization",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoTeam",
     "singular": "forgejoteam",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoNamespacePolicy",
     "singular": "forgejonamespacepolicy",
-    "scope": "Cluster"
+    "scope": "Cluster",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoRepository",
     "singular": "forgejorepository",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoWebhook",
     "singular": "forgejowebhook",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoDeployKey",
     "singular": "forgejodeploykey",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoOAuth2Application",
     "singular": "forgejooauth2application",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   },
   {
     "kind": "ForgejoAccessToken",
     "singular": "forgejoaccesstoken",
-    "scope": "Namespaced"
+    "scope": "Namespaced",
+    "apiVersion": "forgejo.weebo.io/v1alpha1",
+    "served": [
+      "v1alpha1"
+    ]
   }
 ]

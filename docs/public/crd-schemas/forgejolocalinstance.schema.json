@@ -2,6 +2,9 @@
   "apiVersion": "forgejo.weebo.io/v1alpha1",
   "kind": "ForgejoLocalInstance",
   "scope": "Namespaced",
+  "served": [
+    "v1alpha1"
+  ],
   "description": "Connection to a real Forgejo server (v16 or later), owned by a\nnamespace: its token is that namespace's, and only the objects of this\nnamespace use it unless `sharedWith` says otherwise. What an operator\nlimited to one namespace uses. Objects bound to it are not governed by\n`ForgejoNamespacePolicy` — the namespace's own token bounds what they\ncan do — and write their secrets as Kubernetes `Secret`s only: the\noperator's Vault identity is shared by every namespace.",
   "properties": {
     "sharedWith": {

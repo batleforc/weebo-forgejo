@@ -41,6 +41,7 @@ pub struct ForgejoOAuth2ApplicationSpec {
     /// (new client id), which needs the
     /// `forgejo.weebo.io/allow-disruptive-update: "true"` annotation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoUser" }] }))]
     pub owner_ref: Option<IdentityRef>,
     /// Display name. Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +54,8 @@ pub struct ForgejoOAuth2ApplicationSpec {
     /// Defaults to one target named after the CR, in its namespace, on the
     /// instance's default `secretStore` backend.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // The keys each target holds, for the docs' CRD IDE (as `reconcile_oauth2` writes them).
+    #[schemars(extend("x-weebo-keys" = ["FORGEJO_CLIENT_ID", "FORGEJO_CLIENT_SECRET", "FORGEJO_URL"]))]
     pub secret_targets: Vec<SecretTarget>,
     #[serde(default = "DeletionPolicy::delete")]
     pub deletion_policy: DeletionPolicy,

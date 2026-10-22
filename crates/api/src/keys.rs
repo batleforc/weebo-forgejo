@@ -33,6 +33,7 @@ pub struct ForgejoDeployKeySpec {
     /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ref: Option<InstanceRef>,
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoRepository" }] }))]
     pub repository_ref: ObjectRef,
     /// Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,6 +70,7 @@ pub struct ForgejoUserKeySpec {
     /// `ForgejoLocalInstance` of this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ref: Option<InstanceRef>,
+    #[schemars(extend("x-weebo-link" = { "to": [{ "group": "forgejo.weebo.io", "kind": "ForgejoUser" }] }))]
     pub user_ref: IdentityRef,
     /// Defaults to the CR name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +93,8 @@ pub struct KeySource {
     /// is unset; a target that disappears (or a new
     /// `forgejo.weebo.io/rotate-secret` nonce) generates a fresh pair.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // The keys each target holds, for the docs' CRD IDE (as `reconcile_key` writes them).
+    #[schemars(extend("x-weebo-keys" = ["ssh-privatekey", "ssh-publickey"]))]
     pub secret_targets: Vec<SecretTarget>,
 }
 
