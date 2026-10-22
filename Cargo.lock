@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adapters-inbound"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "adapters-outbound",
  "api",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-outbound"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "api",
  "application",
@@ -167,7 +167,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "api"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "domain",
  "k8s-openapi",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "application"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "api",
  "async-trait",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "crdgen"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "api",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "weebo-kit-domain",
 ]
@@ -1389,7 +1389,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forgejo-client"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "importer"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "adapters-inbound",
  "adapters-outbound",
@@ -2646,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "operator"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "adapters-inbound",
  "adapters-outbound",
@@ -4066,7 +4066,7 @@ dependencies = [
 
 [[package]]
 name = "testkit"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "api",
  "application",

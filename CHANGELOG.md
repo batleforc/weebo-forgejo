@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.7.0](https://github.com/batleforc/weebo-forgejo/compare/90d3c6e964cc93c91db4ac77c9cc71761291174f..v0.7.0) - 2026-10-22
+#### Features
+- kit v0.24.0, Git remotes, webhooks and Vault drawn in the CRD IDE (#24) - ([90d3c6e](https://github.com/batleforc/weebo-forgejo/commit/90d3c6e964cc93c91db4ac77c9cc71761291174f)) - Maxime, Claude Opus 5.5 (1M context)
+
+- - -
+
 ## [v0.6.0](https://github.com/batleforc/weebo-forgejo/compare/41e5bf501a5fd14a459d397315a1f6cc5156b342..v0.6.0) - 2026-10-22
 #### Features
 - kit v0.23.0, the CRD IDE in the docs (#23) - ([41e5bf5](https://github.com/batleforc/weebo-forgejo/commit/41e5bf501a5fd14a459d397315a1f6cc5156b342)) - Maxime, Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context), Claude Opus 5.5 (1M context)
