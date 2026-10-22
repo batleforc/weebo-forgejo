@@ -873,6 +873,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "schemars",
+ "serde",
  "serde_json",
  "serde_norway",
  "weebo-kit-api",
@@ -4721,8 +4722,8 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-adapters"
-version = "0.23.1"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.23.1#2eb2dbaf18131ccf13866cf6960dd6f0fa205ad7"
+version = "0.24.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.24.0#2dbed2d802e6ed73f9b981312798a921ac6ac800"
 dependencies = [
  "async-trait",
  "futures",
@@ -4744,8 +4745,8 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-api"
-version = "0.23.1"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.23.1#2eb2dbaf18131ccf13866cf6960dd6f0fa205ad7"
+version = "0.24.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.24.0#2dbed2d802e6ed73f9b981312798a921ac6ac800"
 dependencies = [
  "k8s-openapi",
  "schemars",
@@ -4755,8 +4756,8 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-application"
-version = "0.23.1"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.23.1#2eb2dbaf18131ccf13866cf6960dd6f0fa205ad7"
+version = "0.24.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.24.0#2dbed2d802e6ed73f9b981312798a921ac6ac800"
 dependencies = [
  "async-trait",
  "k8s-openapi",
@@ -4769,13 +4770,13 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-domain"
-version = "0.23.1"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.23.1#2eb2dbaf18131ccf13866cf6960dd6f0fa205ad7"
+version = "0.24.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.24.0#2dbed2d802e6ed73f9b981312798a921ac6ac800"
 
 [[package]]
 name = "weebo-kit-perf"
-version = "0.23.1"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.23.1#2eb2dbaf18131ccf13866cf6960dd6f0fa205ad7"
+version = "0.24.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.24.0#2dbed2d802e6ed73f9b981312798a921ac6ac800"
 dependencies = [
  "http",
  "k8s-openapi",
@@ -4789,8 +4790,8 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-runtime"
-version = "0.23.1"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.23.1#2eb2dbaf18131ccf13866cf6960dd6f0fa205ad7"
+version = "0.24.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.24.0#2dbed2d802e6ed73f9b981312798a921ac6ac800"
 dependencies = [
  "async-trait",
  "axum",
@@ -4817,8 +4818,8 @@ dependencies = [
 
 [[package]]
 name = "weebo-kit-testkit"
-version = "0.23.1"
-source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.23.1#2eb2dbaf18131ccf13866cf6960dd6f0fa205ad7"
+version = "0.24.0"
+source = "git+https://github.com/batleforc/weebo-operator-kit?tag=v0.24.0#2dbed2d802e6ed73f9b981312798a921ac6ac800"
 dependencies = [
  "envtest",
  "kube",

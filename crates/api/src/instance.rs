@@ -71,6 +71,8 @@ pub struct SecretStoreSpec {
 ]))]
 pub struct VaultSecretStoreSpec {
     /// Vault server address, e.g. `https://vault.example.com:8200`.
+    // Drawn by the docs' CRD IDE (the kit's shared schematic kinds).
+    #[schemars(extend("x-weebo-produces" = { "kind": { "group": "schematic.weebo.io", "kind": "VaultServer" }, "name": ["."] }))]
     pub address: String,
     /// KV v2 secrets engine mount (e.g. `secret`) credentials are written
     /// under.

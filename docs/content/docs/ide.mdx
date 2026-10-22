@@ -11,4 +11,11 @@ Add resources, point each reference field (an `instanceRef`, an
 or at the Secret one of them writes, and export the whole set as YAML.
 Start from the recipe to see how the kinds fit together.
 
+What lives outside the cluster is drawn too, never exported with the
+manifests: the Git remote a repository is migrated or mirrored from
+(`migrate.cloneAddr`), each webhook's receiver and the Vault server of an
+instance's secret store — one node per URL. Add the identity provider
+behind a login source by hand (`OidcIssuer`): `loginSourceId` is a number
+the IDE cannot follow. The drawing downloads as `schematic.yaml`.
+
 <CrdIde recipes={RECIPES} />
