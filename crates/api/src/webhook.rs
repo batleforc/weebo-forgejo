@@ -44,6 +44,8 @@ pub struct ForgejoWebhookSpec {
     #[serde(default = "default_type", rename = "type")]
     pub type_: String,
     /// Payload URL.
+    // Drawn by the docs' CRD IDE (the kit's shared schematic kinds).
+    #[schemars(extend("x-weebo-produces" = { "kind": { "group": "schematic.weebo.io", "kind": "HttpEndpoint" }, "name": ["."] }))]
     pub url: String,
     /// `json` (default) or `form`.
     #[serde(default = "default_content_type")]

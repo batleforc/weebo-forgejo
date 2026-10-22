@@ -182,6 +182,8 @@ pub struct TemplateSource {
 #[serde(rename_all = "camelCase")]
 pub struct MigrateSource {
     /// URL to clone from.
+    // Drawn by the docs' CRD IDE (crdgen's GitRemote).
+    #[schemars(extend("x-weebo-produces" = { "kind": { "group": "schematic.forgejo.weebo.io", "kind": "GitRemote" }, "name": ["."] }))]
     pub clone_addr: String,
     /// `git` (default), `github`, `gitea`, `gitlab`, `gogs`, `onedev`,
     /// `gitbucket`, `codebase`, `forgejo` or `pagure`. Non-`git` services

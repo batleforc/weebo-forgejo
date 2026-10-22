@@ -1,0 +1,27 @@
+{
+  "apiVersion": "schematic.forgejo.weebo.io/v1",
+  "kind": "GitRemote",
+  "scope": "Cluster",
+  "served": [
+    "v1"
+  ],
+  "schematic": true,
+  "description": "A Git repository outside the instance that a repository is migrated or\nmirrored from, named by its clone URL (`spec.migrate.cloneAddr`).",
+  "properties": {
+    "authenticated": {
+      "description": "Whether cloning it needs credentials.",
+      "type": "boolean"
+    },
+    "description": {
+      "description": "Free text, for the drawing.",
+      "nullable": true,
+      "type": "string"
+    },
+    "service": {
+      "description": "The forge it lives on: `github`, `gitlab`, `gitea`, `forgejo`…",
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
